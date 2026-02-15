@@ -24,6 +24,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from models.vitp import VitProcedural
 from kdyck.kdyck_generation import *
+from kdyck.utils import *
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["TORCH_NCCL_ENABLE_MONITORING"] = "0"
@@ -162,7 +163,8 @@ class Trainer:
                         seq_length=self.args.seq_length, 
                         mask_token=self.args.mask_token, 
                         mask_prob=self.args.mask_ratio,
-                        p_open=self.args.p_open
+                        p_open=self.args.p_open,
+                        max_depth=self.args.max_depth
                     )
                 elif self.args.procedural_data=="kdyck_truncated":
                     targets, inputs = generate_dataset_truncated(
@@ -171,12 +173,21 @@ class Trainer:
                         seq_length=self.args.seq_length, 
                         mask_token=self.args.mask_token, 
                         mask_prob=self.args.mask_ratio,
-                        p_open=self.args.p_open
+                        p_open=self.args.p_open,
+                        max_depth=self.args.max_depth
                     )
                 else:
                     raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
                 inputs = inputs.cuda()
                 targets = targets.cuda()
+
+                if self.args.procedural_order == "standard":
+                    pass
+                elif self.args.procedural_order == "spiral":
+                    inputs = spiral_unravel(inputs)
+                    targets = spiral_unravel(targets)
+                else:
+                    raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
 
                 if self.gpu_id == 0 and epoch == 0: print("Sample input:", inputs[0])
                 if self.gpu_id == 0 and epoch == 0: print("Sample target:", targets[0])
@@ -292,6 +303,8 @@ if __name__ == "__main__":
                         help="K")
     parser.add_argument("--p_open", type=float, default=0.6,
                         help="Probability of opening a new bracket vs closing an existing one during generation")
+    parser.add_argument("--max_depth", type=int, default=4,
+                        help="Maximum depth of nested brackets during generation")
     parser.add_argument("--procedural_data", type=str, default="kdyck",
                         help="Type of procedural data to generate (e.g., kdyck, kdyck_truncated)")
     parser.add_argument("--seq_length", type=int, default=196,
@@ -302,6 +315,9 @@ if __name__ == "__main__":
                         help="Ratio of closing brackets to mask")
     parser.add_argument('--freeze_patch_embeddings', type=str2bool, default=True)
     parser.add_argument('--freeze_pos_embeddings', type=str2bool, default=True)
+
+    parser.add_argument("--procedural_order", type=str, default="standard",
+                        help="Type of re-ordering (if any) to apply to the  procedural data (e.g., standard, spiral)")
 
     # Hyperparameters
     parser.add_argument("--batch_size", type=int, default=128,

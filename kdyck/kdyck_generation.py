@@ -1,7 +1,7 @@
 import numpy as np
 import torch, random
 
-def generate_k_dyck(k=64, length=196, p_open=0.6):
+def generate_k_dyck(k=64, length=196, p_open=0.6, max_depth=4):
     """
     Generate random k-Dyck word (perfectly balanced brackets).
     k: number of bracket types (64)
@@ -25,7 +25,7 @@ def generate_k_dyck(k=64, length=196, p_open=0.6):
                 dyck[i] = k + top_type
                 i+=1
             break
-        if len(stack) == 0 or np.random.rand() < p_open: # p(open) given in appendix
+        if len(stack) == 0 or (np.random.rand() < p_open and len(stack)<max_depth): # p(open) given in appendix
             bracket_type = np.random.randint(0, k)
             dyck[i] = bracket_type  # Open symbol
             stack.append(bracket_type)
@@ -47,7 +47,7 @@ def mask_kdyck(kdyck_seq, mask_token=128, mask_prob=0.5, close_brack_start_token
             masked_seq[i] = mask_token
     return masked_seq
 
-def generate_dataset(length=1000, save_path='', k=64, seq_length=196, mask_token=128, mask_prob=0.5, p_open=0.6):
+def generate_dataset(length=1000, save_path='', k=64, seq_length=196, mask_token=128, mask_prob=0.5, p_open=0.6, max_depth=4):
     """
     Generate dataset of k-Dyck sequences and masked sequences.
     length: number of sequences
@@ -63,7 +63,8 @@ def generate_dataset(length=1000, save_path='', k=64, seq_length=196, mask_token
         dyck_seq = generate_k_dyck(
             k=k, 
             length=seq_length, 
-            p_oprn=0.6
+            p_open=p_open,
+            max_depth=max_depth
         )
         masked_seq = mask_kdyck(
             dyck_seq, 
