@@ -9,7 +9,7 @@ from timm.utils import get_state_dict
 from pathlib import Path
 
 import torch
-from torch._six import inf
+from torch import inf
 from timm.models import create_model
 import torch.distributed as dist
 # from tensorboardX import SummaryWriter
@@ -185,7 +185,7 @@ class MetricLogger(object):
 
 
 class WandbLogger(object):
-    def __init__(self, args):
+    def __init__(self, args, name):
         self.args = args
 
         try:
@@ -201,7 +201,9 @@ class WandbLogger(object):
         if self._wandb.run is None:
             self._wandb.init(
                 project=args.project,
-                config=args
+                config=args,
+                name=name,
+                notes=args.notes
             )
 
     def log_epoch_metrics(self, metrics, commit=True):

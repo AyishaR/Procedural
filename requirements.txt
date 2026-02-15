@@ -9,3 +9,4 @@ deepspeed==0.4.0
 scipy
 timm==0.6.12
 six
+wandb

@@ -138,7 +138,7 @@ def get_args_parser():
                         help='initialize from a model file')
     parser.add_argument('--head_init_scale', default=1.0, type=float,
                         help='classifier head initial scale, typically adjusted in fine-tuning')
-    parser.add_argument('--model_key', default='model|module', type=str,
+    parser.add_argument('--model_key', default='model|module|model_state_dict|state', type=str,
                         help='which key to load from saved state dict, usually model or model_ema')
     parser.add_argument('--model_prefix', default='', type=str)
 
@@ -195,6 +195,8 @@ def get_args_parser():
                         help="enable logging to Weights and Biases")
     parser.add_argument('--project', default='convnext', type=str,
                         help="The name of the W&B project where you're sending the new run.")
+    parser.add_argument('--notes', default='', type=str,
+                        help="The notes for the W&B project where you're sending the new run.")
     parser.add_argument('--wandb_ckpt', type=str2bool, default=False,
                         help="Save model checkpoints as W&B Artifacts.")
 
@@ -295,10 +297,17 @@ def main(args):
         if checkpoint_model is None:
             checkpoint_model = checkpoint
         state_dict = model.state_dict()
-        for k in ['head.weight', 'head.bias']:
-            if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
-                print(f"Removing key {k} from pretrained checkpoint")
-                del checkpoint_model[k]
+        print("All keys in checkpoint_model", checkpoint_model.keys())
+        if "pr" in args.initialize.split("/")[-1]:
+            for k in ['head.weight', 'head.bias', 'cls_token', 'pos_embed', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
+                if k in checkpoint_model:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+        else:
+            for k in ['head.weight', 'head.bias']:
+                if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
         utils.load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
     model.to(device)
 
