@@ -30,7 +30,7 @@ BATCH_SIZE=$(($TOTAL_BATCH_SIZE / $SLURM_GPUS_ON_NODE))
 
 torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE procedural.py \
     --model vit_tiny_patch16_224  --warmup_steps 1000 --training_steps 15000 \
-    --k 64 --procedural_data "kdyck" \
+    --k 64 --procedural_data "kdyck" --p_open 0.6 \
     --total_batch_size $TOTAL_BATCH_SIZE \
     --batch_size $BATCH_SIZE --lr 2e-3 \
     --output_dir "/home/dawooda/code/procedural/Procedural/results_pr64_freeze_$SLURM_JOB_ID" \

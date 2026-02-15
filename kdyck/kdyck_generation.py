@@ -1,7 +1,7 @@
 import numpy as np
 import torch, random
 
-def generate_k_dyck(k=64, length=196):
+def generate_k_dyck(k=64, length=196, p_open=0.6):
     """
     Generate random k-Dyck word (perfectly balanced brackets).
     k: number of bracket types (64)
@@ -25,7 +25,7 @@ def generate_k_dyck(k=64, length=196):
                 dyck[i] = k + top_type
                 i+=1
             break
-        if len(stack) == 0 or np.random.rand() < 0.6: # p(open) given in appendix
+        if len(stack) == 0 or np.random.rand() < p_open: # p(open) given in appendix
             bracket_type = np.random.randint(0, k)
             dyck[i] = bracket_type  # Open symbol
             stack.append(bracket_type)
@@ -47,7 +47,7 @@ def mask_kdyck(kdyck_seq, mask_token=128, mask_prob=0.5, close_brack_start_token
             masked_seq[i] = mask_token
     return masked_seq
 
-def generate_dataset(length=1000, save_path='', k=64, seq_length=196, mask_token=128, mask_prob=0.5):
+def generate_dataset(length=1000, save_path='', k=64, seq_length=196, mask_token=128, mask_prob=0.5, p_open=0.6):
     """
     Generate dataset of k-Dyck sequences and masked sequences.
     length: number of sequences
@@ -60,8 +60,17 @@ def generate_dataset(length=1000, save_path='', k=64, seq_length=196, mask_token
     kdyck_seqs = []
     masked_seqs = []
     for _ in range(length):
-        dyck_seq = generate_k_dyck(k=k, length=seq_length)
-        masked_seq = mask_kdyck(dyck_seq, mask_token=mask_token, mask_prob=mask_prob, close_brack_start_token=k)
+        dyck_seq = generate_k_dyck(
+            k=k, 
+            length=seq_length, 
+            p_oprn=0.6
+        )
+        masked_seq = mask_kdyck(
+            dyck_seq, 
+            mask_token=mask_token, 
+            mask_prob=mask_prob, 
+            close_brack_start_token=k
+        )
         kdyck_seqs.append(dyck_seq.numpy())
         masked_seqs.append(masked_seq.numpy())
 
@@ -74,7 +83,7 @@ def generate_dataset(length=1000, save_path='', k=64, seq_length=196, mask_token
 
     return kdyck_seqs, masked_seqs
 
-def generate_dataset_truncated(length=1000, k=64, min_depth=1, max_depth=4, seq_length=510, offset=None, mask_token=128, mask_prob=0.5, save_path=""):
+def generate_dataset_truncated(length=1000, k=64, min_depth=1, max_depth=4, seq_length=510, offset=None, mask_token=128, mask_prob=0.5, save_path="", p_open=0.6):
     """Generates a Dyck sequence with specified number of symbols and depth constraints.
 
     Args:
@@ -106,7 +115,7 @@ def generate_dataset_truncated(length=1000, k=64, min_depth=1, max_depth=4, seq_
 
         while len(result) < seq_length:
             if (
-                len(stack) < max_depth and random.random() < 0.5
+                len(stack) < max_depth and random.random() < p_open
             ) or len(stack)==0:  # Try to open if under max depth
                 if len(result) >= seq_length - 1:
                     closing_symbol = stack.pop() + offset

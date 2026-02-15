@@ -161,7 +161,8 @@ class Trainer:
                         k=self.args.k, 
                         seq_length=self.args.seq_length, 
                         mask_token=self.args.mask_token, 
-                        mask_prob=self.args.mask_ratio
+                        mask_prob=self.args.mask_ratio,
+                        p_open=self.args.p_open
                     )
                 elif self.args.procedural_data=="kdyck_truncated":
                     targets, inputs = generate_dataset_truncated(
@@ -169,7 +170,8 @@ class Trainer:
                         k=self.args.k, 
                         seq_length=self.args.seq_length, 
                         mask_token=self.args.mask_token, 
-                        mask_prob=self.args.mask_ratio
+                        mask_prob=self.args.mask_ratio,
+                        p_open=self.args.p_open
                     )
                 else:
                     raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
@@ -288,6 +290,8 @@ if __name__ == "__main__":
     # Procedural
     parser.add_argument("--k", type=int, default=64,
                         help="K")
+    parser.add_argument("--p_open", type=float, default=0.6,
+                        help="Probability of opening a new bracket vs closing an existing one during generation")
     parser.add_argument("--procedural_data", type=str, default="kdyck",
                         help="Type of procedural data to generate (e.g., kdyck, kdyck_truncated)")
     parser.add_argument("--seq_length", type=int, default=196,
