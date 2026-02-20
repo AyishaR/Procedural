@@ -186,6 +186,24 @@ class Trainer:
                 elif self.args.procedural_order == "spiral":
                     inputs = spiral_unravel(inputs)
                     targets = spiral_unravel(targets)
+                elif self.args.procedural_order == "vertical":
+                    inputs = vertical_unravel(inputs)
+                    targets = vertical_unravel(targets)
+                elif self.args.procedural_order == "row_alternate":
+                    inputs = row_alternate(inputs)
+                    targets = row_alternate(targets)
+                elif self.args.procedural_order == "row_alternate_half":
+                    inputs = row_alternate_half(inputs)
+                    targets = row_alternate_half(targets)
+                elif self.args.procedural_order == "row_alternate_quarter":
+                    inputs = row_alternate_quarter(inputs)
+                    targets = row_alternate_quarter(targets)
+                elif self.args.procedural_order == "waterfall":
+                    inputs = waterfall(inputs)
+                    targets = waterfall(targets)
+                elif self.args.procedural_order == "waterfall_half":
+                    inputs = waterfall_half(inputs)
+                    targets = waterfall_half(targets)
                 else:
                     raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
 
@@ -257,7 +275,7 @@ class Trainer:
                 if (epoch + 1) % self.args.save_every == 0 and self.gpu_id == 0:
                     torch.save(
                         {
-                            "state": self.vitp_model.module.state_dict(),
+                            "state": self.vitp_model.module.model.state_dict(),
                             "optimizer": self.optimizer.state_dict(),  
                             "lr_scheduler": self.lr_scheduler.state_dict(),
                             "epoch": epoch+1, 
@@ -275,9 +293,9 @@ class Trainer:
             torch.distributed.barrier(device_ids=[self.gpu_id])
             print(f"[GPU{self.gpu_id}]: Crossed training barrier at Epoch {epoch}")
 
-        self.vitp_model.module.set_eval()
-        self.validate(epoch+1)
-        self.vitp_model.module.set_train()
+        # self.vitp_model.module.set_eval()
+        # self.validate(epoch+1)
+        # self.vitp_model.module.set_train()
 
         print(f"[GPU{self.gpu_id}]: Reached training barrier at Epoch {epoch}")
         torch.distributed.barrier(device_ids=[self.gpu_id])
