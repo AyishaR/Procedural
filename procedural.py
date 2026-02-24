@@ -88,7 +88,7 @@ class Trainer:
             pprint(args)
 
         self.run_stats = wandb.init(
-            entity="ayisharyhanadawood-universit-t-freiburg",
+            entity=self.args.wandb_entity_name,
             project=self.args.wandb_project_name,
             config=self.args,
             name=f"GPU {self.gpu_id}",
@@ -111,12 +111,12 @@ class Trainer:
         """
         os.makedirs(self.args.output_dir, exist_ok=True)
         
-        targets, masked = load_dataset(self.args.test_dataset)
+        # targets, masked = load_dataset(self.args.test_dataset)
 
-        val_set = torch.utils.data.TensorDataset(
-            torch.tensor(masked, dtype=torch.long),
-            torch.tensor(targets, dtype=torch.long)
-        )
+        # val_set = torch.utils.data.TensorDataset(
+        #     torch.tensor(masked, dtype=torch.long),
+        #     torch.tensor(targets, dtype=torch.long)
+        # )
 
         self.vitp_model = VitProcedural(self.args)
 
@@ -152,146 +152,123 @@ class Trainer:
 
         for epoch in range(self.start_step, self.args.training_steps):
 
-            with self.vitp_model.join():
-                
-                self.optimizer.zero_grad()
+            for batch_step in range(self.args.update_freq):
+                with self.vitp_model.join():
+                    
+                    if self.args.procedural_data=="kdyck":
+                        targets, inputs = generate_dataset(
+                            length=self.args.batch_size, 
+                            k=self.args.k, 
+                            seq_length=self.args.seq_length, 
+                            mask_token=self.args.mask_token, 
+                            mask_prob=self.args.mask_ratio,
+                            p_open=self.args.p_open,
+                            max_depth=self.args.max_depth
+                        )
+                    elif self.args.procedural_data=="kdyck_truncated":
+                        targets, inputs = generate_dataset_truncated(
+                            length=self.args.batch_size, 
+                            k=self.args.k, 
+                            seq_length=self.args.seq_length, 
+                            mask_token=self.args.mask_token, 
+                            mask_prob=self.args.mask_ratio,
+                            p_open=self.args.p_open,
+                            max_depth=self.args.max_depth
+                        )
+                    else:
+                        raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
+                    inputs = inputs.cuda()
+                    targets = targets.cuda()
 
-                if self.args.procedural_data=="kdyck":
-                    targets, inputs = generate_dataset(
-                        length=self.args.batch_size, 
-                        k=self.args.k, 
-                        seq_length=self.args.seq_length, 
-                        mask_token=self.args.mask_token, 
-                        mask_prob=self.args.mask_ratio,
-                        p_open=self.args.p_open,
-                        max_depth=self.args.max_depth
+                    if self.args.procedural_order == "standard":
+                        pass
+                    elif self.args.procedural_order == "spiral":
+                        inputs = spiral_unravel(inputs)
+                        targets = spiral_unravel(targets)
+                    elif self.args.procedural_order == "vertical":
+                        inputs = vertical_unravel(inputs)
+                        targets = vertical_unravel(targets)
+                    elif self.args.procedural_order == "row_alternate":
+                        inputs = row_alternate(inputs)
+                        targets = row_alternate(targets)
+                    elif self.args.procedural_order == "row_alternate_half":
+                        inputs = row_alternate_half(inputs)
+                        targets = row_alternate_half(targets)
+                    elif self.args.procedural_order == "row_alternate_quarter":
+                        inputs = row_alternate_quarter(inputs)
+                        targets = row_alternate_quarter(targets)
+                    elif self.args.procedural_order == "waterfall":
+                        inputs = waterfall(inputs)
+                        targets = waterfall(targets)
+                    elif self.args.procedural_order == "waterfall_half":
+                        inputs = waterfall_half(inputs)
+                        targets = waterfall_half(targets)
+                    else:
+                        raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
+
+                    masked_count = (inputs == self.args.mask_token).sum().item()
+
+                    outputs = self.vitp_model(inputs)
+
+                    mask = inputs == self.args.mask_token
+
+                    logits = outputs.argmax(dim=-1)
+                    acc_mask = targets == logits
+                    masked_acc = acc_mask[mask].sum()/mask.sum()
+                    non_masked_acc = acc_mask[~mask].sum()/(~mask).sum()
+                    acc = acc_mask.sum()/acc_mask.numel()
+
+                    loss_per_pos = self.ce_loss(outputs.transpose(1,2), targets)
+
+                    masked_loss = loss_per_pos*mask
+                    
+                    loss = masked_loss.sum() / mask.sum()
+                    
+                    loss /= self.args.update_freq
+                    loss.backward()
+                    if (batch_step + 1) % self.args.update_freq == 0:
+                        self.optimizer.step()
+                        self.lr_scheduler.step()
+                        self.optimizer.zero_grad()
+                    
+                    print(f"[GPU{self.gpu_id}]: Step {epoch} - loss={loss}; Acc={acc}; Masked Acc={masked_acc}; Non-masked Acc={non_masked_acc}")
+
+                    log_dict = {
+                                "train_epoch": epoch+1,
+                                "train_loss": loss.item(),
+                                "gpu_id": self.gpu_id,
+                                "masked_acc": masked_acc,
+                                "non_masked_acc": non_masked_acc,
+                                "acc": acc,
+                                "lr": self.optimizer.param_groups[0]['lr'],
+                                "masked_token_count": masked_count
+                            }
+                    self.run_stats.log(
+                        log_dict
                     )
-                elif self.args.procedural_data=="kdyck_truncated":
-                    targets, inputs = generate_dataset_truncated(
-                        length=self.args.batch_size, 
-                        k=self.args.k, 
-                        seq_length=self.args.seq_length, 
-                        mask_token=self.args.mask_token, 
-                        mask_prob=self.args.mask_ratio,
-                        p_open=self.args.p_open,
-                        max_depth=self.args.max_depth
-                    )
-                else:
-                    raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
-                inputs = inputs.cuda()
-                targets = targets.cuda()
 
-                if self.args.procedural_order == "standard":
-                    pass
-                elif self.args.procedural_order == "spiral":
-                    inputs = spiral_unravel(inputs)
-                    targets = spiral_unravel(targets)
-                elif self.args.procedural_order == "vertical":
-                    inputs = vertical_unravel(inputs)
-                    targets = vertical_unravel(targets)
-                elif self.args.procedural_order == "row_alternate":
-                    inputs = row_alternate(inputs)
-                    targets = row_alternate(targets)
-                elif self.args.procedural_order == "row_alternate_half":
-                    inputs = row_alternate_half(inputs)
-                    targets = row_alternate_half(targets)
-                elif self.args.procedural_order == "row_alternate_quarter":
-                    inputs = row_alternate_quarter(inputs)
-                    targets = row_alternate_quarter(targets)
-                elif self.args.procedural_order == "waterfall":
-                    inputs = waterfall(inputs)
-                    targets = waterfall(targets)
-                elif self.args.procedural_order == "waterfall_half":
-                    inputs = waterfall_half(inputs)
-                    targets = waterfall_half(targets)
-                else:
-                    raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
+                    print(f"[GPU{self.gpu_id}]: Epoch {epoch} completed.")
 
-                if self.gpu_id == 0 and epoch == 0: print("Sample input:", inputs[0])
-                if self.gpu_id == 0 and epoch == 0: print("Sample target:", targets[0])
-
-                if self.gpu_id == 0: print("Number of masked tokens in batch:", (inputs == self.args.mask_token).sum().item())
-
-                masked_count = (inputs == self.args.mask_token).sum().item()
-
-                outputs = self.vitp_model(inputs)
-
-                mask = inputs == self.args.mask_token
-
-                logits = outputs.argmax(dim=-1)
-                acc_mask = targets == logits
-                masked_acc = acc_mask[mask].sum()/mask.sum()
-                non_masked_acc = acc_mask[~mask].sum()/(~mask).sum()
-                acc = acc_mask.sum()/acc_mask.numel()
-
-                if self.gpu_id == 0 and epoch % 1 == 0:
-                    print(f"[GPU{self.gpu_id}]: Forward pass completed for Epoch {epoch} targets shape: {targets.shape}, outputs shape: {outputs.shape}, mask: {mask.shape}")
-                    print(f"[GPU{self.gpu_id}]: Output: {outputs[0]}")
-                    print(f"[GPU{self.gpu_id}]: Output argmax: {logits[0]}")
-                    print(f"[GPU{self.gpu_id}]: Target: {targets[0]}")   
-                    print(f"[GPU{self.gpu_id}]: Mask: {mask[0]}")     
-
-                if self.gpu_id == 0: print(f"[GPU{self.gpu_id}]: Accuracy calculated for Epoch {epoch} - Acc={acc}; Masked Acc={masked_acc}; Non-masked Acc={non_masked_acc}")
-
-                if self.gpu_id == 0: print("Outputs shape:", outputs.shape, "Targets shape:", targets.shape, "Mask shape:", mask.shape)
-                # if self.gpu_id == 0: print("Masked outputs shape:", outputs[mask].shape, "Masked targets shape:", targets[mask].shape)
-                
-                if self.gpu_id == 0: print(f"[GPU{self.gpu_id}]: logits shape: {outputs.transpose(1,2).shape}, targets shape: {targets.shape}, mask shape: {mask.shape}")
-                
-                loss_per_pos = self.ce_loss(outputs.transpose(1,2), targets)
-
-                masked_loss = loss_per_pos*mask
-                
-                if self.gpu_id == 0: 
-                    print("Loss_per_pos", loss_per_pos[0])
-                    print(f"[GPU{self.gpu_id}]: Loss per position calculated for Epoch {epoch} - loss_per_pos shape: {loss_per_pos.shape}, masked_loss shape: {masked_loss.shape}")
-                loss = masked_loss.sum() / mask.sum()
-                
-                if self.gpu_id == 0: print(f"[GPU{self.gpu_id}]: Loss calculated for Epoch {epoch} - loss={loss}")
-
-                loss.backward()
-                self.optimizer.step()
-                self.lr_scheduler.step()
-
-                
-                print(f"[GPU{self.gpu_id}]: Step {epoch} - loss={loss}; Acc={acc}; Masked Acc={masked_acc}; Non-masked Acc={non_masked_acc}")
-
-                log_dict = {
-                            "train_epoch": epoch+1,
-                            "train_loss": loss.item(),
-                            "gpu_id": self.gpu_id,
-                            "masked_acc": masked_acc,
-                            "non_masked_acc": non_masked_acc,
-                            "acc": acc,
-                            "lr": self.optimizer.param_groups[0]['lr'],
-                            "masked_token_count": masked_count
-                        }
-                self.run_stats.log(
-                    log_dict
-                )
-
-                print(f"[GPU{self.gpu_id}]: Epoch {epoch} completed.")
-
-                if (epoch + 1) % self.args.save_every == 0 and self.gpu_id == 0:
-                    torch.save(
-                        {
-                            "state": self.vitp_model.module.model.state_dict(),
-                            "optimizer": self.optimizer.state_dict(),  
-                            "lr_scheduler": self.lr_scheduler.state_dict(),
-                            "epoch": epoch+1, 
-                        },
-                        os.path.join(self.args.output_dir, f"pr_{self.args.slurm_id}_{epoch}.pth")
-                    )
-                    print(f"[GPU{self.gpu_id}]: Epoch {epoch} | Training snapshot saved")
+                    if (epoch + 1) % self.args.save_every == 0 and self.gpu_id == 0:
+                        torch.save(
+                            {
+                                "state": self.vitp_model.module.model.state_dict(),
+                                "optimizer": self.optimizer.state_dict(),  
+                                "lr_scheduler": self.lr_scheduler.state_dict(),
+                                "epoch": epoch+1, 
+                            },
+                            os.path.join(self.args.output_dir, f"pr_{self.args.slurm_id}_{epoch}.pth")
+                        )
+                        print(f"[GPU{self.gpu_id}]: Epoch {epoch} | Training snapshot saved")
 
 
-                print(f"[GPU{self.gpu_id}]: Finished epoch {epoch}. Before synchronization/training.")
-            torch.cuda.synchronize(device=self.gpu_id)
-            print(f"[GPU{self.gpu_id}]: Finished epoch {epoch}. After synchronization/training.")
+                    print(f"[GPU{self.gpu_id}]: Finished epoch {epoch}. Before synchronization/training.")
+                torch.cuda.synchronize(device=self.gpu_id)
+                print(f"[GPU{self.gpu_id}]: Finished epoch {epoch}. After synchronization/training.")
 
-            print(f"[GPU{self.gpu_id}]: Reached training barrier at Epoch {epoch}")
-            torch.distributed.barrier(device_ids=[self.gpu_id])
-            print(f"[GPU{self.gpu_id}]: Crossed training barrier at Epoch {epoch}")
+                print(f"[GPU{self.gpu_id}]: Reached training barrier at Epoch {epoch}")
+                torch.distributed.barrier(device_ids=[self.gpu_id])
+                print(f"[GPU{self.gpu_id}]: Crossed training barrier at Epoch {epoch}")
 
         # self.vitp_model.module.set_eval()
         # self.validate(epoch+1)
@@ -333,7 +310,8 @@ if __name__ == "__main__":
                         help="Ratio of closing brackets to mask")
     parser.add_argument('--freeze_patch_embeddings', type=str2bool, default=True)
     parser.add_argument('--freeze_pos_embeddings', type=str2bool, default=True)
-
+    parser.add_argument("--embeddings_path", type=str, default="kdyck/kdyck_orthogonal_embeddings_vitt.pt",
+                        help="Path to fixed orthogonal embeddings for the patch tokens")
     parser.add_argument("--procedural_order", type=str, default="standard",
                         help="Type of re-ordering (if any) to apply to the  procedural data (e.g., standard, spiral)")
 
@@ -342,6 +320,8 @@ if __name__ == "__main__":
                         help="Batch size")
     parser.add_argument('--total_batch_size', default=64, type=int,
                         help='Effective batch size')
+    parser.add_argument('--update_freq', default=1, type=int,
+                        help='gradient accumulation steps')
     parser.add_argument("--save_every", type=int, default=1000,
                         help="Save checkpoint every N steps")
     parser.add_argument("--weight_decay", type=float, default=0.05,
@@ -362,11 +342,13 @@ if __name__ == "__main__":
                         help="Number of warmup steps")
 
     # Val 
-    parser.add_argument("--test_dataset", type=str, default="kdyck/kdyck_dataset_test.npz",
-                        help="Path to test dataset")
-    parser.add_argument("--val_batch_size", type=int, default=128,
-                        help="Batch size")
+    # parser.add_argument("--test_dataset", type=str, default="kdyck/kdyck_dataset_test.npz",
+    #                     help="Path to test dataset")
+    # parser.add_argument("--val_batch_size", type=int, default=128,
+    #                     help="Batch size")
 
+    parser.add_argument('--wandb_entity_name', default='procedural_training', type=str,
+                        help="The name of the W&B entity where you're sending the new run.")
     parser.add_argument('--wandb_project_name', default='procedural_training', type=str,
                         help="The name of the W&B project where you're sending the new run.")
     parser.add_argument('--wandb_notes', default='procedural_training', type=str,

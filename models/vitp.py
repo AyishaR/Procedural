@@ -12,7 +12,7 @@ class VitProcedural(torch.nn.Module):
 
         self.args = args
 
-        embeddings = torch.load('kdyck/kdyck_orthogonal_embeddings_vitt.pt')
+        embeddings = torch.load(args.embeddings_path)
         self.embedding = torch.nn.Embedding.from_pretrained(embeddings, freeze=args.freeze_patch_embeddings)
         self.model.pos_embed.requires_grad = not args.freeze_pos_embeddings
         print("Model initialized with patch embedding shape:", self.embedding.weight.shape)
