@@ -200,7 +200,7 @@ class WandbLogger(object):
         # Initialize a W&B run 
         if self._wandb.run is None:
             self._wandb.init(
-                entity=args.wandb_entity_name
+                entity=args.wandb_entity_name,
                 project=args.project,
                 config=args,
                 name=name,

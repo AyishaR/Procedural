@@ -193,6 +193,8 @@ def get_args_parser():
     # Weights and Biases arguments
     parser.add_argument('--enable_wandb', type=str2bool, default=False,
                         help="enable logging to Weights and Biases")
+    parser.add_argument('--wandb_entity_name', default='procedural_pretraining', type=str,
+                        help="The name of the W&B entity where you're sending the new run.")
     parser.add_argument('--project', default='convnext', type=str,
                         help="The name of the W&B project where you're sending the new run.")
     parser.add_argument('--notes', default='', type=str,
