@@ -274,6 +274,17 @@ class Trainer:
         # self.validate(epoch+1)
         # self.vitp_model.module.set_train()
 
+        if self.gpu_id == 0:
+            torch.save(
+                {
+                    "state": self.vitp_model.module.model.state_dict(),
+                    "optimizer": self.optimizer.state_dict(),  
+                    "lr_scheduler": self.lr_scheduler.state_dict(),
+                    "epoch": epoch+1, 
+                },
+                os.path.join(self.args.output_dir, f"pr_{self.args.slurm_id}_final.pth")
+            )
+
         print(f"[GPU{self.gpu_id}]: Reached training barrier at Epoch {epoch}")
         torch.distributed.barrier(device_ids=[self.gpu_id])
         print(f"[GPU{self.gpu_id}]: Crossed training barrier at Epoch {epoch}")
@@ -347,7 +358,7 @@ if __name__ == "__main__":
     # parser.add_argument("--val_batch_size", type=int, default=128,
     #                     help="Batch size")
 
-    parser.add_argument('--wandb_entity_name', default='procedural_training', type=str,
+    parser.add_argument('--wandb_entity_name', default='procedural_pretraining', type=str,
                         help="The name of the W&B entity where you're sending the new run.")
     parser.add_argument('--wandb_project_name', default='procedural_training', type=str,
                         help="The name of the W&B project where you're sending the new run.")

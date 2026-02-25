@@ -2,12 +2,11 @@
 #SBATCH --job-name pr
 #SBATCH --partition lmbhiwidlc_gpu-rtx2080
 #SBATCH --nodes 1
-#SBATCH --gres=gpu:4
-#SBATCH --time 11:59:59
+#SBATCH --gres=gpu:2
+#SBATCH --time 01:59:59
 #SBATCH -o /home/dawooda/code/procedural/Procedural/logs/pr_%j_%x.out
 #SBATCH -e /home/dawooda/code/procedural/Procedural/logs/pr_%j_%x.err # STDERR
 #SBATCH --mail-type END,FAIL 
-#SBATCH --exclude=dlcgpu02
 
 ROOT='/home/dawooda/code/procedural'
 
