@@ -5,3 +5,8 @@ scripts.sh
 output/
 .ipynb_checkpoints
 initialize/
+wandb
+results
+logs
+.vscode
+imagenet100

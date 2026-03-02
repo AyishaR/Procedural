@@ -33,6 +33,10 @@ def build_dataset(is_train, args, transform_train=None):
         root = os.path.join(args.data_path, 'train' if is_train else 'val')
         dataset = datasets.ImageFolder(root, transform=transform)
         nb_classes = 1000
+    elif args.data_set == 'IMNET100':
+        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+        dataset = datasets.ImageFolder(root, transform=transform)
+        nb_classes = 100
     elif args.data_set == "flowers":
         dataset = oxford_flowers_dataset.Flowers(root=args.data_path, 
                                      train=is_train,
