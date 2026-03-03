@@ -131,7 +131,7 @@ class Trainer:
         anneal_scheduler = CosineAnnealingLR(
             self.optimizer, 
             T_max=self.args.training_steps-self.args.warmup_steps, 
-            eta_min=0.0
+            eta_min=self.args.eta_min_ratio*self.args.lr
             )
         self.lr_scheduler = SequentialLR(self.optimizer, schedulers=[warmup_scheduler, anneal_scheduler], milestones=[self.args.warmup_steps])
 
@@ -182,29 +182,30 @@ class Trainer:
 
                     if self.args.procedural_order == "standard":
                         pass
-                    elif self.args.procedural_order == "spiral":
-                        inputs = spiral_unravel(inputs)
-                        targets = spiral_unravel(targets)
-                    elif self.args.procedural_order == "vertical":
-                        inputs = vertical_unravel(inputs)
-                        targets = vertical_unravel(targets)
-                    elif self.args.procedural_order == "row_alternate":
-                        inputs = row_alternate(inputs)
-                        targets = row_alternate(targets)
-                    elif self.args.procedural_order == "row_alternate_half":
-                        inputs = row_alternate_half(inputs)
-                        targets = row_alternate_half(targets)
-                    elif self.args.procedural_order == "row_alternate_quarter":
-                        inputs = row_alternate_quarter(inputs)
-                        targets = row_alternate_quarter(targets)
-                    elif self.args.procedural_order == "waterfall":
-                        inputs = waterfall(inputs)
-                        targets = waterfall(targets)
-                    elif self.args.procedural_order == "waterfall_half":
-                        inputs = waterfall_half(inputs)
-                        targets = waterfall_half(targets)
-                    else:
-                        raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
+                    elif self.args.shuffle == "input":
+                        if self.args.procedural_order == "spiral":
+                            inputs = spiral_unravel(inputs)
+                            targets = spiral_unravel(targets)
+                        elif self.args.procedural_order == "vertical":
+                            inputs = vertical_unravel(inputs)
+                            targets = vertical_unravel(targets)
+                        elif self.args.procedural_order == "row_alternate":
+                            inputs = row_alternate(inputs)
+                            targets = row_alternate(targets)
+                        elif self.args.procedural_order == "row_alternate_half":
+                            inputs = row_alternate_half(inputs)
+                            targets = row_alternate_half(targets)
+                        elif self.args.procedural_order == "row_alternate_quarter":
+                            inputs = row_alternate_quarter(inputs)
+                            targets = row_alternate_quarter(targets)
+                        elif self.args.procedural_order == "waterfall":
+                            inputs = waterfall(inputs)
+                            targets = waterfall(targets)
+                        elif self.args.procedural_order == "waterfall_half":
+                            inputs = waterfall_half(inputs)
+                            targets = waterfall_half(targets)
+                        else:
+                            raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
 
                     masked_count = (inputs == self.args.mask_token).sum().item()
 
@@ -321,10 +322,13 @@ if __name__ == "__main__":
                         help="Ratio of closing brackets to mask")
     parser.add_argument('--freeze_patch_embeddings', type=str2bool, default=True)
     parser.add_argument('--freeze_pos_embeddings', type=str2bool, default=True)
+    parser.add_argument('--skip_pos_embeddings', type=str2bool, default=False)
     parser.add_argument("--embeddings_path", type=str, default="kdyck/kdyck_orthogonal_embeddings_vitt.pt",
                         help="Path to fixed orthogonal embeddings for the patch tokens")
     parser.add_argument("--procedural_order", type=str, default="standard",
                         help="Type of re-ordering (if any) to apply to the  procedural data (e.g., standard, spiral)")
+    parser.add_argument("--shuffle", type=str, default="input",
+                        help="Which part of the data to shuffle (e.g., input, pos) for different procedural orders")
 
     # Hyperparameters
     parser.add_argument("--batch_size", type=int, default=128,
@@ -344,9 +348,11 @@ if __name__ == "__main__":
 
     parser.add_argument('--lr', type=float, default=2e-3, metavar='LR',
                         help='learning rate (default: 2e-3)')
-    parser.add_argument('--layer_decay', type=float, default=1.0)
-    parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR',
-                        help='lower lr bound for cyclic schedulers that hit 0 (1e-6)')
+    # parser.add_argument('--layer_decay', type=float, default=1.0)
+    # parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR',
+    #                     help='lower lr bound for cyclic schedulers that hit 0 (1e-6)')
+    parser.add_argument('--eta_min_ratio', type=float, default=0.0,
+                        help='eta_min ratio for cosine schedulers (default: 0.0)')
     parser.add_argument("--training_steps", type=int, default=15000,
                         help="Number of training steps")
     parser.add_argument("--warmup_steps", type=int, default=1000,
@@ -358,7 +364,7 @@ if __name__ == "__main__":
     # parser.add_argument("--val_batch_size", type=int, default=128,
     #                     help="Batch size")
 
-    parser.add_argument('--wandb_entity_name', default='procedural_pretraining', type=str,
+    parser.add_argument('--wandb_entity_name', default='ayisharyhanadawood-universit-t-freiburg', type=str,
                         help="The name of the W&B entity where you're sending the new run.")
     parser.add_argument('--wandb_project_name', default='procedural_training', type=str,
                         help="The name of the W&B project where you're sending the new run.")

@@ -33,6 +33,10 @@ def build_dataset(is_train, args, transform_train=None):
         root = os.path.join(args.data_path, 'train' if is_train else 'val')
         dataset = datasets.ImageFolder(root, transform=transform)
         nb_classes = 1000
+    elif args.data_set == 'IMNET100':
+        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+        dataset = datasets.ImageFolder(root, transform=transform)
+        nb_classes = 100
     elif args.data_set == "flowers":
         dataset = oxford_flowers_dataset.Flowers(root=args.data_path, 
                                      train=is_train,
@@ -99,7 +103,12 @@ def build_transform(is_train, args):
         if not resize_im:
             transform.transforms[0] = transforms.RandomCrop(
                 args.input_size, padding=4)
-        return transform
+        if args.image_flip:
+            transforms_list = list(transform.transforms)
+            transforms_list.append(transforms.Lambda(lambda x: x.transpose(1, 2)))
+            return transforms.Compose(transforms_list)
+        else:
+            return transform
 
     t = []
     if resize_im:
@@ -122,4 +131,8 @@ def build_transform(is_train, args):
 
     t.append(transforms.ToTensor())
     t.append(transforms.Normalize(mean, std))
+
+    if args.image_flip:
+        t.append(transforms.Lambda(lambda x: x.transpose(1, 2)))
+
     return transforms.Compose(t)

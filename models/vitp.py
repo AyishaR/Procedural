@@ -1,4 +1,5 @@
 import timm, torch
+from kdyck.utils import *
 
 class VitProcedural(torch.nn.Module):
     def __init__(self, args):
@@ -26,7 +27,26 @@ class VitProcedural(torch.nn.Module):
             model = self.model
 
         x_embed = self.embedding(x)
-        x = x_embed + model.pos_embed[:, :, :]
+        if self.args.skip_pos_embeddings:
+            x = x_embed
+        else:
+            if self.args.procedural_order == "standard":
+                temp_pos = torch.arange(x.shape[1]).unsqueeze(0)
+            elif self.args.procedural_order == "vertical":
+                temp_pos = vertical_unravel(torch.arange(x.shape[1]).unsqueeze(0))
+            elif self.args.procedural_order == "row_alternate":
+                temp_pos = row_alternate(torch.arange(x.shape[1]).unsqueeze(0))
+            else:
+                raise NotImplementedError(f"Procedural order {self.args.procedural_order} not implemented")
+
+            if self.args.shuffle == "pos":
+                pos_embed = model.pos_embed[:, temp_pos[0], :]
+                x = x_embed + pos_embed
+            if self.args.shuffle == "both":
+                x = x_embed + model.pos_embed[:, :, :]
+                x = x[:, temp_pos[0], :]
+            else:
+                x = x_embed + model.pos_embed[:, :, :]
         x = model.pos_drop(x)
         x = model.norm_pre(x)
         for blk in model.blocks:

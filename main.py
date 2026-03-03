@@ -104,6 +104,8 @@ def get_args_parser():
                         help='Label smoothing (default: 0.1)')
     parser.add_argument('--train_interpolation', type=str, default='bicubic',
                         help='Training interpolation (random, bilinear, bicubic default: "bicubic")')
+    parser.add_argument('--image_flip', type=str2bool, default=False,
+                        help='Whether to flip the image HxW to WxH, which is used to test vertical procedural pretraining')
 
     # Evaluation parameters
     parser.add_argument('--crop_pct', type=float, default=None)
@@ -193,7 +195,7 @@ def get_args_parser():
     # Weights and Biases arguments
     parser.add_argument('--enable_wandb', type=str2bool, default=False,
                         help="enable logging to Weights and Biases")
-    parser.add_argument('--wandb_entity_name', default='procedural_pretraining', type=str,
+    parser.add_argument('--wandb_entity_name', default='ayisharyhanadawood-universit-t-freiburg', type=str,
                         help="The name of the W&B entity where you're sending the new run.")
     parser.add_argument('--project', default='convnext', type=str,
                         help="The name of the W&B project where you're sending the new run.")

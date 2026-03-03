@@ -5,3 +5,13 @@ scripts.sh
 output/
 .ipynb_checkpoints
 initialize/
+wandb
+results
+logs
+.vscode
+imagenet100
+results*/
+pr_models/
+logs/
+wandb/
+*.sh
