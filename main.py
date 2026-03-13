@@ -7,6 +7,8 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import json
 import os
+import pickle
+import torch.distributed as dist
 
 from pathlib import Path
 
@@ -17,7 +19,7 @@ from timm.utils import ModelEma
 from optim_factory import create_optimizer, LayerDecayValueAssigner
 
 from datasets import build_dataset
-from engine import train_one_epoch, evaluate
+from engine import train_one_epoch, evaluate, attention_analyse
 
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
@@ -52,7 +54,7 @@ def get_args_parser():
     parser.add_argument('--slurm_id', type=int)
 
     # Model parameters
-    parser.add_argument('--model', default='convnext_tiny', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='vit_tiny', type=str, metavar='MODEL',
                         help='Name of model to train')
     parser.add_argument('--input_size', default=224, type=int,
                         help='image input size')
@@ -120,6 +122,8 @@ def get_args_parser():
     parser.add_argument('--resplit', type=str2bool, default=False,
                         help='Do not random erase first (clean) augmentation split')
 
+    parser.add_argument('--accuracy_json', type=str, default='accuracy.json')
+
     # * Mixup params
     
     parser.add_argument('--mixup', type=float, default=0.8,
@@ -145,7 +149,7 @@ def get_args_parser():
     parser.add_argument('--model_prefix', default='', type=str)
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
+    parser.add_argument('--data_path', default='/home/dawooda/code/procedural/data/imagenet100', type=str,
                         help='dataset path')
     parser.add_argument('--eval_data_path', default=None, type=str,
                         help='dataset path for evaluation')
@@ -161,6 +165,15 @@ def get_args_parser():
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
+
+    # Procedural init
+    parser.add_argument("--procedural_data", type=str, default="kdyck",
+                        help="Type of procedural data to generate (e.g., kdyck, kdyck_truncated)")
+    parser.add_argument("--procedural_order", type=str, default="standard",
+                        help="Type of re-ordering (if any) to apply to the  procedural data (e.g., standard, spiral)")
+    parser.add_argument("--pr_notes", type=str, default="",
+                        help="Additional notes about the procedural pretraining instance, to be saved in the output json and used for labelling visualisation plots")
+    parser.add_argument('--pr_seed', default=42, type=int)
 
     parser.add_argument('--resume', default='',
                         help='resume from checkpoint')
@@ -180,6 +193,15 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=10, type=int)
     parser.add_argument('--pin_mem', type=str2bool, default=True,
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
+
+    parser.add_argument('--attention_analyse', type=str2bool, default=False,
+                        help='Perform attention_analyse only on test set data')
+    parser.add_argument('--visualise', type=str2bool, default=False,
+                        help='Perform visualisation only on test set data')
+    parser.add_argument('--visualise_output_path', default='', type=str,
+                        help='path to save visualisation outputs, empty for no saving')
+    parser.add_argument('--count', default=10, type=int,
+                        help='Number of samples to visualise')
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -219,6 +241,8 @@ def main(args):
     cudnn.benchmark = True
 
     dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
+    classes = dataset_train.classes if hasattr(dataset_train, 'classes') else None
+    print("Number of classes = %d" % args.nb_classes)
     print("Number of training samples:", len(dataset_train))
     if args.disable_eval:
         args.dist_eval = False
@@ -284,6 +308,9 @@ def main(args):
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     model = utils.build_model(args)
+    for block in model.blocks:
+        block.attn.fused_attn = False
+
     if args.initialize:
         if args.initialize.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -309,6 +336,7 @@ def main(args):
                     del checkpoint_model[k]
         else:
             for k in ['head.weight', 'head.bias']:
+                print(f"Checking key {k} in pretrained checkpoint for finetuning", checkpoint_model[k].shape, state_dict[k].shape)
                 if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
                     print(f"Removing key {k} from pretrained checkpoint")
                     del checkpoint_model[k]
@@ -391,6 +419,11 @@ def main(args):
         test_stats = evaluate(data_loader_val, model, device, use_amp=args.use_amp)
         print(f"Accuracy of the network on {len(dataset_val)} test images: {test_stats['acc1']:.5f}%")
         return
+
+    if args.attention_analyse:
+        print(f"Attention analyse only mode")
+        layers_acc = attention_analyse(data_loader_val, model.module, device, args=args, classes=classes)
+        return layers_acc
 
     max_accuracy = 0.0
     if args.model_ema and args.model_ema_eval:
@@ -475,9 +508,15 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    attention_analyse(data_loader_val, model.module, device, args=args, classes=classes)
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
+
+    if dist.is_initialized():
+        dist.destroy_process_group()

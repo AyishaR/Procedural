@@ -12,6 +12,9 @@ import torch
 from torch import inf
 from timm.models import create_model
 import torch.distributed as dist
+
+from functools import partial
+from collections import defaultdict
 # from tensorboardX import SummaryWriter
 
 class SmoothedValue(object):
@@ -204,7 +207,7 @@ class WandbLogger(object):
                 project=args.project,
                 config=args,
                 name=name,
-                notes=args.notes
+                notes=args.notes if args.notes!= "" else f"{args.procedural_data} {args.procedural_order} {args.pr_notes}",
             )
 
     def log_epoch_metrics(self, metrics, commit=True):
@@ -562,3 +565,52 @@ def build_model(args):
             drop_path_rate=args.drop_path,
             )
     return model
+
+class HookCollector:
+    def __init__(self, model):
+        self.model = model
+        self.handles = []
+        # Cache: {layer: {'resid': tensor, 'attn': tensor}}
+        self.acts = defaultdict(dict)
+
+    def __enter__(self):
+        def make_block_hook(idx):
+            def hook_block(mod, inp, out):
+                self.acts[idx]['resid'] = out.detach()  # Full block output
+
+            def hook_attn(mod, inp, out):
+                # out = (attn_output, attn_weights)
+                # attn_weights: [B, num_heads, seq_len, seq_len]
+                # print("Attn input:", inp)
+                B, N, C = inp[0].shape
+                qkv = mod.qkv(inp[0]).reshape(B, N, 3, mod.num_heads, C // mod.num_heads).permute(2, 0, 3, 1, 4)
+                q, k, v = qkv.unbind(0)
+                attn = (q @ k.transpose(-2, -1)) * mod.scale
+                attn = attn.softmax(dim=-1)
+                # if attn_mask is not None: attn = attn.masked_fill(attn_mask == 0, float('-inf'))
+                self.acts[idx]['attn_map'] = attn  # [B, heads, N, N]
+                self.acts[idx]['attn'] = out.detach()  # Raw attention probs
+
+            return hook_block, hook_attn
+
+        for i, block in enumerate(self.model.blocks):
+            block_hook, attn_hook = make_block_hook(i)
+            h1 = block.register_forward_hook(block_hook)
+            h2 = block.attn.register_forward_hook(attn_hook)
+            self.handles.extend([h1, h2])
+
+        return self.acts
+
+    def __exit__(self, *args):
+        for h in self.handles:
+            h.remove()
+
+def denormalize(tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+    """Denorm [B,C,H,W] or [C,H,W] -> [0,1] for imshow.
+    Works on uint8 or float32 inputs."""
+    mean = torch.tensor(mean).view(3, 1, 1)
+    std = torch.tensor(std).view(3, 1, 1)
+    
+    # Reverse: x_norm * std + mean
+    deno = tensor * std.to(tensor.device) + mean.to(tensor.device)
+    return torch.clamp(deno, 0, 1)
