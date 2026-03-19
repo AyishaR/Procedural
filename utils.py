@@ -207,7 +207,7 @@ class WandbLogger(object):
                 project=args.project,
                 config=args,
                 name=name,
-                notes=args.notes if args.notes!= "" else f"{args.procedural_data} {args.procedural_order} {args.pr_notes}",
+                notes=args.notes if args.notes!= "" else f"{args.procedural_data} {args.procedural_order} {args.pr_notes}".strip(),
             )
 
     def log_epoch_metrics(self, metrics, commit=True):
@@ -565,6 +565,50 @@ def build_model(args):
             drop_path_rate=args.drop_path,
             )
     return model
+
+def load_model(path, args, device):
+    model = build_model(args)
+    for block in model.blocks:
+        block.attn.fused_attn = False
+    if path:
+        print("Loading model from %s" % path)
+        if path.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(
+                path, map_location='cpu', check_hash=True)
+        else:
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+
+        print("Load initialization from %s" % path)
+        checkpoint_model = None
+        for model_key in args.model_key.split('|'):
+            if model_key in checkpoint:
+                checkpoint_model = checkpoint[model_key]
+                print("Load state_dict by model_key = %s" % model_key)
+                break
+        if checkpoint_model is None:
+            checkpoint_model = checkpoint
+        state_dict = model.state_dict()
+        print("All keys in checkpoint_model", checkpoint_model.keys())
+        if "pr" in path.split("/")[-1]:
+            for k in ['head.weight', 'head.bias', 'cls_token', 'pos_embed', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
+                if k in checkpoint_model:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+        else:
+            for k in ['head.weight', 'head.bias']:
+                print(f"Checking key {k} in pretrained checkpoint for finetuning", checkpoint_model[k].shape, state_dict[k].shape)
+                if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+        load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
+    model.to(device)
+    if args.distributed:
+        print("Using distributed data parallel with GPU %d" % args.gpu)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
+        model_without_ddp = model.module
+        return model_without_ddp
+    return model
+
 
 class HookCollector:
     def __init__(self, model):

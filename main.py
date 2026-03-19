@@ -9,7 +9,7 @@ import json
 import os
 import pickle
 import torch.distributed as dist
-
+import random
 from pathlib import Path
 
 from timm.data.mixup import Mixup
@@ -60,6 +60,10 @@ def get_args_parser():
                         help='image input size')
     parser.add_argument('--layer_scale_init_value', default=1e-6, type=float,
                         help="Layer scale initial values")
+    parser.add_argument('--freeze_blocks', default="", type=str,
+                        help='Comma separated list of layer indices to freeze, e.g. "0,1,2" to freeze the first 3 layers; supports "all" to freeze all layers and "none" to not freeze any layers (default: "")')
+    parser.add_argument('--skip_load_blocks', default="", type=str,
+                        help='Comma separated list of layer indices to freeze, e.g. "0,1,2" to freeze the first 3 layers; supports "all" to freeze all layers and "none" to not freeze any layers (default: "")')
     
     # EMA related parameters
     parser.add_argument('--model_ema', type=str2bool, default=False)
@@ -198,9 +202,13 @@ def get_args_parser():
                         help='Perform attention_analyse only on test set data')
     parser.add_argument('--visualise', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
+    parser.add_argument('--per_head', type=str2bool, default=False,
+                        help='Perform visualisation only on test set data')
+    parser.add_argument('--per_stage', type=str2bool, default=True,
+                        help='Perform visualisation only on test set data')
     parser.add_argument('--visualise_output_path', default='', type=str,
                         help='path to save visualisation outputs, empty for no saving')
-    parser.add_argument('--count', default=10, type=int,
+    parser.add_argument('--plot_count', default=10, type=int,
                         help='Number of samples to visualise')
 
     # distributed training parameters
@@ -236,6 +244,8 @@ def main(args):
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
+    random.seed(seed)
+    torch.cuda.manual_seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
     cudnn.benchmark = True
@@ -308,6 +318,31 @@ def main(args):
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     model = utils.build_model(args)
+
+    if args.freeze_blocks == "":
+        args.freeze_blocks = []
+    elif args.freeze_blocks == "all":
+        args.freeze_blocks = list(range(len(model.blocks)))
+    else:
+        args.freeze_blocks = [int(x) for x in args.freeze_blocks.split(",")]
+
+    for i in args.freeze_blocks:
+        print(f"Freezing block {i}")
+        for p in model.blocks[i].parameters():
+            p.requires_grad = False
+
+    if args.skip_load_blocks == "":
+        args.skip_load_blocks = []
+    elif args.skip_load_blocks == "all":
+        args.skip_load_blocks = list(range(len(model.blocks)))
+    else:
+        args.skip_load_blocks = [int(x) for x in args.skip_load_blocks.split(",")]
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    non_trainable = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    print(f"Parameters - Total: {total_params:,} Trainable: {trainable:,}, Non-trainable: {non_trainable:,}")
+
     for block in model.blocks:
         block.attn.fused_attn = False
 
@@ -340,6 +375,22 @@ def main(args):
                 if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
                     print(f"Removing key {k} from pretrained checkpoint")
                     del checkpoint_model[k]
+        if args.skip_load_blocks:
+            for bi in args.skip_load_blocks:
+                for k in [
+                    f"blocks.{bi}.norm1.weight",
+                    f"blocks.{bi}.norm1.bias",
+                    f"blocks.{bi}.attn.qkv.bias",
+                    f"blocks.{bi}.attn.proj.bias",
+                    f"blocks.{bi}.norm2.weight",
+                    f"blocks.{bi}.norm2.bias",
+                    f"blocks.{bi}.mlp.fc1.bias",
+                    f"blocks.{bi}.mlp.fc2.bias"
+                ]:
+                    if k in checkpoint_model:
+                        print(f"Removing key {k} from pretrained checkpoint")
+                        del checkpoint_model[k]
+        
         utils.load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
     model.to(device)
 
@@ -410,6 +461,11 @@ def main(args):
 
     print("criterion = %s" % str(criterion))
 
+    if args.attention_analyse:
+        print(f"Attention analyse only mode")
+        stats = attention_analyse(data_loader_val, device, args=args, classes=classes, wandb_logger=wandb_logger)
+        return stats
+
     utils.auto_load_model(
         args=args, model=model, model_without_ddp=model_without_ddp,
         optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
@@ -419,11 +475,6 @@ def main(args):
         test_stats = evaluate(data_loader_val, model, device, use_amp=args.use_amp)
         print(f"Accuracy of the network on {len(dataset_val)} test images: {test_stats['acc1']:.5f}%")
         return
-
-    if args.attention_analyse:
-        print(f"Attention analyse only mode")
-        layers_acc = attention_analyse(data_loader_val, model.module, device, args=args, classes=classes)
-        return layers_acc
 
     max_accuracy = 0.0
     if args.model_ema and args.model_ema_eval:
@@ -508,7 +559,7 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-    attention_analyse(data_loader_val, model.module, device, args=args, classes=classes)
+    attention_analyse(data_loader_val, device, args=args, classes=classes, wandb_logger=wandb_logger)
 
 
 if __name__ == '__main__':

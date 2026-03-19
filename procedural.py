@@ -140,6 +140,60 @@ class Trainer:
 
         print(f"[GPU{self.gpu_id}]: All training objects initialized")
 
+    def generate_kdyck_batch(self):
+        if self.args.procedural_data=="kdyck":
+            targets, inputs = generate_dataset(
+                length=self.args.batch_size, 
+                k=self.args.k, 
+                seq_length=self.args.seq_length, 
+                mask_token=self.args.mask_token, 
+                mask_prob=self.args.mask_ratio,
+                p_open=self.args.p_open,
+                max_depth=self.args.max_depth
+            )
+        elif self.args.procedural_data=="kdyck_truncated":
+            targets, inputs = generate_dataset_truncated(
+                length=self.args.batch_size, 
+                k=self.args.k, 
+                seq_length=self.args.seq_length, 
+                mask_token=self.args.mask_token, 
+                mask_prob=self.args.mask_ratio,
+                p_open=self.args.p_open,
+                max_depth=self.args.max_depth
+            )
+        else:
+            raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
+        inputs = inputs.cuda()
+        targets = targets.cuda()
+
+        if self.args.procedural_order == "standard":
+            pass
+        elif self.args.procedural_order == "spiral":
+            inputs = spiral_unravel(inputs)
+            targets = spiral_unravel(targets)
+        elif self.args.procedural_order == "vertical":
+            inputs = vertical_unravel(inputs)
+            targets = vertical_unravel(targets)
+        elif self.args.procedural_order == "row_alternate":
+            inputs = row_alternate(inputs)
+            targets = row_alternate(targets)
+        elif self.args.procedural_order == "row_alternate_half":
+            inputs = row_alternate_half(inputs)
+            targets = row_alternate_half(targets)
+        elif self.args.procedural_order == "row_alternate_quarter":
+            inputs = row_alternate_quarter(inputs)
+            targets = row_alternate_quarter(targets)
+        elif self.args.procedural_order == "waterfall":
+            inputs = waterfall(inputs)
+            targets = waterfall(targets)
+        elif self.args.procedural_order == "waterfall_half":
+            inputs = waterfall_half(inputs)
+            targets = waterfall_half(targets)
+        else:
+            raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
+
+        return targets, inputs
+        
     def training(self):
         """
         Perform training according to the configuration in args.
@@ -154,58 +208,7 @@ class Trainer:
 
             for batch_step in range(self.args.update_freq):
                 with self.vitp_model.join():
-                    
-                    if self.args.procedural_data=="kdyck":
-                        targets, inputs = generate_dataset(
-                            length=self.args.batch_size, 
-                            k=self.args.k, 
-                            seq_length=self.args.seq_length, 
-                            mask_token=self.args.mask_token, 
-                            mask_prob=self.args.mask_ratio,
-                            p_open=self.args.p_open,
-                            max_depth=self.args.max_depth
-                        )
-                    elif self.args.procedural_data=="kdyck_truncated":
-                        targets, inputs = generate_dataset_truncated(
-                            length=self.args.batch_size, 
-                            k=self.args.k, 
-                            seq_length=self.args.seq_length, 
-                            mask_token=self.args.mask_token, 
-                            mask_prob=self.args.mask_ratio,
-                            p_open=self.args.p_open,
-                            max_depth=self.args.max_depth
-                        )
-                    else:
-                        raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
-                    inputs = inputs.cuda()
-                    targets = targets.cuda()
-
-                    if self.args.procedural_order == "standard":
-                        pass
-                    elif self.args.shuffle == "input":
-                        if self.args.procedural_order == "spiral":
-                            inputs = spiral_unravel(inputs)
-                            targets = spiral_unravel(targets)
-                        elif self.args.procedural_order == "vertical":
-                            inputs = vertical_unravel(inputs)
-                            targets = vertical_unravel(targets)
-                        elif self.args.procedural_order == "row_alternate":
-                            inputs = row_alternate(inputs)
-                            targets = row_alternate(targets)
-                        elif self.args.procedural_order == "row_alternate_half":
-                            inputs = row_alternate_half(inputs)
-                            targets = row_alternate_half(targets)
-                        elif self.args.procedural_order == "row_alternate_quarter":
-                            inputs = row_alternate_quarter(inputs)
-                            targets = row_alternate_quarter(targets)
-                        elif self.args.procedural_order == "waterfall":
-                            inputs = waterfall(inputs)
-                            targets = waterfall(targets)
-                        elif self.args.procedural_order == "waterfall_half":
-                            inputs = waterfall_half(inputs)
-                            targets = waterfall_half(targets)
-                        else:
-                            raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
+                    targets, inputs = self.generate_kdyck_batch()
 
                     masked_count = (inputs == self.args.mask_token).sum().item()
 
