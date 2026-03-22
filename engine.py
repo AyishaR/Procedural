@@ -199,7 +199,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
         ft_path = args.output_dir+f"/checkpoint-299.pth"
         pr_path = args.initialize
     print(f"Loading fine-tuned model from: {ft_path}")
-    model = utils.load_model(ft_path, args, device)
+    model = utils.load_model(ft_path, args, device, delete_blocks=args.delete_blocks)
 
     layers_to_analyse = range(len(model.blocks))
     # layers_to_analyse = [1]
@@ -499,6 +499,12 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
     print("Layer-wise attention and block prediction accuracies:", stats)
 
     if args.accuracy_json:
+        if args.attention_analyse:    # loading form JSON file
+            notes = f"{args.pr_notes}"
+        else:
+            notes = f"{args.pr_notes} f{str(args.freeze_blocks)} s{str(args.skip_load_blocks)} d{str(args.delete_blocks)}"
+            if args.shuffle_load:
+                notes += f" shuffle hb{str(args.hold_back_blocks)}"
         try:
             with open(args.accuracy_json, "r") as f:
                 path_map = json.load(f)
@@ -508,7 +514,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
         for si in range(len(path_map)):
             if path_map[si]["procedural_data"] == args.procedural_data and \
             path_map[si]["procedural_order"] == args.procedural_order and \
-            path_map[si]["notes"] == args.pr_notes:
+            path_map[si]["notes"] == notes:
                 for fi in range(len(path_map[si]["ft"])):
                     if path_map[si]['ft'][fi]["path"] == ft_path:
                         path_map[si]['ft'][fi]["layers_accuracy"] = stats
@@ -522,7 +528,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
             path_map.append({
                 "procedural_data": args.procedural_data,
                 "procedural_order": args.procedural_order,
-                "notes": args.notes,
+                "notes": notes,
                 "pr": [
                     {
                         "path": pr_path,

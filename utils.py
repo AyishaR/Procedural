@@ -485,7 +485,7 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
+            checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
         if 'model' in checkpoint:
             model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         else:
@@ -566,10 +566,14 @@ def build_model(args):
             )
     return model
 
-def load_model(path, args, device):
+def load_model(path, args, device, delete_blocks=None):
     model = build_model(args)
     for block in model.blocks:
         block.attn.fused_attn = False
+    if delete_blocks is not None:
+        for i in delete_blocks:
+            print(f"Deleting block {i} from model")
+            del model.blocks[i]
     if path:
         print("Loading model from %s" % path)
         if path.startswith('https'):

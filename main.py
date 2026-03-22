@@ -61,9 +61,13 @@ def get_args_parser():
     parser.add_argument('--layer_scale_init_value', default=1e-6, type=float,
                         help="Layer scale initial values")
     parser.add_argument('--freeze_blocks', default="", type=str,
-                        help='Comma separated list of layer indices to freeze, e.g. "0,1,2" to freeze the first 3 layers; supports "all" to freeze all layers and "none" to not freeze any layers (default: "")')
+                        help='Comma separated list of layer indices to freeze, e.g. "0,1,2" to freeze the first 3 layers; supports "all" to freeze all layers and "" to not freeze any layers (default: "")')
+    parser.add_argument('--delete_blocks', default="", type=str,
+                        help='Comma separated list of layer indices to delete, e.g. "0,1,2" to delete the first 3 layers; supports "all" to delete all layers and "" to not delete any layers (default: "")')
     parser.add_argument('--skip_load_blocks', default="", type=str,
-                        help='Comma separated list of layer indices to freeze, e.g. "0,1,2" to freeze the first 3 layers; supports "all" to freeze all layers and "none" to not freeze any layers (default: "")')
+                        help='Comma separated list of layer indices to freeze, e.g. "0,1,2" to freeze the first 3 layers; supports "all" to freeze all layers and "" to not freeze any layers (default: "")')
+    parser.add_argument('--shuffle_load', type=str2bool, default=False, help='Whether to shuffle the order of blocks when loading from pretrained checkpoint, which is used to test the importance of block ordering in procedural pretraining')
+    parser.add_argument('--hold_back_blocks', default='', type=str, help='Comma separated list of layer indices to hold back from training, e.g. "0,1,2" to hold back the first 3 layers; supports "all" to hold back all layers and "" to not hold back any layers (default: "")')
     
     # EMA related parameters
     parser.add_argument('--model_ema', type=str2bool, default=False)
@@ -326,11 +330,6 @@ def main(args):
     else:
         args.freeze_blocks = [int(x) for x in args.freeze_blocks.split(",")]
 
-    for i in args.freeze_blocks:
-        print(f"Freezing block {i}")
-        for p in model.blocks[i].parameters():
-            p.requires_grad = False
-
     if args.skip_load_blocks == "":
         args.skip_load_blocks = []
     elif args.skip_load_blocks == "all":
@@ -338,11 +337,14 @@ def main(args):
     else:
         args.skip_load_blocks = [int(x) for x in args.skip_load_blocks.split(",")]
 
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    non_trainable = sum(p.numel() for p in model.parameters() if not p.requires_grad)
-    print(f"Parameters - Total: {total_params:,} Trainable: {trainable:,}, Non-trainable: {non_trainable:,}")
-
+    if args.delete_blocks == "":
+        args.delete_blocks = []
+    elif args.delete_blocks == "all":
+        args.delete_blocks = list(range(len(model.blocks)))
+    else:
+        args.delete_blocks = [int(x) for x in args.delete_blocks.split(",")]
+    args.delete_blocks.sort(reverse=True) # sort in reverse order to avoid messing up block indices when deleting
+    
     for block in model.blocks:
         block.attn.fused_attn = False
 
@@ -351,7 +353,7 @@ def main(args):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.initialize, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.initialize, map_location='cpu')
+            checkpoint = torch.load(args.initialize, map_location='cpu', weights_only=False)
 
         print("Load initialization from %s" % args.initialize)
         checkpoint_model = None
@@ -392,7 +394,69 @@ def main(args):
                         del checkpoint_model[k]
         
         utils.load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
+
+        # SHUFFLE HERE
+        if args.shuffle_load and "pr" in args.initialize.split("/")[-1]:
+            if args.hold_back_blocks=="":
+                args.hold_back_blocks = []
+            elif args.hold_back_blocks == "all":
+                args.hold_back_blocks = list(range(len(model.blocks)))
+            else:
+                args.hold_back_blocks = [int(x) for x in args.hold_back_blocks.split(",")]
+
+            shuffle_blocks = list(range(len(model.blocks)))
+            for bi in args.hold_back_blocks:
+                shuffle_blocks.remove(bi)
+            
+            while True:
+                new_block_order = random.sample(shuffle_blocks, len(shuffle_blocks))
+                if any(shuffle_blocks[i] == new_block_order[i] for i in range(len(shuffle_blocks))):
+                    pass
+                else:
+                    break
+            for bi in args.hold_back_blocks:
+                new_block_order.insert(bi, bi)
+            print(f"Shuffling blocks {shuffle_blocks} to new order {new_block_order}, while holding back blocks {args.hold_back_blocks}")
+
+            forward_map = {i:new_block_order[i] for i in range(len(new_block_order))}
+            reverse_map = {new_block_order[i]:i for i in range(len(new_block_order))}
+
+            current_state = model.state_dict()
+            shuffled_state = {}
+            for k, v in current_state.items():
+                if k.startswith("blocks."):
+                    parts = k.split(".")
+                    try:
+                        old_idx = int(parts[1])
+                    except ValueError:
+                        shuffled_state[k] = v
+                        continue
+
+                    if old_idx in reverse_map:
+                        parts[1] = str(reverse_map[old_idx])  # remap index
+                        new_k = ".".join(parts)
+                    else:
+                        new_k = k
+                    shuffled_state[new_k] = v
+                else:
+                    shuffled_state[k] = v
+            utils.load_state_dict(model, shuffled_state, prefix=args.model_prefix)
+
+    for i in args.freeze_blocks:
+        print(f"Freezing block {i}")
+        for p in model.blocks[i].parameters():
+            p.requires_grad = False
+            
+    for i in args.delete_blocks:
+        print(f"Deleting block {i}")
+        del model.blocks[i]
+
     model.to(device)
+
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    non_trainable = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    print(f"Parameters - Total: {total_params:,} Trainable: {trainable:,}, Non-trainable: {non_trainable:,}")
 
     model_ema = None
     if args.model_ema:
