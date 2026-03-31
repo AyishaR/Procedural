@@ -30,14 +30,16 @@ class VitProcedural(torch.nn.Module):
         if self.args.skip_pos_embeddings:
             x = x_embed
         else:
-            if self.args.procedural_order == "standard":
-                temp_pos = torch.arange(x.shape[1]).unsqueeze(0)
-            elif self.args.procedural_order == "vertical":
-                temp_pos = vertical_unravel(torch.arange(x.shape[1]).unsqueeze(0))
-            elif self.args.procedural_order == "row_alternate":
-                temp_pos = row_alternate(torch.arange(x.shape[1]).unsqueeze(0))
-            else:
-                raise NotImplementedError(f"Procedural order {self.args.procedural_order} not implemented")
+
+            if self.args.shuffle in ["pos", "both"]:
+                if self.args.procedural_order == "standard":
+                    temp_pos = torch.arange(x.shape[1]).unsqueeze(0)
+                elif self.args.procedural_order == "vertical":
+                    temp_pos = vertical_unravel(torch.arange(x.shape[1]).unsqueeze(0))
+                elif self.args.procedural_order == "row_alternate":
+                    temp_pos = row_alternate(torch.arange(x.shape[1]).unsqueeze(0))
+                else:
+                    raise NotImplementedError(f"Procedural order {self.args.procedural_order} not implemented")
 
             if self.args.shuffle == "pos":
                 pos_embed = model.pos_embed[:, temp_pos[0], :]
