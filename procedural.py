@@ -95,10 +95,10 @@ class Trainer:
             notes=self.args.wandb_notes
         )
 
-        self.initialize_training_objects()
-
         self.start_step = 0
-        
+
+        self.initialize_training_objects()    
+
         self.vitp_model = DDP(self.vitp_model.cuda(), device_ids=[self.gpu_id], find_unused_parameters=True)
         print(f"[GPU{self.gpu_id}]: DDP model initialized")
         assert hasattr(self.vitp_model, 'module'), "DDP model does not have 'module' attribute. Check DDP initialization." 
@@ -118,7 +118,21 @@ class Trainer:
         #     torch.tensor(targets, dtype=torch.long)
         # )
 
-        self.vitp_model = VitProcedural(self.args)
+        self.vitp_model = VitProcedural(self.args).cuda()
+        for i in range(len(self.vitp_model.model.blocks)-self.args.num_blocks):
+            del self.vitp_model.model.blocks[-1]
+
+        if self.args.initialize:
+            state_dict = torch.load(self.args.initialize, weights_only=False)["state"]
+            self.model.load_state_dict(state_dict)
+            print(f"Model initialized from {self.args.initialize}")
+
+        total_params = sum(p.numel() for p in self.vitp_model.model.parameters())
+        trainable = sum(p.numel() for p in self.vitp_model.model.parameters() if p.requires_grad)
+        non_trainable = sum(p.numel() for p in self.vitp_model.model.parameters() if not p.requires_grad)
+        if self.gpu_id == 0:
+            print(f"[GPU{self.gpu_id}]: Model initialized with {len(self.vitp_model.model.blocks)} blocks")
+            print(f"Parameters - Total: {total_params:,} Trainable: {trainable:,}, Non-trainable: {non_trainable:,}")
 
         # Optimizer
         self.optimizer = torch.optim.AdamW(self.vitp_model.model.parameters(), lr=self.args.lr, weight_decay=self.args.weight_decay)
@@ -137,6 +151,31 @@ class Trainer:
 
         # Loss
         self.ce_loss = torch.nn.CrossEntropyLoss(reduction='none').cuda()
+
+        if self.args.auto_resume:
+            import glob
+            all_checkpoints = glob.glob(os.path.join(self.args.output_dir, '*.pth'))
+            latest_ckpt = -1
+            for ckpt in all_checkpoints:
+                t = ckpt.split('_')[-1].split('.')[0]
+                if t.isdigit():
+                    latest_ckpt = max(int(t), latest_ckpt)
+            if latest_ckpt >= 0:
+                ckpt_path = os.path.join(self.args.output_dir, f'pr_{self.args.slurm_id}_{latest_ckpt}.pth')
+                print("Auto resume checkpoint: %s" % ckpt_path)
+
+                checkpoint = torch.load(ckpt_path, weights_only=False)
+                print("Checkpoint loaded. Keys in checkpoint:", checkpoint.keys())
+                self.vitp_model.model.load_state_dict(checkpoint["state"], strict=False)
+
+                if 'optimizer' in checkpoint and 'epoch' in checkpoint and 'lr_scheduler' in checkpoint:
+                    self.start_step = checkpoint['epoch'] + 1
+                    print(f"Starting from step {self.start_step}")
+                    self.optimizer.load_state_dict(checkpoint['optimizer'])
+                    self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+                    print("With optim & sched!")
+            else:
+                print("No checkpoint found for auto-resume. Starting from scratch.")
 
         print(f"[GPU{self.gpu_id}]: All training objects initialized")
 
@@ -259,7 +298,7 @@ class Trainer:
                                 "state": self.vitp_model.module.model.state_dict(),
                                 "optimizer": self.optimizer.state_dict(),  
                                 "lr_scheduler": self.lr_scheduler.state_dict(),
-                                "epoch": epoch+1, 
+                                "epoch": epoch, 
                             },
                             os.path.join(self.args.output_dir, f"pr_{self.args.slurm_id}_{epoch}.pth")
                         )
@@ -307,10 +346,16 @@ if __name__ == "__main__":
                         help="Model name or config (e.g., vit_tiny_patch16_224)")
 
     parser.add_argument("--output_dir", type=str, default="./procedural_ckpts")
+    parser.add_argument('--initialize', default='',
+                        help='initialize from a model file')
+
+    parser.add_argument('--auto_resume', type=str2bool, default=True)
 
     # Procedural
     parser.add_argument("--k", type=int, default=64,
                         help="K")
+    parser.add_argument("--num_blocks", type=int, default=12,
+                        help="Number of transformer blocks in the model")
     parser.add_argument("--p_open", type=float, default=0.6,
                         help="Probability of opening a new bracket vs closing an existing one during generation")
     parser.add_argument("--max_depth", type=int, default=4,
