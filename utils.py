@@ -468,6 +468,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, mo
 
 def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, model_ema=None):
     output_dir = Path(args.output_dir)
+    backup_resume = None
     if args.auto_resume and len(args.resume) == 0:
         import glob
         all_checkpoints = glob.glob(os.path.join(output_dir, 'checkpoint-*.pth'))
@@ -478,14 +479,25 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
                 latest_ckpt = max(int(t), latest_ckpt)
         if latest_ckpt >= 0:
             args.resume = os.path.join(output_dir, 'checkpoint-%d.pth' % latest_ckpt)
+            if latest_ckpt > 0:
+                backup_resume = os.path.join(output_dir, 'checkpoint-%d.pth' % (latest_ckpt - 1))
         print("Auto resume checkpoint: %s" % args.resume)
+        print("Backup resume checkpoint: %s" % backup_resume)
 
     if args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
+            try:
+                checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
+            except Exception as e:
+                print(f"Failed to load checkpoint from {args.resume} with error {e}")
+                if backup_resume is not None:
+                    print(f"Trying backup checkpoint {backup_resume}")
+                    checkpoint = torch.load(backup_resume, map_location='cpu', weights_only=False)
+                else:
+                    raise e
         if 'model' in checkpoint:
             model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         else:
@@ -566,8 +578,9 @@ def build_model(args):
             )
     return model
 
-def load_model(path, args, device, delete_blocks=None):
-    model = build_model(args)
+def load_model(path, args, device, delete_blocks=None, model=None):
+    if model is None:
+        model = build_model(args)
     for block in model.blocks:
         block.attn.fused_attn = False
     if delete_blocks is not None:
@@ -576,6 +589,48 @@ def load_model(path, args, device, delete_blocks=None):
             del model.blocks[i]
     if path:
         print("Loading model from %s" % path)
+        if path.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(
+                path, map_location='cpu', check_hash=True)
+        else:
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+
+        print("Load initialization from %s" % path)
+        checkpoint_model = None
+        for model_key in args.model_key.split('|'):
+            if model_key in checkpoint:
+                checkpoint_model = checkpoint[model_key]
+                print("Load state_dict by model_key = %s" % model_key)
+                break
+        if checkpoint_model is None:
+            checkpoint_model = checkpoint
+        state_dict = model.state_dict()
+        print("All keys in checkpoint_model", checkpoint_model.keys())
+        if "pr" in path.split("/")[-1] and not args.pr_attention_analyse:
+            for k in ['head.weight', 'head.bias', 'cls_token', 'pos_embed', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
+                if k in checkpoint_model:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+        else:
+            for k in ['head.weight', 'head.bias']:
+                print(f"Checking key {k} in pretrained checkpoint for finetuning", checkpoint_model[k].shape, state_dict[k].shape)
+                if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+        load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
+    model.to(device)
+    if args.distributed:
+        print("Using distributed data parallel with GPU %d" % args.gpu)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
+        model_without_ddp = model.module
+        return model_without_ddp
+    return model
+
+def pr_load_model(path, args, device, model=None):
+    if model is None:
+        model = build_model(args)
+    block_attributes = ["norm1.weight", "norm1.bias", "attn.qkv.bias", "attn.proj.bias", "norm2.weight", "norm2.bias", "mlp.fc1.bias", "mlp.fc2.bias", "attn.qkv.weight", "attn.proj.weight", "mlp.fc1.weight", "mlp.fc2.weight"]
+    if path:
         if path.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 path, map_location='cpu', check_hash=True)
@@ -604,6 +659,81 @@ def load_model(path, args, device, delete_blocks=None):
                 if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
                     print(f"Removing key {k} from pretrained checkpoint")
                     del checkpoint_model[k]
+
+        # customise loading/copying weights
+        if args.custom_pr_load == "L3 - keep mid,end, repeat start":
+            for bi in range(len(model.blocks)-1, 0, -1):
+                if bi==11: ri=2
+                elif bi==10: ri=1
+                else: ri=0
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - keep start,end, repeat mid":
+            for bi in range(len(model.blocks)-1, 1, -1):
+                if bi==11: ri=2
+                else: ri=1
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - keep start,mid, repeat end":
+            for bi in range(len(model.blocks)-1, 2, -1):
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.2.{k}"]
+                print(f"Loading weights for block {bi} from block 2 in pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - keep end, repeat mid 8-10":
+            for bi in range(len(model.blocks)-1, 7, -1):
+                if bi==11: ri=2
+                else: ri=1
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in [0,1,2]:
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - repeat mid 8-11":
+            for bi in range(len(model.blocks)-1, 7, -1):
+                ri=1
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in [0,1,2]:
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - end 11":
+            bi=11
+            ri=2
+            for k in block_attributes:        
+                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+            print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in [0,1,2]:
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+
+        for bi in args.skip_load_blocks:
+            for k in args.skip_load_block_attributes:
+                if f"blocks.{bi}.{k}" in checkpoint_model:
+                    print(f"Removing key blocks.{bi}.{k} from pretrained checkpoint")
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+
+        for bi in args.random_blocks:
+            for k in block_attributes:
+                if f"blocks.{bi}.{k}" in checkpoint_model:
+                    print(f"Removing key blocks.{bi}.{k} from pretrained checkpoint")
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+
+        if args.skip_norm:
+            for k in ["norm.weight", "norm.bias"]:
+                if k in checkpoint_model:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+
+        print(f"Loading state dict with {len(checkpoint_model)} keys from pretrained checkpoint after custom modifications")
+        print("Keys in checkpoint_model after custom modifications", checkpoint_model.keys())
+        
         load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
     model.to(device)
     if args.distributed:
@@ -613,6 +743,47 @@ def load_model(path, args, device, delete_blocks=None):
         return model_without_ddp
     return model
 
+def parse_args_for_blocks(args):
+    args.freeze_blocks = []
+    if "f[" in args.pr_notes:
+        freeze_str = args.pr_notes.split("f[")[1].split("]")[0]
+        if freeze_str.strip() != "":
+            args.freeze_blocks = [int(x.strip()) for x in freeze_str.split(",")]
+    args.skip_load_blocks = []
+    if "s[" in args.pr_notes:
+        skip_str = args.pr_notes.split("s[")[1].split("]")[0]
+        if skip_str.strip() != "":
+            args.skip_load_blocks = [int(x.strip()) for x in skip_str.split(",")]
+    args.skip_load_block_attributes = []
+    if "sba[" in args.pr_notes:
+        sba_str = args.pr_notes.split("sba[")[1].split("]")[0]
+        if sba_str.strip() != "":
+            args.skip_load_block_attributes = [x.strip() for x in sba_str.split(",")]
+    args.freeze_block_attributes = []
+    if "fba[" in args.pr_notes:
+        fba_str = args.pr_notes.split("fba[")[1].split("]")[0]
+        if fba_str.strip() != "":
+            args.freeze_block_attributes = [x.strip() for x in fba_str.split(",")]
+    args.random_blocks = []
+    if "r[" in args.pr_notes:
+        random_str = args.pr_notes.split("r[")[1].split("]")[0]
+        if random_str.strip() != "":
+            args.random_blocks = [int(x.strip()) for x in random_str.split(",")]
+    args.delete_blocks = []
+    if "d[" in args.pr_notes:
+        delete_str = args.pr_notes.split("d[")[1].split("]")[0]
+        if delete_str.strip() != "":
+            args.delete_blocks = [int(x.strip()) for x in delete_str.split(",")]
+    args.hold_back_blocks = []
+    if "hb[" in args.pr_notes:
+        hb_str = args.pr_notes.split("hb[")[1].split("]")[0]
+        if hb_str.strip() != "":
+            args.hold_back_blocks = [int(x.strip()) for x in hb_str.split(",")]
+    args.custom_pr_load = ""
+    if "pr[" in args.pr_notes:
+        pr_str = args.pr_notes.split("pr[")[1].split("]")[0]
+        args.custom_pr_load = pr_str.strip()
+    return args
 
 class HookCollector:
     def __init__(self, model):
@@ -624,7 +795,7 @@ class HookCollector:
     def __enter__(self):
         def make_block_hook(idx):
             def hook_block(mod, inp, out):
-                self.acts[idx]['resid'] = out.detach()  # Full block output
+                self.acts[idx]['blk'] = out.detach()  # Full block output
 
             def hook_attn(mod, inp, out):
                 # out = (attn_output, attn_weights)
@@ -637,15 +808,20 @@ class HookCollector:
                 attn = attn.softmax(dim=-1)
                 # if attn_mask is not None: attn = attn.masked_fill(attn_mask == 0, float('-inf'))
                 self.acts[idx]['attn_map'] = attn  # [B, heads, N, N]
-                self.acts[idx]['attn'] = out.detach()  # Raw attention probs
+                # self.acts[idx]['attn'] = out.detach()  # Raw attention probs
 
-            return hook_block, hook_attn
+            def hook_attn_2(mod, inp, out):
+                # out = attn_output
+                self.acts[idx]['attn'] = inp[0] + mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
+
+            return hook_block, hook_attn, hook_attn_2
 
         for i, block in enumerate(self.model.blocks):
-            block_hook, attn_hook = make_block_hook(i)
+            block_hook, attn_hook, attn_hook_2 = make_block_hook(i)
             h1 = block.register_forward_hook(block_hook)
             h2 = block.attn.register_forward_hook(attn_hook)
-            self.handles.extend([h1, h2])
+            h3 = block.register_forward_hook(attn_hook_2)
+            self.handles.extend([h1, h2, h3])
 
         return self.acts
 

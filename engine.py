@@ -177,6 +177,25 @@ def evaluate(data_loader, model, device, use_amp=False):
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
+def compute_distance_matrix(length, device, patch_size=16):
+    """
+    length: number of patches along one axis (e.g. 14 for 224/16).
+    patch_size: patch edge in pixels (e.g. 16). Only a scale factor.
+    Returns D \in R^{P x P}, P = length * length.
+    """
+    # Grid coordinates in patch index space
+    ys, xs = torch.meshgrid(
+        torch.arange(length, device=device),
+        torch.arange(length, device=device),
+        indexing="ij",
+    )  # (length, length)
+
+    coords = torch.stack([ys, xs], dim=-1).float().view(-1, 2)  # (P, 2), P = length*length
+
+    # Euclidean distance in index space, scaled by patch size -> pixels
+    dist = torch.cdist(coords, coords, p=2) * float(patch_size)  # (P, P)
+    return dist  # (P, P)
+
 @torch.no_grad()
 def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger=None):
 
@@ -198,24 +217,32 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
     else:
         ft_path = args.output_dir+f"/checkpoint-299.pth"
         pr_path = args.initialize
-    print(f"Loading fine-tuned model from: {ft_path}")
-    model = utils.load_model(ft_path, args, device, delete_blocks=args.delete_blocks)
-
-    layers_to_analyse = range(len(model.blocks))
-    # layers_to_analyse = [1]
-    patch_size = 14  # 224/16
-    num_heads = model.blocks[0].attn.num_heads
 
     if args.visualise and args.per_stage:
         model_rand = utils.load_model("", args, device)
         if pr_path:
             print(f"Loading pr-tuned model from: {pr_path}")
-            model_pr = utils.load_model(pr_path, args, device)
+            pr_args = utils.parse_args_for_blocks(args)
+            print(f"PR args for loading model: {pr_args}")
+            model_pr = utils.build_model(pr_args)
+            model_pr.load_state_dict(model_rand.state_dict())
+            model_pr = utils.pr_load_model(pr_path, pr_args, device, model=model_pr)
         else:
             model_pr = None
+        print(f"Loading fine-tuned model from: {ft_path}")
+        model = utils.build_model(args)
+        model.load_state_dict(model_rand.state_dict())
+        model = utils.load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model)
     else:
         model_rand = None
         model_pr = None
+        print(f"Loading fine-tuned model from: {ft_path}")
+        model = utils.load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=utils.build_model(args))
+
+    layers_to_analyse = range(len(model.blocks))
+    # layers_to_analyse = [1]
+    patch_count = 14  # 224/16
+    num_heads = model.blocks[0].attn.num_heads
 
     # switch to evaluation mode
     model.eval()
@@ -267,11 +294,48 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                 metric_logger.meters[f'attn_{i}'].update(attn_pred[0].item(), n=images.shape[0])
 
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-                    x = model.norm(acts[i]['resid'])
+                    x = model.norm(acts[i]['blk'])
                     x = model.fc_norm(x)
                     x = model.head(x) 
                     x = F.softmax(x[:, 0, :].squeeze(), dim=-1)
                 layer_wise_blk_logits[i] = x.argmax(dim=-1)
+
+                if args.detailed_metrics:
+                    attn_map = acts[i]['attn_map']
+                    attn_norm = attn_map / (attn_map.sum(dim=-1, keepdim=True) + 1e-8)
+                    entropy = -(attn_norm * torch.log(attn_norm + 1e-8)).sum(dim=-1)  # [batch, heads, tokens]
+                    entropy_mean = entropy.mean(dim=(0,2))
+                    for hi in range(num_heads):
+                        metric_logger.meters[f'attn_entropy_head{hi}_layer{i}'].update(entropy_mean[hi].item(), n=images.shape[0])
+                    metric_logger.meters[f'attn_entropy_layer{i}'].update(entropy_mean.mean().item(), n=images.shape[0])
+
+                    cls_attn = attn_map[:, :, 0, 1:]
+                    cls_entropy = -(cls_attn * torch.log(cls_attn + 1e-8)).sum(dim=-1)  # [batch, heads, tokens]
+                    cls_entropy_mean = cls_entropy.mean(dim=(0))
+                    for hi in range(num_heads):
+                        metric_logger.meters[f'cls_attn_entropy_head{hi}_layer{i}'].update(cls_entropy_mean[hi].item(), n=images.shape[0])
+                    metric_logger.meters[f'cls_attn_entropy_layer{i}'].update(cls_entropy_mean.mean().item(), n=images.shape[0])
+
+                    attn_pp = attn_map[..., 1:, 1:]
+                    P = attn_pp.shape[-1]
+                    length = int(P ** 0.5)
+
+                    D = compute_distance_matrix(length, attn_pp.device)
+                    D = D.view(1, 1, P, P)
+                    mad_per_token = (attn_pp * D).sum(dim=-1)
+                    mad_per_head = mad_per_token.mean(dim=(0, 2))
+                    for hi in range(num_heads):
+                        metric_logger.meters[f'attn_mad_head{hi}_layer{i}'].update(mad_per_head[hi].item(), n=images.shape[0])
+                    metric_logger.meters[f'attn_mad_layer{i}'].update(mad_per_head.mean().item(), n=images.shape[0])
+
+                    cls_attn_pp = attn_map[:, :, 0, 1:]
+                    print(f"Layer {i} cls_attn_pp shape:", cls_attn_pp.shape)
+                    print(f"Layer {i} distance matrix D shape:", D[0, :, 0, :].shape)
+                    cls_mad_per_token = (cls_attn_pp * D[0, :, 0, :]).sum(dim=-1)
+                    cls_mad_per_head = cls_mad_per_token.mean(dim=(0))
+                    for hi in range(num_heads):
+                        metric_logger.meters[f'cls_attn_mad_head{hi}_layer{i}'].update(cls_mad_per_head[hi].item(), n=images.shape[0])
+                    metric_logger.meters[f'cls_attn_mad_layer{i}'].update(cls_mad_per_head.mean().item(), n=images.shape[0])
 
                 ece_metric.update(x, target)
                 brier_metric.update(x, target)
@@ -286,16 +350,18 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                         x_rand = model.head(x_rand) 
                         x_rand = F.softmax(x_rand[:, 0, :].squeeze(), dim=-1)
                         rand_attn_logits[i] = x_rand.argmax(dim=-1)
-                        # rand_attn_pred = accuracy(x_rand, target)
-                        # metric_logger.meters[f'rand_attn_{i}'].update(rand_attn_pred[0].item(), n=int(1.5 * args.batch_size))
+                        if args.per_stage_metrics:
+                            rand_attn_pred = accuracy(x_rand, target)
+                            metric_logger.meters[f'rand_attn_{i}'].update(rand_attn_pred[0].item(), n=int(1.5 * args.batch_size))
 
-                        x_rand_blk = model.norm(rand_acts[i]['resid'])
+                        x_rand_blk = model.norm(rand_acts[i]['blk'])
                         x_rand_blk = model.fc_norm(x_rand_blk)
                         x_rand_blk = model.head(x_rand_blk) 
                         x_rand_blk = F.softmax(x_rand_blk[:, 0, :].squeeze(), dim=-1)
                         rand_blk_logits[i] = x_rand_blk.argmax(dim=-1)
-                        # rand_blk_pred = accuracy(x_rand_blk, target)
-                        # metric_logger.meters[f'rand_blk_{i}'].update(rand_blk_pred[0].item(), n=int(1.5 * args.batch_size))
+                        if args.per_stage_metrics:
+                            rand_blk_pred = accuracy(x_rand_blk, target)
+                            metric_logger.meters[f'rand_blk_{i}'].update(rand_blk_pred[0].item(), n=int(1.5 * args.batch_size))
                 if pr_acts is not None:
                     with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                         x_pr = model.norm(pr_acts[i]['attn'])
@@ -303,16 +369,18 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                         x_pr = model.head(x_pr) 
                         x_pr = F.softmax(x_pr[:, 0, :].squeeze(), dim=-1)
                         pr_attn_logits[i] = x_pr.argmax(dim=-1)
-                        # pr_attn_pred = accuracy(x_pr, target)
-                        # metric_logger.meters[f'pr_attn_{i}'].update(pr_attn_pred[0].item(), n=int(1.5 * args.batch_size))
+                        if args.per_stage_metrics:
+                            pr_attn_pred = accuracy(x_pr, target)
+                            metric_logger.meters[f'pr_attn_{i}'].update(pr_attn_pred[0].item(), n=int(1.5 * args.batch_size))
 
-                        x_pr_blk = model.norm(pr_acts[i]['resid'])
+                        x_pr_blk = model.norm(pr_acts[i]['blk'])
                         x_pr_blk = model.fc_norm(x_pr_blk)
                         x_pr_blk = model.head(x_pr_blk) 
                         x_pr_blk = F.softmax(x_pr_blk[:, 0, :].squeeze(), dim=-1)
                         pr_blk_logits[i] = x_pr_blk.argmax(dim=-1)
-                        # pr_blk_pred = accuracy(x_pr_blk, target)
-                        # metric_logger.meters[f'pr_blk_{i}'].update(pr_blk_pred[0].item(), n=int(1.5 * args.batch_size))
+                        if args.per_stage_metrics:
+                            pr_blk_pred = accuracy(x_pr_blk, target)
+                            metric_logger.meters[f'pr_blk_{i}'].update(pr_blk_pred[0].item(), n=int(1.5 * args.batch_size))
 
         if not args.visualise: continue
 
@@ -322,7 +390,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
             plotted+=1
 
             images = images.cpu()
-            target
+            target = target.cpu()
 
             if args.per_head:
                 fig, axs = plt.subplots(num_heads+1, len(layers_to_analyse)+1, figsize=(5 * len(layers_to_analyse) + 1, 10*num_heads))
@@ -332,7 +400,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                 if classes is not None: class_label = f"Class: {classes[target[si].item()]}"
                 axs[0, 0].set_title(class_label)
                 
-                # rollout = torch.eye(1 + patch_size**2)[None, None, :, 1:].to(images.device)  # [1,1,197,197]
+                # rollout = torch.eye(1 + patch_count**2)[None, None, :, 1:].to(images.device)  # [1,1,197,197]
                 for hi in range(-1, num_heads):
                     for i, layer_idx in enumerate(layers_to_analyse, 1):
                         
@@ -345,7 +413,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                         else:
                             cls_attn = attn_map[:, :, 0, 1:][si][hi].cpu().numpy()  # Avg heads [196] → [14,14]
 
-                        cls_attn = cls_attn.reshape(patch_size, patch_size)
+                        cls_attn = cls_attn.reshape(patch_count, patch_count)
                         cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
                         
                         # Resize overlay
@@ -382,7 +450,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                 if classes is not None: class_label = f"Class: {classes[target[si].item()]}"
                 axs[0, 0].set_title(f"Fine-tuned\n{class_label}")
                 
-                # rollout = torch.eye(1 + patch_size**2)[None, None, :, 1:].to(images.device)  # [1,1,197,197]
+                # rollout = torch.eye(1 + patch_count**2)[None, None, :, 1:].to(images.device)  # [1,1,197,197]
                 
                 for model_idx, (model_name, model_acts, model_blk_logits, model_attn_logits) in enumerate(zip(["Fine-tuned", "Procedural", "Random init"], [acts, pr_acts, rand_acts], [layer_wise_blk_logits, pr_blk_logits, rand_blk_logits], [layer_wise_attn_logits, pr_attn_logits, rand_attn_logits])):
                     if model_acts is None: continue
@@ -394,7 +462,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                         # print(f"Layer {layer_idx} attention map shape:", attn_map.shape)
 
                         cls_attn = attn_map[:, :, 0, 1:][si].mean(0).cpu().numpy()  # Avg heads [196] → [14,14]
-                        cls_attn = cls_attn.reshape(patch_size, patch_size)
+                        cls_attn = cls_attn.reshape(patch_count, patch_count)
                         cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
                         
                         # Resize overlay
@@ -434,7 +502,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                 if classes is not None: class_label = f"Class: {classes[target[si].item()]}"
                 axs[0, 0].set_title(class_label)
                 
-                # rollout = torch.eye(1 + patch_size**2)[None, None, :, 1:].to(images.device)  # [1,1,197,197]
+                # rollout = torch.eye(1 + patch_count**2)[None, None, :, 1:].to(images.device)  # [1,1,197,197]
                 
                 for i, layer_idx in enumerate(layers_to_analyse, 1):
                     
@@ -444,7 +512,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                     # print(f"Layer {layer_idx} attention map shape:", attn_map.shape)
 
                     cls_attn = attn_map[:, :, 0, 1:][si].mean(0).cpu().numpy()  # Avg heads [196] → [14,14]
-                    cls_attn = cls_attn.reshape(patch_size, patch_size)
+                    cls_attn = cls_attn.reshape(patch_count, patch_count)
                     cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
                     
                     # Resize overlay
@@ -502,9 +570,14 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
         if args.attention_analyse:    # loading form JSON file
             notes = f"{args.pr_notes}"
         else:
-            notes = f"{args.pr_notes} f{str(args.freeze_blocks)} s{str(args.skip_load_blocks)} d{str(args.delete_blocks)}"
+            notes = f"{args.pr_notes} f{str(args.freeze_blocks)} s{str(args.skip_load_blocks)} d{str(args.delete_blocks)} r{str(args.random_blocks)} sba{str(args.skip_load_block_attributes)} fba{str(args.freeze_block_attributes)}"
             if args.shuffle_load:
                 notes += f" shuffle hb{str(args.hold_back_blocks)}"
+            if args.skip_norm:
+                notes += f" skip_norm"
+            if args.custom_pr_load:
+                notes += f" pr[{str(args.custom_pr_load)}]"
+        print(f"Notes for JSON entry: {notes}")
         try:
             with open(args.accuracy_json, "r") as f:
                 path_map = json.load(f)
@@ -525,6 +598,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                     found = True
                 break
         if not found:
+            print(f"No existing entry found in {args.accuracy_json}. Adding new entry.")
             path_map.append({
                 "procedural_data": args.procedural_data,
                 "procedural_order": args.procedural_order,

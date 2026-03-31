@@ -65,9 +65,17 @@ def get_args_parser():
     parser.add_argument('--delete_blocks', default="", type=str,
                         help='Comma separated list of layer indices to delete, e.g. "0,1,2" to delete the first 3 layers; supports "all" to delete all layers and "" to not delete any layers (default: "")')
     parser.add_argument('--skip_load_blocks', default="", type=str,
-                        help='Comma separated list of layer indices to freeze, e.g. "0,1,2" to freeze the first 3 layers; supports "all" to freeze all layers and "" to not freeze any layers (default: "")')
+                        help='Comma separated list of layer indices to skip loading, e.g. "0,1,2" to freeze the first 3 layers; supports "all" to freeze all layers and "" to not freeze any layers (default: "")')
+    parser.add_argument('--skip_load_block_attributes', default="", type=str,
+                        help='Comma separated list of block attributes to skip loading for the --skip_load_blocks blocks, e.g. "norm1.weight,norm1.weight')
+    parser.add_argument('--freeze_block_attributes', default="", type=str,
+                        help='Comma separated list of block attributes to freeze for the --freeze_blocks blocks, e.g. "norm1.weight,norm1.weight')
     parser.add_argument('--shuffle_load', type=str2bool, default=False, help='Whether to shuffle the order of blocks when loading from pretrained checkpoint, which is used to test the importance of block ordering in procedural pretraining')
+    parser.add_argument('--skip_norm', type=str2bool, default=False, help='Whether to skip loading train norm from pretrained checkpoint, which is used to test the importance of train norm in procedural pretraining')
     parser.add_argument('--hold_back_blocks', default='', type=str, help='Comma separated list of layer indices to hold back from training, e.g. "0,1,2" to hold back the first 3 layers; supports "all" to hold back all layers and "" to not hold back any layers (default: "")')
+    parser.add_argument('--custom_pr_load', default='', type=str, help='Custom config to control how weights are loaded from the pretrained checkpoint for procedural pretraining. Options: "L3 - keep start,end, repeat mid"')
+    parser.add_argument('--random_blocks', default="", type=str,
+                        help='Comma separated list of layer indices to keep random, e.g. "0,1,2" to keep the first 3 layers random; supports "all" to keep all layers random and "" to not keep any layers random (default: "")')
     
     # EMA related parameters
     parser.add_argument('--model_ema', type=str2bool, default=False)
@@ -204,11 +212,17 @@ def get_args_parser():
 
     parser.add_argument('--attention_analyse', type=str2bool, default=False,
                         help='Perform attention_analyse only on test set data')
+    parser.add_argument('--pr_attention_analyse', type=str2bool, default=False,
+                        help='Perform attention_analyse only on PR models on test set data')
+    parser.add_argument('--per_stage_metrics', type=str2bool, default=False,
+                        help='Perform visualisation only on test set data')
+    parser.add_argument('--detailed_metrics', type=str2bool, default=False,
+                        help='Perform visualisation only on test set data')
     parser.add_argument('--visualise', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
     parser.add_argument('--per_head', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
-    parser.add_argument('--per_stage', type=str2bool, default=True,
+    parser.add_argument('--per_stage', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
     parser.add_argument('--visualise_output_path', default='', type=str,
                         help='path to save visualisation outputs, empty for no saving')
@@ -245,6 +259,8 @@ def main(args):
     print(args)
     device = torch.device(args.device)
     gpu_id = int(os.environ["LOCAL_RANK"])
+
+    block_attributes = ["norm1.weight", "norm1.bias", "attn.qkv.bias", "attn.proj.bias", "norm2.weight", "norm2.bias", "mlp.fc1.bias", "mlp.fc2.bias", "attn.qkv.weight", "attn.proj.weight", "mlp.fc1.weight", "mlp.fc2.weight"]
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
@@ -337,6 +353,23 @@ def main(args):
     else:
         args.skip_load_blocks = [int(x) for x in args.skip_load_blocks.split(",")]
 
+    if args.freeze_block_attributes == "":
+        args.freeze_block_attributes = []
+    else:
+        args.freeze_block_attributes = [x for x in args.freeze_block_attributes.split(",")]
+
+    if args.skip_load_block_attributes == "":
+        args.skip_load_block_attributes = []
+    else:
+        args.skip_load_block_attributes = [x for x in args.skip_load_block_attributes.split(",")]
+
+    if args.random_blocks == "":
+        args.random_blocks = []
+    elif args.random_blocks == "all":
+        args.random_blocks = list(range(len(model.blocks)))
+    else:
+        args.random_blocks = [int(x) for x in args.random_blocks.split(",")]
+
     if args.delete_blocks == "":
         args.delete_blocks = []
     elif args.delete_blocks == "all":
@@ -377,21 +410,80 @@ def main(args):
                 if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
                     print(f"Removing key {k} from pretrained checkpoint")
                     del checkpoint_model[k]
-        if args.skip_load_blocks:
-            for bi in args.skip_load_blocks:
-                for k in [
-                    f"blocks.{bi}.norm1.weight",
-                    f"blocks.{bi}.norm1.bias",
-                    f"blocks.{bi}.attn.qkv.bias",
-                    f"blocks.{bi}.attn.proj.bias",
-                    f"blocks.{bi}.norm2.weight",
-                    f"blocks.{bi}.norm2.bias",
-                    f"blocks.{bi}.mlp.fc1.bias",
-                    f"blocks.{bi}.mlp.fc2.bias"
-                ]:
-                    if k in checkpoint_model:
-                        print(f"Removing key {k} from pretrained checkpoint")
-                        del checkpoint_model[k]
+
+        # customise loading/copying weights
+        if args.custom_pr_load == "L3 - keep mid,end, repeat start":
+            for bi in range(len(model.blocks)-1, 0, -1):
+                if bi==11: ri=2
+                elif bi==10: ri=1
+                else: ri=0
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - keep start,end, repeat mid":
+            for bi in range(len(model.blocks)-1, 1, -1):
+                if bi==11: ri=2
+                else: ri=1
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - keep start,mid, repeat end":
+            for bi in range(len(model.blocks)-1, 2, -1):
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.2.{k}"]
+                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block 2 in pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - keep end, repeat mid 8-10":
+            for bi in range(len(model.blocks)-1, 7, -1):
+                if bi==11: ri=2
+                else: ri=1
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in [0,1,2]:
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - repeat mid 8-11":
+            for bi in range(len(model.blocks)-1, 7, -1):
+                ri=1
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in [0,1,2]:
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - end 11":
+            bi=11
+            ri=2
+            for k in block_attributes:        
+                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+            if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in [0,1,2]:
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+
+        for bi in args.skip_load_blocks:
+            for k in args.skip_load_block_attributes:
+                if f"blocks.{bi}.{k}" in checkpoint_model:
+                    print(f"Removing key blocks.{bi}.{k} from pretrained checkpoint")
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+
+        for bi in args.random_blocks:
+            for k in block_attributes:
+                if f"blocks.{bi}.{k}" in checkpoint_model:
+                    print(f"Removing key blocks.{bi}.{k} from pretrained checkpoint")
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+
+        if args.skip_norm:
+            for k in ["norm.weight", "norm.bias"]:
+                if k in checkpoint_model:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+
+        print(f"Loading state dict with {len(checkpoint_model)} keys from pretrained checkpoint after custom modifications")
+        print("Keys in checkpoint_model after custom modifications", checkpoint_model.keys())
         
         utils.load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
 
@@ -443,9 +535,15 @@ def main(args):
             utils.load_state_dict(model, shuffled_state, prefix=args.model_prefix)
 
     for i in args.freeze_blocks:
-        print(f"Freezing block {i}")
-        for p in model.blocks[i].parameters():
-            p.requires_grad = False
+        if len(args.freeze_block_attributes) > 0:
+            for name, p in model.blocks[i].named_parameters():
+                if name in args.freeze_block_attributes:
+                    p.requires_grad = False
+                    print(f"Freezing param {name} in block {i}")
+        else:
+            print(f"Freezing all params in block {i}")
+            for p in model.blocks[i].parameters():
+                p.requires_grad = False
             
     for i in args.delete_blocks:
         print(f"Deleting block {i}")
