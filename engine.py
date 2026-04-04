@@ -196,6 +196,42 @@ def compute_distance_matrix(length, device, patch_size=16):
     dist = torch.cdist(coords, coords, p=2) * float(patch_size)  # (P, P)
     return dist  # (P, P)
 
+def compute_detailed_metrics(acts, i, images, metric_logger, num_heads, prefix=""):
+    attn_map = acts[i]['attn_map']
+    attn_norm = attn_map / (attn_map.sum(dim=-1, keepdim=True) + 1e-8)
+    entropy = -(attn_norm * torch.log(attn_norm + 1e-8)).sum(dim=-1)
+    entropy_mean = entropy.mean(dim=(0,2))
+    for hi in range(num_heads):
+        metric_logger.meters[f'{prefix}attn_entropy_head{hi}_layer{i}'].update(entropy_mean[hi].item(), n=images.shape[0])
+    metric_logger.meters[f'{prefix}attn_entropy_layer{i}'].update(entropy_mean.mean().item(), n=images.shape[0])
+
+    cls_attn = attn_map[:, :, 0, 1:]
+    cls_entropy = -(cls_attn * torch.log(cls_attn + 1e-8)).sum(dim=-1)
+    cls_entropy_mean = cls_entropy.mean(dim=(0))
+    for hi in range(num_heads):
+        metric_logger.meters[f'{prefix}cls_attn_entropy_head{hi}_layer{i}'].update(cls_entropy_mean[hi].item(), n=images.shape[0])
+    metric_logger.meters[f'{prefix}cls_attn_entropy_layer{i}'].update(cls_entropy_mean.mean().item(), n=images.shape[0])
+
+    attn_pp = attn_map[..., 1:, 1:]
+    P = attn_pp.shape[-1]
+    length = int(P ** 0.5)
+
+    D = compute_distance_matrix(length, attn_pp.device)
+    D = D.view(1, 1, P, P)
+    mad_per_token = (attn_pp * D).sum(dim=-1)
+    mad_per_head = mad_per_token.mean(dim=(0, 2))
+    for hi in range(num_heads):
+        metric_logger.meters[f'{prefix}attn_mad_head{hi}_layer{i}'].update(mad_per_head[hi].item(), n=images.shape[0])
+    metric_logger.meters[f'{prefix}attn_mad_layer{i}'].update(mad_per_head.mean().item(), n=images.shape[0])
+
+    # cls_attn_pp = attn_map[:, :, 0, 1:]
+    # cls_mad_per_token = (cls_attn_pp * D[0, :, 0, :]).sum(dim=-1)
+    # cls_mad_per_head = cls_mad_per_token.mean(dim=(0))
+    # for hi in range(num_heads):
+    #     metric_logger.meters[f'{prefix}cls_attn_mad_head{hi}_layer{i}'].update(cls_mad_per_head[hi].item(), n=images.shape[0])
+    # metric_logger.meters[f'{prefix}cls_attn_mad_layer{i}'].update(cls_mad_per_head.mean().item(), n=images.shape[0])
+
+
 @torch.no_grad()
 def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger=None):
 
@@ -218,7 +254,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
         ft_path = args.output_dir+f"/checkpoint-299.pth"
         pr_path = args.initialize
 
-    if args.visualise and args.per_stage:
+    if (args.visualise and args.per_stage) or args.pr_detailed_metrics:
         model_rand = utils.load_model("", args, device)
         if pr_path:
             print(f"Loading pr-tuned model from: {pr_path}")
@@ -301,42 +337,8 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                 layer_wise_blk_logits[i] = x.argmax(dim=-1)
 
                 if args.detailed_metrics:
-                    attn_map = acts[i]['attn_map']
-                    attn_norm = attn_map / (attn_map.sum(dim=-1, keepdim=True) + 1e-8)
-                    entropy = -(attn_norm * torch.log(attn_norm + 1e-8)).sum(dim=-1)  # [batch, heads, tokens]
-                    entropy_mean = entropy.mean(dim=(0,2))
-                    for hi in range(num_heads):
-                        metric_logger.meters[f'attn_entropy_head{hi}_layer{i}'].update(entropy_mean[hi].item(), n=images.shape[0])
-                    metric_logger.meters[f'attn_entropy_layer{i}'].update(entropy_mean.mean().item(), n=images.shape[0])
-
-                    cls_attn = attn_map[:, :, 0, 1:]
-                    cls_entropy = -(cls_attn * torch.log(cls_attn + 1e-8)).sum(dim=-1)  # [batch, heads, tokens]
-                    cls_entropy_mean = cls_entropy.mean(dim=(0))
-                    for hi in range(num_heads):
-                        metric_logger.meters[f'cls_attn_entropy_head{hi}_layer{i}'].update(cls_entropy_mean[hi].item(), n=images.shape[0])
-                    metric_logger.meters[f'cls_attn_entropy_layer{i}'].update(cls_entropy_mean.mean().item(), n=images.shape[0])
-
-                    attn_pp = attn_map[..., 1:, 1:]
-                    P = attn_pp.shape[-1]
-                    length = int(P ** 0.5)
-
-                    D = compute_distance_matrix(length, attn_pp.device)
-                    D = D.view(1, 1, P, P)
-                    mad_per_token = (attn_pp * D).sum(dim=-1)
-                    mad_per_head = mad_per_token.mean(dim=(0, 2))
-                    for hi in range(num_heads):
-                        metric_logger.meters[f'attn_mad_head{hi}_layer{i}'].update(mad_per_head[hi].item(), n=images.shape[0])
-                    metric_logger.meters[f'attn_mad_layer{i}'].update(mad_per_head.mean().item(), n=images.shape[0])
-
-                    cls_attn_pp = attn_map[:, :, 0, 1:]
-                    print(f"Layer {i} cls_attn_pp shape:", cls_attn_pp.shape)
-                    print(f"Layer {i} distance matrix D shape:", D[0, :, 0, :].shape)
-                    cls_mad_per_token = (cls_attn_pp * D[0, :, 0, :]).sum(dim=-1)
-                    cls_mad_per_head = cls_mad_per_token.mean(dim=(0))
-                    for hi in range(num_heads):
-                        metric_logger.meters[f'cls_attn_mad_head{hi}_layer{i}'].update(cls_mad_per_head[hi].item(), n=images.shape[0])
-                    metric_logger.meters[f'cls_attn_mad_layer{i}'].update(cls_mad_per_head.mean().item(), n=images.shape[0])
-
+                    compute_detailed_metrics(acts, i, images, metric_logger, num_heads)
+                    
                 ece_metric.update(x, target)
                 brier_metric.update(x, target)
 
@@ -362,6 +364,9 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                         if args.per_stage_metrics:
                             rand_blk_pred = accuracy(x_rand_blk, target)
                             metric_logger.meters[f'rand_blk_{i}'].update(rand_blk_pred[0].item(), n=int(1.5 * args.batch_size))
+
+                        if args.detailed_metrics:
+                            compute_detailed_metrics(rand_acts, i, images, metric_logger, num_heads, prefix="rand_")
                 if pr_acts is not None:
                     with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                         x_pr = model.norm(pr_acts[i]['attn'])
@@ -381,6 +386,9 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                         if args.per_stage_metrics:
                             pr_blk_pred = accuracy(x_pr_blk, target)
                             metric_logger.meters[f'pr_blk_{i}'].update(pr_blk_pred[0].item(), n=int(1.5 * args.batch_size))
+
+                        if args.detailed_metrics:
+                            compute_detailed_metrics(pr_acts, i, images, metric_logger, num_heads, prefix="pr_")
 
         if not args.visualise: continue
 

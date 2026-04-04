@@ -246,6 +246,9 @@ class WandbLogger(object):
         self._wandb.define_metric('Global Train/*', step_metric='epoch')
         self._wandb.define_metric('Global Test/*', step_metric='epoch')
 
+    def update_config(self, key, value):
+        self._wandb.config[key] = value
+
 
 def setup_for_distributed(is_master):
     """
@@ -606,7 +609,7 @@ def load_model(path, args, device, delete_blocks=None, model=None):
             checkpoint_model = checkpoint
         state_dict = model.state_dict()
         print("All keys in checkpoint_model", checkpoint_model.keys())
-        if "pr" in path.split("/")[-1] and not args.pr_attention_analyse:
+        if "pr" in path.split("/")[-1]:
             for k in ['head.weight', 'head.bias', 'cls_token', 'pos_embed', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
                 if k in checkpoint_model:
                     print(f"Removing key {k} from pretrained checkpoint")

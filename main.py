@@ -218,6 +218,8 @@ def get_args_parser():
                         help='Perform visualisation only on test set data')
     parser.add_argument('--detailed_metrics', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
+    parser.add_argument('--pr_detailed_metrics', type=str2bool, default=False,
+                        help='Perform visualisation only on test set data')
     parser.add_argument('--visualise', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
     parser.add_argument('--per_head', type=str2bool, default=False,
@@ -264,7 +266,7 @@ def main(args):
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
-    random.seed(seed)
+    random.seed(args.seed)
     torch.cuda.manual_seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -380,6 +382,8 @@ def main(args):
     
     for block in model.blocks:
         block.attn.fused_attn = False
+
+    shuffled_block_order = None
 
     if args.initialize:
         if args.initialize.startswith('https'):
@@ -508,6 +512,8 @@ def main(args):
                     break
             for bi in args.hold_back_blocks:
                 new_block_order.insert(bi, bi)
+
+            shuffled_block_order = ",".join([str(i) for i in new_block_order])
             print(f"Shuffling blocks {shuffle_blocks} to new order {new_block_order}, while holding back blocks {args.hold_back_blocks}")
 
             forward_map = {i:new_block_order[i] for i in range(len(new_block_order))}
@@ -642,6 +648,8 @@ def main(args):
     if args.model_ema and args.model_ema_eval:
         max_accuracy_ema = 0.0
 
+    if args.start_epoch==0 and shuffled_block_order is not None:
+        wandb_logger.update_config("block_order", shuffled_block_order)
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
