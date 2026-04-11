@@ -25,6 +25,8 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from models.vitp import VitProcedural
 from kdyck.kdyck_generation import *
 from kdyck.utils import *
+from kdyck.kdyck_dataset import *
+import utils
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["TORCH_NCCL_ENABLE_MONITORING"] = "0"
@@ -177,31 +179,27 @@ class Trainer:
             else:
                 print("No checkpoint found for auto-resume. Starting from scratch.")
 
+        self.dataset = KDyckDataset(self.args)
+        self.sampler_train = torch.utils.data.DistributedSampler(
+            self.dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=True, seed=self.args.seed,
+        )
+        self.loader = DataLoader(
+            self.dataset,
+            sampler=self.sampler_train,
+            batch_size=self.args.batch_size
+        )
+        self.dataset_iter = iter(self.loader)
+
         print(f"[GPU{self.gpu_id}]: All training objects initialized")
 
     def generate_kdyck_batch(self):
-        if self.args.procedural_data=="kdyck":
-            targets, inputs = generate_dataset(
-                length=self.args.batch_size, 
-                k=self.args.k, 
-                seq_length=self.args.seq_length, 
-                mask_token=self.args.mask_token, 
-                mask_prob=self.args.mask_ratio,
-                p_open=self.args.p_open,
-                max_depth=self.args.max_depth
-            )
-        elif self.args.procedural_data=="kdyck_truncated":
-            targets, inputs = generate_dataset_truncated(
-                length=self.args.batch_size, 
-                k=self.args.k, 
-                seq_length=self.args.seq_length, 
-                mask_token=self.args.mask_token, 
-                mask_prob=self.args.mask_ratio,
-                p_open=self.args.p_open,
-                max_depth=self.args.max_depth
-            )
-        else:
-            raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
+        try:
+            targets = next(self.dataset_iter)
+        except StopIteration:
+            self.dataset_iter = iter(self.loader)
+            targets = next(self.dataset_iter)
+        inputs = mask_kdyck_dataset(targets, mask_token=self.args.mask_token, mask_prob=self.args.mask_ratio, close_brack_start_token=self.args.k)
+
         inputs = inputs.cuda()
         targets = targets.cuda()
 
@@ -244,7 +242,7 @@ class Trainer:
         self.vitp_model.module.set_train()
 
         for epoch in range(self.start_step, self.args.training_steps):
-
+            self.loader.sampler.set_epoch(epoch)
             for batch_step in range(self.args.update_freq):
                 with self.vitp_model.join():
                     targets, inputs = self.generate_kdyck_batch()
