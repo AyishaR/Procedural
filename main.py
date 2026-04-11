@@ -19,7 +19,7 @@ from timm.utils import ModelEma
 from optim_factory import create_optimizer, LayerDecayValueAssigner
 
 from datasets import build_dataset
-from engine import train_one_epoch, evaluate, attention_analyse
+from engine import *
 
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
@@ -160,7 +160,7 @@ def get_args_parser():
                         help='initialize from a model file')
     parser.add_argument('--head_init_scale', default=1.0, type=float,
                         help='classifier head initial scale, typically adjusted in fine-tuning')
-    parser.add_argument('--model_key', default='model|module|model_state_dict|state', type=str,
+    parser.add_argument('--model_key', default='model|module|model_state_dict|state|model_state', type=str,
                         help='which key to load from saved state dict, usually model or model_ema')
     parser.add_argument('--model_prefix', default='', type=str)
 
@@ -210,15 +210,11 @@ def get_args_parser():
     parser.add_argument('--pin_mem', type=str2bool, default=True,
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 
-    parser.add_argument('--attention_analyse', type=str2bool, default=False,
+    parser.add_argument('--analyse_only', type=str2bool, default=False,
                         help='Perform attention_analyse only on test set data')
-    parser.add_argument('--pr_attention_analyse', type=str2bool, default=False,
-                        help='Perform attention_analyse only on PR models on test set data')
-    parser.add_argument('--per_stage_metrics', type=str2bool, default=False,
-                        help='Perform visualisation only on test set data')
     parser.add_argument('--detailed_metrics', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
-    parser.add_argument('--pr_detailed_metrics', type=str2bool, default=False,
+    parser.add_argument('--stage_wise_metrics', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
     parser.add_argument('--visualise', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
@@ -383,197 +379,58 @@ def main(args):
     for block in model.blocks:
         block.attn.fused_attn = False
 
+    # if args.stage_wise_metrics and data_loader_val is not None:
+    #     if args.distributed:
+    #         print("Rand_init: Using distributed data parallel with GPU %d" % args.gpu)
+    #         model = torch.nn.parallel.DistributedDataParallel(model.to(device), device_ids=[args.gpu], find_unused_parameters=False)
+    #         model_without_ddp = model.module
+    #     else:
+    #         model_without_ddp = model
+    #     model_analyse(
+    #         model=model_without_ddp,
+    #         data_loader=data_loader_val,
+    #         device=device,
+    #         epoch=None,
+    #         args=args,
+    #         prefix="rand_"
+    #     )
+    # del model
+
     shuffled_block_order = None
 
-    if args.initialize:
-        if args.initialize.startswith('https'):
-            checkpoint = torch.hub.load_state_dict_from_url(
-                args.initialize, map_location='cpu', check_hash=True)
-        else:
-            checkpoint = torch.load(args.initialize, map_location='cpu', weights_only=False)
+    model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+        path = args.initialize,
+        args = args,
+        device = device,
+        model = model
+    )
+    # if args.stage_wise_metrics and data_loader_val is not None:
+    #     model_analyse(
+    #         model=model_without_ddp,
+    #         data_loader=data_loader_val,
+    #         device=device,
+    #         epoch=None,
+    #         args=args,
+    #         prefix="pr_",
+    #         shuffled_block_order=shuffled_block_order
+    #     )
 
-        print("Load initialization from %s" % args.initialize)
-        checkpoint_model = None
-        for model_key in args.model_key.split('|'):
-            if model_key in checkpoint:
-                checkpoint_model = checkpoint[model_key]
-                print("Load state_dict by model_key = %s" % model_key)
-                break
-        if checkpoint_model is None:
-            checkpoint_model = checkpoint
-        state_dict = model.state_dict()
-        print("All keys in checkpoint_model", checkpoint_model.keys())
-        if "pr" in args.initialize.split("/")[-1]:
-            for k in ['head.weight', 'head.bias', 'cls_token', 'pos_embed', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
-                if k in checkpoint_model:
-                    print(f"Removing key {k} from pretrained checkpoint")
-                    del checkpoint_model[k]
-        else:
-            for k in ['head.weight', 'head.bias']:
-                print(f"Checking key {k} in pretrained checkpoint for finetuning", checkpoint_model[k].shape, state_dict[k].shape)
-                if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
-                    print(f"Removing key {k} from pretrained checkpoint")
-                    del checkpoint_model[k]
-
-        # customise loading/copying weights
-        if args.custom_pr_load == "L3 - keep mid,end, repeat start":
-            for bi in range(len(model.blocks)-1, 0, -1):
-                if bi==11: ri=2
-                elif bi==10: ri=1
-                else: ri=0
-                for k in block_attributes:        
-                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
-                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
-        elif args.custom_pr_load == "L3 - keep start,end, repeat mid":
-            for bi in range(len(model.blocks)-1, 1, -1):
-                if bi==11: ri=2
-                else: ri=1
-                for k in block_attributes:        
-                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
-                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
-        elif args.custom_pr_load == "L3 - keep start,mid, repeat end":
-            for bi in range(len(model.blocks)-1, 2, -1):
-                for k in block_attributes:        
-                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.2.{k}"]
-                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block 2 in pretrained checkpoint")
-        elif args.custom_pr_load == "L3 - keep end, repeat mid 8-10":
-            for bi in range(len(model.blocks)-1, 7, -1):
-                if bi==11: ri=2
-                else: ri=1
-                for k in block_attributes:        
-                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
-                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
-            for bi in [0,1,2]:
-                for k in block_attributes:        
-                    del checkpoint_model[f"blocks.{bi}.{k}"]
-                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
-        elif args.custom_pr_load == "L3 - repeat mid 8-11":
-            for bi in range(len(model.blocks)-1, 7, -1):
-                ri=1
-                for k in block_attributes:        
-                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
-                if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
-            for bi in [0,1,2]:
-                for k in block_attributes:        
-                    del checkpoint_model[f"blocks.{bi}.{k}"]
-                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
-        elif args.custom_pr_load == "L3 - end 11":
-            bi=11
-            ri=2
-            for k in block_attributes:        
-                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
-            if gpu_id==0: print(f"[GPU{gpu_id}] Loading weights for block {bi} from block {ri} in pretrained checkpoint")
-            for bi in [0,1,2]:
-                for k in block_attributes:        
-                    del checkpoint_model[f"blocks.{bi}.{k}"]
-                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
-
-        for bi in args.skip_load_blocks:
-            for k in args.skip_load_block_attributes:
-                if f"blocks.{bi}.{k}" in checkpoint_model:
-                    print(f"Removing key blocks.{bi}.{k} from pretrained checkpoint")
-                    del checkpoint_model[f"blocks.{bi}.{k}"]
-
-        for bi in args.random_blocks:
-            for k in block_attributes:
-                if f"blocks.{bi}.{k}" in checkpoint_model:
-                    print(f"Removing key blocks.{bi}.{k} from pretrained checkpoint")
-                    del checkpoint_model[f"blocks.{bi}.{k}"]
-
-        if args.skip_norm:
-            for k in ["norm.weight", "norm.bias"]:
-                if k in checkpoint_model:
-                    print(f"Removing key {k} from pretrained checkpoint")
-                    del checkpoint_model[k]
-
-        print(f"Loading state dict with {len(checkpoint_model)} keys from pretrained checkpoint after custom modifications")
-        print("Keys in checkpoint_model after custom modifications", checkpoint_model.keys())
-        
-        utils.load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
-
-        # SHUFFLE HERE
-        if args.shuffle_load and "pr" in args.initialize.split("/")[-1]:
-            if args.hold_back_blocks=="":
-                args.hold_back_blocks = []
-            elif args.hold_back_blocks == "all":
-                args.hold_back_blocks = list(range(len(model.blocks)))
-            else:
-                args.hold_back_blocks = [int(x) for x in args.hold_back_blocks.split(",")]
-
-            shuffle_blocks = list(range(len(model.blocks)))
-            for bi in args.hold_back_blocks:
-                shuffle_blocks.remove(bi)
-            
-            while True:
-                new_block_order = random.sample(shuffle_blocks, len(shuffle_blocks))
-                if any(shuffle_blocks[i] == new_block_order[i] for i in range(len(shuffle_blocks))):
-                    pass
-                else:
-                    break
-            for bi in args.hold_back_blocks:
-                new_block_order.insert(bi, bi)
-
-            shuffled_block_order = ",".join([str(i) for i in new_block_order])
-            print(f"Shuffling blocks {shuffle_blocks} to new order {new_block_order}, while holding back blocks {args.hold_back_blocks}")
-
-            forward_map = {i:new_block_order[i] for i in range(len(new_block_order))}
-            reverse_map = {new_block_order[i]:i for i in range(len(new_block_order))}
-
-            current_state = model.state_dict()
-            shuffled_state = {}
-            for k, v in current_state.items():
-                if k.startswith("blocks."):
-                    parts = k.split(".")
-                    try:
-                        old_idx = int(parts[1])
-                    except ValueError:
-                        shuffled_state[k] = v
-                        continue
-
-                    if old_idx in reverse_map:
-                        parts[1] = str(reverse_map[old_idx])  # remap index
-                        new_k = ".".join(parts)
-                    else:
-                        new_k = k
-                    shuffled_state[new_k] = v
-                else:
-                    shuffled_state[k] = v
-            utils.load_state_dict(model, shuffled_state, prefix=args.model_prefix)
-
-    for i in args.freeze_blocks:
-        if len(args.freeze_block_attributes) > 0:
-            for name, p in model.blocks[i].named_parameters():
-                if name in args.freeze_block_attributes:
-                    p.requires_grad = False
-                    print(f"Freezing param {name} in block {i}")
-        else:
-            print(f"Freezing all params in block {i}")
-            for p in model.blocks[i].parameters():
-                p.requires_grad = False
-            
-    for i in args.delete_blocks:
-        print(f"Deleting block {i}")
-        del model.blocks[i]
-
-    model.to(device)
-
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    non_trainable = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    total_params = sum(p.numel() for p in model_without_ddp.parameters())
+    trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
+    non_trainable = sum(p.numel() for p in model_without_ddp.parameters() if not p.requires_grad)
     print(f"Parameters - Total: {total_params:,} Trainable: {trainable:,}, Non-trainable: {non_trainable:,}")
 
     model_ema = None
     if args.model_ema:
         # Important to create EMA model after cuda(), DP wrapper, and AMP but before SyncBN and DDP wrapper
         model_ema = ModelEma(
-            model,
+            model_without_ddp,
             decay=args.model_ema_decay,
             device='cpu' if args.model_ema_force_cpu else '',
             resume='')
         print("Using EMA with decay = %.8f" % args.model_ema_decay)
 
-    model_without_ddp = model
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    n_parameters = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
 
     print("Model = %s" % str(model_without_ddp))
     print('number of params:', n_parameters)
@@ -595,10 +452,6 @@ def main(args):
 
     if assigner is not None:
         print("Assigned values = %s" % str(assigner.values))
-
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
-        model_without_ddp = model.module
 
     optimizer = create_optimizer(
         args, model_without_ddp, skip_list=None,
@@ -629,9 +482,9 @@ def main(args):
 
     print("criterion = %s" % str(criterion))
 
-    if args.attention_analyse:
+    if args.analyse_only:
         print(f"Attention analyse only mode")
-        stats = attention_analyse(data_loader_val, device, args=args, classes=classes, wandb_logger=wandb_logger)
+        stats = attention_analyse_final(data_loader_val, device, args=args, classes=classes)
         return stats
 
     utils.auto_load_model(
@@ -650,6 +503,7 @@ def main(args):
 
     if args.start_epoch==0 and shuffled_block_order is not None:
         wandb_logger.update_config("block_order", shuffled_block_order)
+
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
@@ -672,8 +526,20 @@ def main(args):
                 utils.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
-        if data_loader_val is not None:
-            test_stats = evaluate(data_loader_val, model, device, use_amp=args.use_amp)
+        if data_loader_val is not None and \
+        ((args.model == "vit_base" and (epoch+1)%5 == 0) or (args.model != "vit_base")):
+            if (epoch+1)%10 == 0:
+                test_stats, stats = model_analyse(
+                    model=model_without_ddp, 
+                    data_loader=data_loader_val, 
+                    device=device, 
+                    epoch=epoch, 
+                    args=args, 
+                    prefix="", 
+                    shuffled_block_order=None
+                )
+            else:
+                test_stats = evaluate(data_loader_val, model_without_ddp, device, use_amp=args.use_amp)
             print(f"Accuracy of the model on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
             if max_accuracy < test_stats["acc1"]:
                 max_accuracy = test_stats["acc1"]
@@ -719,7 +585,11 @@ def main(args):
                 f.write(json.dumps(log_stats) + "\n")
 
         if wandb_logger:
+            print("Logging metrics to wandb")
             wandb_logger.log_epoch_metrics(log_stats)
+
+        if args.model == "vit_base" and (epoch+1)!=args.epochs:
+            return
 
     if wandb_logger and args.wandb_ckpt and args.save_ckpt and args.output_dir:
         wandb_logger.log_checkpoints()
@@ -729,13 +599,27 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-    attention_analyse(data_loader_val, device, args=args, classes=classes, wandb_logger=wandb_logger)
+    # model_analyse(
+    #     model=model_without_ddp,
+    #     data_loader=data_loader_val, 
+    #     device=device, 
+    #     epoch=None, 
+    #     args=args, 
+    #     prefix="", 
+    #     shuffled_block_order=None
+    # )
+    attention_analyse_final(
+        data_loader=data_loader_val, 
+        device=device, 
+        args=args, 
+        classes=classes
+    )
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
-    if args.output_dir:
+    if args.output_dir and not args.output_dir.endswith(".pth"):
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
 

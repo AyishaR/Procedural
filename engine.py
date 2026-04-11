@@ -15,7 +15,6 @@ import json
 from matplotlib import pyplot as plt
 
 from metrics.ddp_multiclassECE import DDPMulticlassECE
-from metrics.ddp_multiclassBrier import DDPMulticlassBrier
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -224,63 +223,22 @@ def compute_detailed_metrics(acts, i, images, metric_logger, num_heads, prefix="
         metric_logger.meters[f'{prefix}attn_mad_head{hi}_layer{i}'].update(mad_per_head[hi].item(), n=images.shape[0])
     metric_logger.meters[f'{prefix}attn_mad_layer{i}'].update(mad_per_head.mean().item(), n=images.shape[0])
 
-    # cls_attn_pp = attn_map[:, :, 0, 1:]
-    # cls_mad_per_token = (cls_attn_pp * D[0, :, 0, :]).sum(dim=-1)
-    # cls_mad_per_head = cls_mad_per_token.mean(dim=(0))
-    # for hi in range(num_heads):
-    #     metric_logger.meters[f'{prefix}cls_attn_mad_head{hi}_layer{i}'].update(cls_mad_per_head[hi].item(), n=images.shape[0])
-    # metric_logger.meters[f'{prefix}cls_attn_mad_layer{i}'].update(cls_mad_per_head.mean().item(), n=images.shape[0])
-
-
 @torch.no_grad()
-def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger=None):
+def model_analyse(model, data_loader, device, epoch, args, prefix="", shuffled_block_order=None):
+    criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
+    detailed_metrics_logger = utils.MetricLogger(delimiter="  ")
     header = 'attention_analyse:'
 
-    # metrics
     ece_metric = DDPMulticlassECE(n_bins=15, device=device)
     ece_metric.reset()
-    brier_metric = DDPMulticlassBrier(device=device)
-    brier_metric.reset()
-
-    title_colour = {1: 'green', 0: 'red'}  # Correct: green, Incorrect: red
-    plotted=0
-
-    if args.output_dir=="":
-        ft_path = args.initialize
-        pr_path = ""
-    else:
-        ft_path = args.output_dir+f"/checkpoint-299.pth"
-        pr_path = args.initialize
-
-    if (args.visualise and args.per_stage) or args.pr_detailed_metrics:
-        model_rand = utils.load_model("", args, device)
-        if pr_path:
-            print(f"Loading pr-tuned model from: {pr_path}")
-            pr_args = utils.parse_args_for_blocks(args)
-            print(f"PR args for loading model: {pr_args}")
-            model_pr = utils.build_model(pr_args)
-            model_pr.load_state_dict(model_rand.state_dict())
-            model_pr = utils.pr_load_model(pr_path, pr_args, device, model=model_pr)
-        else:
-            model_pr = None
-        print(f"Loading fine-tuned model from: {ft_path}")
-        model = utils.build_model(args)
-        model.load_state_dict(model_rand.state_dict())
-        model = utils.load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model)
-    else:
-        model_rand = None
-        model_pr = None
-        print(f"Loading fine-tuned model from: {ft_path}")
-        model = utils.load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=utils.build_model(args))
 
     layers_to_analyse = range(len(model.blocks))
     # layers_to_analyse = [1]
     patch_count = 14  # 224/16
     num_heads = model.blocks[0].attn.num_heads
-
-    # switch to evaluation mode
+    loss = None
     model.eval()
     for batch in metric_logger.log_every(data_loader, 10, header):
         images = batch[0]
@@ -294,31 +252,25 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                 with utils.HookCollector(model) as acts:
                     with torch.no_grad():
                         output = model(images)
-                        acc1, acc5 = accuracy(output, target, topk=(1, 5))
-                        metric_logger.meters[f'final_acc'].update(acc1.item(), n=images.shape[0])
-                        print(f"Batch final accuracy: {acc1.item():.3f}%")
+                        if criterion is not None:
+                            loss = criterion(output, target)
+        else:
+            output = model(images)
+            if criterion is not None:
+                loss = criterion(output, target)
 
-                if model_rand is not None:
-                    with utils.HookCollector(model_rand) as rand_acts:
-                        with torch.no_grad():
-                            _ = model_rand(images)
-                else:
-                    rand_acts = None
-                if model_pr is not None:
-                    with utils.HookCollector(model_pr) as pr_acts:
-                        with torch.no_grad():
-                            _ = model_pr(images)
-                else:
-                    pr_acts = None
+        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+
+        batch_size = images.shape[0]
+        if loss is not None:
+            metric_logger.update(loss=loss.item())
+        metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
+        metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
 
         layer_wise_blk_logits, layer_wise_attn_logits = {}, {}
-        rand_blk_logits, rand_attn_logits = {}, {}
-        pr_blk_logits, pr_attn_logits = {}, {}
 
         with torch.no_grad():
-
             for i in layers_to_analyse:
-                model.eval()
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                     x = model.norm(acts[i]['attn'])
                     x = model.fc_norm(x)
@@ -327,7 +279,7 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                 layer_wise_attn_logits[i] = x.argmax(dim=-1)
                 
                 attn_pred = accuracy(x, target)
-                metric_logger.meters[f'attn_{i}'].update(attn_pred[0].item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}attn_{i}'].update(attn_pred[0].item(), n=images.shape[0])
 
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                     x = model.norm(acts[i]['blk'])
@@ -336,294 +288,183 @@ def attention_analyse(data_loader, device, args=None, classes=None, wandb_logger
                     x = F.softmax(x[:, 0, :].squeeze(), dim=-1)
                 layer_wise_blk_logits[i] = x.argmax(dim=-1)
 
-                if args.detailed_metrics:
-                    compute_detailed_metrics(acts, i, images, metric_logger, num_heads)
-                    
                 ece_metric.update(x, target)
-                brier_metric.update(x, target)
 
                 blk_pred = accuracy(x, target)
-                metric_logger.meters[f'blk_{i}'].update(blk_pred[0].item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}blk_{i}'].update(blk_pred[0].item(), n=images.shape[0])
 
-                if rand_acts is not None:
-                    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-                        x_rand = model.norm(rand_acts[i]['attn'])
-                        x_rand = model.fc_norm(x_rand)
-                        x_rand = model.head(x_rand) 
-                        x_rand = F.softmax(x_rand[:, 0, :].squeeze(), dim=-1)
-                        rand_attn_logits[i] = x_rand.argmax(dim=-1)
-                        if args.per_stage_metrics:
-                            rand_attn_pred = accuracy(x_rand, target)
-                            metric_logger.meters[f'rand_attn_{i}'].update(rand_attn_pred[0].item(), n=int(1.5 * args.batch_size))
+                if args.detailed_metrics:
+                    compute_detailed_metrics(acts, i, images, detailed_metrics_logger, num_heads, prefix=prefix)
 
-                        x_rand_blk = model.norm(rand_acts[i]['blk'])
-                        x_rand_blk = model.fc_norm(x_rand_blk)
-                        x_rand_blk = model.head(x_rand_blk) 
-                        x_rand_blk = F.softmax(x_rand_blk[:, 0, :].squeeze(), dim=-1)
-                        rand_blk_logits[i] = x_rand_blk.argmax(dim=-1)
-                        if args.per_stage_metrics:
-                            rand_blk_pred = accuracy(x_rand_blk, target)
-                            metric_logger.meters[f'rand_blk_{i}'].update(rand_blk_pred[0].item(), n=int(1.5 * args.batch_size))
-
-                        if args.detailed_metrics:
-                            compute_detailed_metrics(rand_acts, i, images, metric_logger, num_heads, prefix="rand_")
-                if pr_acts is not None:
-                    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-                        x_pr = model.norm(pr_acts[i]['attn'])
-                        x_pr = model.fc_norm(x_pr)
-                        x_pr = model.head(x_pr) 
-                        x_pr = F.softmax(x_pr[:, 0, :].squeeze(), dim=-1)
-                        pr_attn_logits[i] = x_pr.argmax(dim=-1)
-                        if args.per_stage_metrics:
-                            pr_attn_pred = accuracy(x_pr, target)
-                            metric_logger.meters[f'pr_attn_{i}'].update(pr_attn_pred[0].item(), n=int(1.5 * args.batch_size))
-
-                        x_pr_blk = model.norm(pr_acts[i]['blk'])
-                        x_pr_blk = model.fc_norm(x_pr_blk)
-                        x_pr_blk = model.head(x_pr_blk) 
-                        x_pr_blk = F.softmax(x_pr_blk[:, 0, :].squeeze(), dim=-1)
-                        pr_blk_logits[i] = x_pr_blk.argmax(dim=-1)
-                        if args.per_stage_metrics:
-                            pr_blk_pred = accuracy(x_pr_blk, target)
-                            metric_logger.meters[f'pr_blk_{i}'].update(pr_blk_pred[0].item(), n=int(1.5 * args.batch_size))
-
-                        if args.detailed_metrics:
-                            compute_detailed_metrics(pr_acts, i, images, metric_logger, num_heads, prefix="pr_")
-
-        if not args.visualise: continue
-
-        for si in range(args.plot_count):
-            if plotted >= args.plot_count: break
-            if si >= len(target): break
-            plotted+=1
-
-            images = images.cpu()
-            target = target.cpu()
-
-            if args.per_head:
-                fig, axs = plt.subplots(num_heads+1, len(layers_to_analyse)+1, figsize=(5 * len(layers_to_analyse) + 1, 10*num_heads))
-
-                axs[0, 0].imshow(utils.denormalize(images[si].squeeze()).permute(1, 2, 0)); axs[0, 0].set_title('Input'); axs[0, 0].axis('off')
-                class_label = target[si].item()
-                if classes is not None: class_label = f"Class: {classes[target[si].item()]}"
-                axs[0, 0].set_title(class_label)
-                
-                # rollout = torch.eye(1 + patch_count**2)[None, None, :, 1:].to(images.device)  # [1,1,197,197]
-                for hi in range(-1, num_heads):
-                    for i, layer_idx in enumerate(layers_to_analyse, 1):
-                        
-                        pi = i
-                        # print()
-                        attn_map = acts[layer_idx]['attn_map']
-
-                        if hi==-1:
-                            cls_attn = attn_map[:, :, 0, 1:][si].mean(0).cpu().numpy()  # Avg heads [196] → [14,14]
-                        else:
-                            cls_attn = attn_map[:, :, 0, 1:][si][hi].cpu().numpy()  # Avg heads [196] → [14,14]
-
-                        cls_attn = cls_attn.reshape(patch_count, patch_count)
-                        cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
-                        
-                        # Resize overlay
-                        cls_resized = F.interpolate(
-                            torch.tensor(cls_attn[None, None, :, :]), size=(224, 224), mode='bilinear', align_corners=False
-                        ).squeeze().numpy()
-                        
-                        # Plots
-                        im = axs[hi+1, layer_idx+1].imshow(cls_attn, cmap='viridis')
-
-                        
-                        # add text to plot with colour, not title
-                        if hi==-1:
-                            # Logit lens
-                            pred_blk_label = layer_wise_blk_logits[layer_idx][si].item()
-                            if classes is not None: pred_blk_label = classes[pred_blk_label]
-                            pred_attn_label = layer_wise_attn_logits[layer_idx][si].item()
-                            if classes is not None: pred_attn_label = classes[pred_attn_label]
-                            axs[hi+1, layer_idx+1].text(0.5, 16, f'{pred_blk_label}', {'color': title_colour[int(layer_wise_blk_logits[layer_idx][si].item() == target[si].item())]})
-                            # axs[hi+1, layer_idx+1].text(0.5, 18, f'Attn Pred: {pred_attn_label}', {'color': title_colour[int(layer_wise_attn_logits[layer_idx][si].item() == target[si].item())]})
-                            axs[hi+1, layer_idx+1].set_title(f'Layer {layer_idx}')
-                        axs[hi+1, layer_idx+1].axis('off')
-
-                    if hi!=-1:
-                        axs[hi+1, 0].set_axis_off()
-                        axs[hi+1, 0].set_visible(False)
-                    plt.tight_layout()
-            elif args.per_stage:
-                plt_column = len(layers_to_analyse)//2 + 1
-                fig, axs = plt.subplots(2*3, plt_column, figsize=(5 * (len(layers_to_analyse)//2 + 1), 10*3))
-
-                axs[0, 0].imshow(utils.denormalize(images[si].squeeze()).permute(1, 2, 0)); axs[0, 0].set_title('Input'); axs[0, 0].axis('off')
-                class_label = target[si].item()
-                if classes is not None: class_label = f"Class: {classes[target[si].item()]}"
-                axs[0, 0].set_title(f"Fine-tuned\n{class_label}")
-                
-                # rollout = torch.eye(1 + patch_count**2)[None, None, :, 1:].to(images.device)  # [1,1,197,197]
-                
-                for model_idx, (model_name, model_acts, model_blk_logits, model_attn_logits) in enumerate(zip(["Fine-tuned", "Procedural", "Random init"], [acts, pr_acts, rand_acts], [layer_wise_blk_logits, pr_blk_logits, rand_blk_logits], [layer_wise_attn_logits, pr_attn_logits, rand_attn_logits])):
-                    if model_acts is None: continue
-                    for i, layer_idx in enumerate(layers_to_analyse, 1):
-                        
-                        pi = i
-                        print(i, layer_idx, "plt idx:", (model_idx*2)+(pi//plt_column), pi%plt_column)
-                        attn_map = model_acts[layer_idx]['attn_map']
-                        # print(f"Layer {layer_idx} attention map shape:", attn_map.shape)
-
-                        cls_attn = attn_map[:, :, 0, 1:][si].mean(0).cpu().numpy()  # Avg heads [196] → [14,14]
-                        cls_attn = cls_attn.reshape(patch_count, patch_count)
-                        cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
-                        
-                        # Resize overlay
-                        cls_resized = F.interpolate(
-                            torch.tensor(cls_attn[None, None, :, :]), size=(224, 224), mode='bilinear', align_corners=False
-                        ).squeeze().numpy()
-                        
-                        # Plots
-                        im = axs[(model_idx*2)+(pi//plt_column), pi%plt_column].imshow(cls_attn, cmap='viridis')
-
-                        # Logit lens
-                        # if model_idx==0:
-                        pred_blk_label = model_blk_logits[layer_idx][si].item()
-                        if classes is not None: pred_blk_label = classes[pred_blk_label]
-                        pred_attn_label = model_attn_logits[layer_idx][si].item()
-                        if classes is not None: pred_attn_label = classes[pred_attn_label]
-                        # add text to plot with colour, not title
-                        axs[(model_idx*2)+(pi//plt_column), pi%plt_column].text(0.5, 14, f'{pred_blk_label}', {'color': title_colour[int(model_blk_logits[layer_idx][si].item() == target[si].item())]})
-                        # axs[pi//plt_column, pi%plt_column].text(0.5, 18, f'Attn Pred: {pred_attn_label}', {'color': title_colour[int(layer_wise_attn_logits[layer_idx][si].item() == target[si].item())]})
-                        axs[(model_idx*2)+(pi//plt_column), pi%plt_column].set_title(f'Layer {layer_idx}')
-                        axs[(model_idx*2)+(pi//plt_column), pi%plt_column].axis('off')
-
-                    axs[(model_idx*2)+1, plt_column-1].set_axis_off()
-                    axs[(model_idx*2)+1, plt_column-1].set_visible(False) 
-                    if model_idx!=0:
-                        axs[(model_idx*2), 0].set_axis_off()
-                        # axs[(model_idx*2), 0].set_visible(False)
-                        # axs[(model_idx*2), 0].set_title(model_name)
-                        axs[(model_idx*2), 0].text(0.3, 0.5, f"{model_name}", ha='left', va='top', transform=axs[(model_idx*2), 0].transAxes)
-                plt.tight_layout()
-            else:
-                plt_column = len(layers_to_analyse)//2 + 1
-                fig, axs = plt.subplots(2, plt_column, figsize=(5 * (len(layers_to_analyse)//2 + 1), 10))
-
-                axs[0, 0].imshow(utils.denormalize(images[si].squeeze()).permute(1, 2, 0)); axs[0, 0].set_title('Input'); axs[0, 0].axis('off')
-                class_label = target[si].item()
-                if classes is not None: class_label = f"Class: {classes[target[si].item()]}"
-                axs[0, 0].set_title(class_label)
-                
-                # rollout = torch.eye(1 + patch_count**2)[None, None, :, 1:].to(images.device)  # [1,1,197,197]
-                
-                for i, layer_idx in enumerate(layers_to_analyse, 1):
-                    
-                    pi = i
-                    # print()
-                    attn_map = acts[layer_idx]['attn_map']
-                    # print(f"Layer {layer_idx} attention map shape:", attn_map.shape)
-
-                    cls_attn = attn_map[:, :, 0, 1:][si].mean(0).cpu().numpy()  # Avg heads [196] → [14,14]
-                    cls_attn = cls_attn.reshape(patch_count, patch_count)
-                    cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
-                    
-                    # Resize overlay
-                    cls_resized = F.interpolate(
-                        torch.tensor(cls_attn[None, None, :, :]), size=(224, 224), mode='bilinear', align_corners=False
-                    ).squeeze().numpy()
-                    
-                    # Plots
-                    im = axs[pi//plt_column, pi%plt_column].imshow(cls_attn, cmap='viridis')
-
-                    # Logit lens
-                    pred_blk_label = layer_wise_blk_logits[layer_idx][si].item()
-                    if classes is not None: pred_blk_label = classes[pred_blk_label]
-                    pred_attn_label = layer_wise_attn_logits[layer_idx][si].item()
-                    if classes is not None: pred_attn_label = classes[pred_attn_label]
-                    # add text to plot with colour, not title
-                    axs[pi//plt_column, pi%plt_column].text(0.5, 16, f'{pred_blk_label}', {'color': title_colour[int(layer_wise_blk_logits[layer_idx][si].item() == target[si].item())]})
-                    # axs[pi//plt_column, pi%plt_column].text(0.5, 18, f'Attn Pred: {pred_attn_label}', {'color': title_colour[int(layer_wise_attn_logits[layer_idx][si].item() == target[si].item())]})
-                    axs[pi//plt_column, pi%plt_column].set_title(f'Layer {layer_idx}')
-                    axs[pi//plt_column, pi%plt_column].axis('off')
-
-                axs[1, plt_column-1].set_axis_off()
-                axs[1, plt_column-1].set_visible(False) 
-                plt.tight_layout()
-
-            if device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0):
-                if args.visualise_output_path:
-                # if False:
-                    plt.savefig(args.visualise_output_path+f"/sample_{si}_s{args.seed}.png", dpi=300, bbox_inches='tight')
-                    print(f"Saved attention visualization for sample {si}")
-                else:
-                    plt.show()
-        
+    # gather the stats from all processes
     metric_logger.synchronize_between_processes()
+    print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f}'
+          .format(top1=metric_logger.acc1, top5=metric_logger.acc5))
+    try:
+        print('* loss {losses.global_avg:.3f}'
+            .format(losses=metric_logger.loss))
+    except AttributeError:
+        pass
+
+    test_stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+    detailed_metrics_logger.synchronize_between_processes()
 
     ece = ece_metric.compute()
-    if wandb_logger:
-        wandb_logger.log_epoch_metrics({"epoch": -1, "test_ece": ece})
-        pass
+    # if wandb_logger:
+    #     wandb_logger.log_epoch_metrics({"epoch": epoch, "test_ece": ece})
     if device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0):
         print("ECE:", ece)
-        metric_logger.meters["ece"].update(ece, n=1)
-
+        detailed_metrics_logger.meters["ece"].update(ece, n=1)
     
-    brier = brier_metric.compute()
-    if device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0):
-        print("Brier:", brier)
-        metric_logger.meters["brier"].update(brier, n=1)
+    stats = {k: meter.global_avg for k, meter in detailed_metrics_logger.meters.items()}
+    if args.gpu == 0:
+        print("Averaged stats:", detailed_metrics_logger)
+        print("Layer-wise attention and block prediction accuracies:", stats)
 
-    print("Averaged stats:", metric_logger)
-    stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-    print("Layer-wise attention and block prediction accuracies:", stats)
+        if args.accuracy_json:
+            update_accuracy_json(
+                args=args,
+                stats=stats,
+                epoch=epoch,
+                shuffled_block_order=shuffled_block_order,
+                device=device
+            )
 
-    if args.accuracy_json:
-        if args.attention_analyse:    # loading form JSON file
-            notes = f"{args.pr_notes}"
+    return test_stats, stats
+
+
+@torch.no_grad()
+def attention_analyse_final(data_loader, device, args, classes=None):
+
+    shuffled_block_order = None
+
+    model_rand = utils.build_model(args).to(device)
+    if args.distributed:
+        print("Using distributed data parallel with GPU %d" % args.gpu)
+        model_rand = torch.nn.parallel.DistributedDataParallel(model_rand, device_ids=[args.gpu], find_unused_parameters=False)
+        model_rand_without_ddp = model_rand.module
+
+    model_analyse(
+        model=model_rand_without_ddp,
+        data_loader=data_loader,
+        device=device,
+        epoch=None,
+        args=args,
+        prefix="rand_"
+    )
+
+    if args.initialize:
+        print(f"Loading pr-tuned model from: {args.initialize}")
+        if args.analyse_only:
+            pr_args = utils.parse_args_for_blocks(args)
         else:
-            notes = f"{args.pr_notes} f{str(args.freeze_blocks)} s{str(args.skip_load_blocks)} d{str(args.delete_blocks)} r{str(args.random_blocks)} sba{str(args.skip_load_block_attributes)} fba{str(args.freeze_block_attributes)}"
-            if args.shuffle_load:
-                notes += f" shuffle hb{str(args.hold_back_blocks)}"
-            if args.skip_norm:
-                notes += f" skip_norm"
-            if args.custom_pr_load:
-                notes += f" pr[{str(args.custom_pr_load)}]"
-        print(f"Notes for JSON entry: {notes}")
-        try:
-            with open(args.accuracy_json, "r") as f:
-                path_map = json.load(f)
-        except FileNotFoundError:
-            path_map = []
-        found = False
-        for si in range(len(path_map)):
-            if path_map[si]["procedural_data"] == args.procedural_data and \
-            path_map[si]["procedural_order"] == args.procedural_order and \
-            path_map[si]["notes"] == notes:
-                for fi in range(len(path_map[si]["ft"])):
-                    if path_map[si]['ft'][fi]["path"] == ft_path:
-                        path_map[si]['ft'][fi]["layers_accuracy"] = stats
-                        found = True
-                        break
-                if not found:
-                    path_map[si]['ft'].append({"path": ft_path, "layers_accuracy": stats, "seed": args.seed})
-                    found = True
-                break
-        if not found:
-            print(f"No existing entry found in {args.accuracy_json}. Adding new entry.")
-            path_map.append({
-                "procedural_data": args.procedural_data,
-                "procedural_order": args.procedural_order,
-                "notes": notes,
-                "pr": [
-                    {
-                        "path": pr_path,
-                        "seed": args.pr_seed
-                    }
-                ],
-                "ft": [{"path": ft_path, "layers_accuracy": stats, "seed": args.seed}]
-            })
+            pr_args = args
+        print(f"PR args for loading model: {pr_args}")
+        model_pr = utils.build_model(pr_args)
+        model_pr.load_state_dict(model_rand_without_ddp.state_dict())
+        model_pr, model_pr_without_ddp,  shuffled_block_order = utils.pr_load_model(args.initialize, pr_args, device, model=model_pr)
+        model_analyse(
+            model=model_pr_without_ddp,
+            data_loader=data_loader,
+            device=device,
+            epoch=None,
+            args=args,
+            prefix="pr_",
+            shuffled_block_order=shuffled_block_order
+        )
 
-        if device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0):
-            with open(args.accuracy_json, "w") as f:
-                json.dump(path_map, f, indent=4)
-                pprint(path_map)
-                print(f"Updated {args.accuracy_json} with new layer accuracies.")
+    if args.output_dir:
+        if args.output_dir.endswith(".pth"):
+            ft_path = args.output_dir
+        else:
+            ft_path = args.output_dir+f"/checkpoint-299.pth"
+        print(f"Loading fine-tuned model from: {ft_path}")
+        model = utils.build_model(args)
+        model.load_state_dict(model_rand_without_ddp.state_dict())
+        model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model)
+        model_analyse(
+            model=model_without_ddp,
+            data_loader=data_loader,
+            device=device,
+            epoch=None,
+            args=args,
+            prefix="",
+            shuffled_block_order=shuffled_block_order
+        )
+    
+def update_accuracy_json(args, stats, epoch, shuffled_block_order, device):
+    if args.analyse_only:    # loading form JSON file
+        notes = f"{args.pr_notes}"
+    else:
+        notes = f"{args.pr_notes} f{str(args.freeze_blocks)} s{str(args.skip_load_blocks)} d{str(args.delete_blocks)} r{str(args.random_blocks)} sba{str(args.skip_load_block_attributes)} fba{str(args.freeze_block_attributes)}"
+        if args.shuffle_load:
+            notes += f" shuffle hb{str(args.hold_back_blocks)}"
+        if args.skip_norm:
+            notes += f" skip_norm"
+        if args.custom_pr_load:
+            notes += f" pr[{str(args.custom_pr_load)}]"
+    print(f"Notes for JSON entry: {notes}")
+    try:
+        with open(args.accuracy_json, "r") as f:
+            path_map = json.load(f)
+    except FileNotFoundError:
+        path_map = []
 
-    return stats
+    block_index = None
+    for si in range(len(path_map)):
+        if path_map[si]["procedural_data"] == args.procedural_data and \
+        path_map[si]["procedural_order"] == args.procedural_order and \
+        path_map[si]["notes"] == notes and \
+        path_map[si].get("model", args.model) == args.model and \
+        path_map[si].get("dataset", args.data_set) == args.data_set:
+            block_index = si
+    if block_index is None:
+        path_map.append({
+            "procedural_data": args.procedural_data,
+            "procedural_order": args.procedural_order,
+            "notes": notes,
+            "model": args.model,
+            "dataset": args.data_set,
+            "pr": [
+                {
+                    "path": args.initialize,
+                    "seed": args.pr_seed,
+
+                }
+            ],
+            "ft": []
+        })
+        block_index = len(path_map)-1
+
+    ft_index = None
+    if 'ft' not in path_map[block_index]:
+        path_map[block_index]["ft"] = []
+    for fi in range(len(path_map[block_index]["ft"])):
+        if path_map[block_index]['ft'][fi]["path"] == args.output_dir:
+            ft_index = fi
+            break
+    if ft_index is None:
+        path_map[block_index]['ft'].append({"path": args.output_dir, "seed": args.seed})
+        if shuffled_block_order is not None:
+            path_map[block_index]['ft'][-1]["shuffled_block_order"] = shuffled_block_order
+        ft_index = len(path_map[block_index]['ft'])-1
+
+    if epoch is None:
+        existing_stats = path_map[block_index]['ft'][ft_index].get("layers_accuracy", {})
+        existing_stats.update(stats)
+        path_map[block_index]['ft'][ft_index]["layers_accuracy"] = existing_stats
+        pprint(path_map[block_index]['ft'][ft_index]["layers_accuracy"])
+    else:
+        if "progress" not in path_map[block_index]['ft'][ft_index]:
+            path_map[block_index]['ft'][ft_index]["progress"] = {}
+        path_map[block_index]['ft'][ft_index]["progress"][epoch] = stats
+        path_map[block_index]['ft'][ft_index]["latest_epoch"] = epoch
+        print("Updated progress for epoch", epoch)
+        pprint(path_map[block_index]['ft'][ft_index]["progress"][epoch])
+
+
+    # if device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0):
+    with open(args.accuracy_json, "w") as f:
+        json.dump(path_map, f, indent=4)
+        print(f"Updated {args.accuracy_json} with new layer accuracies.")

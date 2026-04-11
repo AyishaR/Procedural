@@ -8,6 +8,7 @@ from timm.utils import get_state_dict
 
 from pathlib import Path
 
+import random
 import torch
 from torch import inf
 from timm.models import create_model
@@ -227,6 +228,12 @@ class WandbLogger(object):
                 self._wandb.log({f'Global Train/{k}': v}, commit=False)
             elif 'test' in k:
                 self._wandb.log({f'Global Test/{k}': v}, commit=False)
+            elif 'rand' in k:
+                self._wandb.log({f'Random/{k}': v}, commit=False)
+            elif 'pr' in k:
+                self._wandb.log({f'PR/{k}': v}, commit=False)
+            else:
+                self._wandb.log({f'PR/{k}': v}, commit=False)
 
         self._wandb.log({})
 
@@ -581,7 +588,7 @@ def build_model(args):
             )
     return model
 
-def load_model(path, args, device, delete_blocks=None, model=None):
+def ft_load_model(path, args, device, delete_blocks=None, model=None):
     if model is None:
         model = build_model(args)
     for block in model.blocks:
@@ -626,12 +633,15 @@ def load_model(path, args, device, delete_blocks=None, model=None):
         print("Using distributed data parallel with GPU %d" % args.gpu)
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
         model_without_ddp = model.module
-        return model_without_ddp
-    return model
+    else:
+        model_without_ddp = model
+    return model, model_without_ddp
 
 def pr_load_model(path, args, device, model=None):
+    random.seed(args.seed)
     if model is None:
         model = build_model(args)
+    new_block_order = None
     block_attributes = ["norm1.weight", "norm1.bias", "attn.qkv.bias", "attn.proj.bias", "norm2.weight", "norm2.bias", "mlp.fc1.bias", "mlp.fc2.bias", "attn.qkv.weight", "attn.proj.weight", "mlp.fc1.weight", "mlp.fc2.weight"]
     if path:
         if path.startswith('https'):
@@ -738,13 +748,79 @@ def pr_load_model(path, args, device, model=None):
         print("Keys in checkpoint_model after custom modifications", checkpoint_model.keys())
         
         load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
+
+        if args.shuffle_load and "pr" in args.initialize.split("/")[-1]:
+            if type(args.hold_back_blocks) == str:
+                if args.hold_back_blocks=="":
+                    args.hold_back_blocks = []
+                elif args.hold_back_blocks == "all":
+                    args.hold_back_blocks = list(range(len(model.blocks)))
+                else:
+                    args.hold_back_blocks = [int(x) for x in args.hold_back_blocks.split(",")]
+
+            shuffle_blocks = list(range(len(model.blocks)))
+            for bi in args.hold_back_blocks:
+                shuffle_blocks.remove(bi)
+            
+            while True:
+                new_block_order = random.sample(shuffle_blocks, len(shuffle_blocks))
+                if any(shuffle_blocks[i] == new_block_order[i] for i in range(len(shuffle_blocks))):
+                    pass
+                else:
+                    break
+            for bi in args.hold_back_blocks:
+                new_block_order.insert(bi, bi)
+
+            shuffled_block_order = ",".join([str(i) for i in new_block_order])
+            print(f"Shuffling blocks {shuffle_blocks} to new order {new_block_order}, while holding back blocks {args.hold_back_blocks}")
+
+            forward_map = {i:new_block_order[i] for i in range(len(new_block_order))}
+            reverse_map = {new_block_order[i]:i for i in range(len(new_block_order))}
+
+            current_state = model.state_dict()
+            shuffled_state = {}
+            for k, v in current_state.items():
+                if k.startswith("blocks."):
+                    parts = k.split(".")
+                    try:
+                        old_idx = int(parts[1])
+                    except ValueError:
+                        shuffled_state[k] = v
+                        continue
+
+                    if old_idx in reverse_map:
+                        parts[1] = str(reverse_map[old_idx])  # remap index
+                        new_k = ".".join(parts)
+                    else:
+                        new_k = k
+                    shuffled_state[new_k] = v
+                else:
+                    shuffled_state[k] = v
+            load_state_dict(model, shuffled_state, prefix=args.model_prefix)
+
+    for i in args.freeze_blocks:
+        if len(args.freeze_block_attributes) > 0:
+            for name, p in model.blocks[i].named_parameters():
+                if name in args.freeze_block_attributes:
+                    p.requires_grad = False
+                    print(f"Freezing param {name} in block {i}")
+        else:
+            print(f"Freezing all params in block {i}")
+            for p in model.blocks[i].parameters():
+                p.requires_grad = False
+            
+    for i in args.delete_blocks:
+        print(f"Deleting block {i}")
+        del model.blocks[i]
+
     model.to(device)
     if args.distributed:
         print("Using distributed data parallel with GPU %d" % args.gpu)
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
         model_without_ddp = model.module
-        return model_without_ddp
-    return model
+    else:
+        model_without_ddp = model
+    return model, model_without_ddp, new_block_order
 
 def parse_args_for_blocks(args):
     args.freeze_blocks = []
@@ -777,6 +853,8 @@ def parse_args_for_blocks(args):
         delete_str = args.pr_notes.split("d[")[1].split("]")[0]
         if delete_str.strip() != "":
             args.delete_blocks = [int(x.strip()) for x in delete_str.split(",")]
+    if "sh" in args.pr_notes:
+        args.shuffle_load = True
     args.hold_back_blocks = []
     if "hb[" in args.pr_notes:
         hb_str = args.pr_notes.split("hb[")[1].split("]")[0]
@@ -791,6 +869,10 @@ def parse_args_for_blocks(args):
 class HookCollector:
     def __init__(self, model):
         self.model = model
+        try:
+            self.model_without_ddp = model.module
+        except AttributeError:
+            self.model_without_ddp = model
         self.handles = []
         # Cache: {layer: {'resid': tensor, 'attn': tensor}}
         self.acts = defaultdict(dict)
@@ -819,7 +901,7 @@ class HookCollector:
 
             return hook_block, hook_attn, hook_attn_2
 
-        for i, block in enumerate(self.model.blocks):
+        for i, block in enumerate(self.model_without_ddp.blocks):
             block_hook, attn_hook, attn_hook_2 = make_block_hook(i)
             h1 = block.register_forward_hook(block_hook)
             h2 = block.attn.register_forward_hook(attn_hook)
