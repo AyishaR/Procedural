@@ -528,7 +528,7 @@ def main(args):
                     loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
         if data_loader_val is not None and \
         ((args.model == "vit_base" and (epoch+1)%5 == 0) or (args.model != "vit_base")):
-            if (epoch+1)%10 == 0:
+            if (epoch+1)%10 == 0 or epoch < 20:
                 test_stats, stats = model_analyse(
                     model=model_without_ddp, 
                     data_loader=data_loader_val, 

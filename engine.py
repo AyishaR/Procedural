@@ -69,8 +69,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             # this attribute is added by timm on one optimizer (adahessian)
             is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
             loss /= update_freq
-            grad_norm = loss_scaler(loss, optimizer, clip_grad=max_norm,
-                                    parameters=model.parameters(), create_graph=is_second_order,
+            grad_norm, parameter_norm = loss_scaler(loss, optimizer, clip_grad=max_norm,
+                                    parameters=model.named_parameters(), create_graph=is_second_order,
                                     update_grad=(data_iter_step + 1) % update_freq == 0)
             if (data_iter_step + 1) % update_freq == 0:
                 optimizer.zero_grad()
@@ -129,8 +129,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             if class_acc:
                 wandb_logger._wandb.log({'Rank-0 Batch Wise/train_class_acc': class_acc}, commit=False)
             if use_amp:
-                wandb_logger._wandb.log({'Rank-0 Batch Wise/train_grad_norm': grad_norm}, commit=False)
-            wandb_logger._wandb.log({'Rank-0 Batch Wise/global_train_step': it})
+                if grad_norm is not None:
+                    wandb_logger._wandb.log({'Rank-0 Batch Wise/train_grad_norm': grad_norm}, commit=False)
+                if parameter_norm is not None:
+                    for param_name, param_grad in parameter_norm.items():
+                        wandb_logger._wandb.log({f'Rank-0 Batch Wise/param_norm/{param_name}': param_grad}, commit=False)
+            wandb_logger._wandb.log({'Rank-0 Batch Wise/global_train_step': it, 'Rank-0 Batch Wise/epoch': epoch})
             
 
     # gather the stats from all processes
@@ -441,7 +445,8 @@ def update_accuracy_json(args, stats, epoch, shuffled_block_order, device):
     if 'ft' not in path_map[block_index]:
         path_map[block_index]["ft"] = []
     for fi in range(len(path_map[block_index]["ft"])):
-        if path_map[block_index]['ft'][fi]["path"] == args.output_dir:
+        if path_map[block_index]['ft'][fi]["path"] == args.output_dir and \
+        path_map[block_index]['ft'][fi]["seed"] == args.seed:
             ft_index = fi
             break
     if ft_index is None:

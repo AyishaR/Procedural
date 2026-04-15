@@ -1,7 +1,7 @@
 import os
 import math
 import time
-from collections import defaultdict, deque
+from collections import defaultdict, deque, OrderedDict
 import datetime
 import numpy as np
 from timm.utils import get_state_dict
@@ -394,21 +394,77 @@ class NativeScalerWithGradNormCount:
     def __init__(self):
         self._scaler = torch.cuda.amp.GradScaler()
 
-    def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True):
-        self._scaler.scale(loss).backward(create_graph=create_graph)
-        if update_grad:
-            if clip_grad is not None:
-                assert parameters is not None
-                self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
-                norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
+    @staticmethod
+    def get_layer_grad_norms(parameters, norm_type=2.0, group_levels=[None, 3]):
+        group_fn = []
+        for group_level in group_levels:
+            if group_level is None:
+                group_fn.append(lambda name: name.rsplit(".", 1)[0])  # group weight+bias together
             else:
-                self._scaler.unscale_(optimizer)
-                norm = get_grad_norm_(parameters)
+                group_fn.append(lambda name: ".".join(name.split(".")[:group_level]))
+
+        total_grads = []
+        # device = parameters[0][1].grad.device
+
+
+        buckets = defaultdict(list)
+        for name, p in parameters:
+            if p.grad is not None:
+                grad_norm = p.grad.detach()
+                for fn in group_fn:
+                    buckets[fn(name)].append(grad_norm)
+                total_grads.append(grad_norm)
+                
+        # device = parameters[0][1].grad.device
+
+        layer_norms = {}
+        if norm_type == inf:
+            for layer, grads in buckets.items():
+                layer_norms[layer] = max([g.abs().max() for g in grads])
+            total_grad = max([g.abs().max() for g in grads])
+        else:
+            for layer, grads in buckets.items():
+                layer_norms[layer] = torch.norm(torch.stack([torch.norm(g, norm_type) for g in grads]), norm_type)
+            total_grad = torch.norm(torch.stack([torch.norm(g, norm_type) for g in total_grads]), norm_type)
+    
+
+        return total_grad, layer_norms
+
+    def __call__(
+        self,
+        loss,
+        optimizer,
+        clip_grad=None,
+        parameters=None,   # should be model.named_parameters()
+        create_graph=False,
+        update_grad=True,
+    ):
+        self._scaler.scale(loss).backward(create_graph=create_graph)
+
+        layer_grad_norms = None
+        norm = None
+
+        if update_grad:
+            self._scaler.unscale_(optimizer)
+
+            if clip_grad is not None:
+                assert parameters is not None, "parameters must be provided when clip_grad is not None"
+                norm = torch.nn.utils.clip_grad_norm_(
+                    [p for _, p in parameters], clip_grad
+                )
+            else:
+                norm, layer_grad_norms = self.get_layer_grad_norms(parameters)
+                # print("Layer grad norms:", layer_grad_norms)
+                # layer_grad_norms_g3 = self.get_layer_grad_norms(parameters, group_level=3)
+                # print("Layer grad norms with group_level=3:", layer_grad_norms_g3)
+                # layer_grad_norms.update(layer_grad_norms_g3)
+                # norm = get_grad_norm_([p for _, p in parameters])
+                # print("Total grad norm:", norm)
+
             self._scaler.step(optimizer)
             self._scaler.update()
-        else:
-            norm = None
-        return norm
+
+        return norm, layer_grad_norms
 
     def state_dict(self):
         return self._scaler.state_dict()
@@ -725,6 +781,36 @@ def pr_load_model(path, args, device, model=None):
                 for k in block_attributes:        
                     del checkpoint_model[f"blocks.{bi}.{k}"]
                 print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L12 - end 10":
+            bi=11
+            ri=10
+            for k in block_attributes:        
+                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+            print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in range(11):
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L12 - end 9":
+            bi=11
+            ri=9
+            for k in block_attributes:        
+                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+            print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in range(11):
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L12 - end 0":
+            bi=11
+            ri=0
+            for k in block_attributes:        
+                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+            print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in range(11):
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
 
         for bi in args.skip_load_blocks:
             for k in args.skip_load_block_attributes:
@@ -845,9 +931,15 @@ def parse_args_for_blocks(args):
             args.freeze_block_attributes = [x.strip() for x in fba_str.split(",")]
     args.random_blocks = []
     if "r[" in args.pr_notes:
-        random_str = args.pr_notes.split("r[")[1].split("]")[0]
-        if random_str.strip() != "":
-            args.random_blocks = [int(x.strip()) for x in random_str.split(",")]
+        try:
+            random_str = args.pr_notes.split("r[")[1].split("]")[0]
+            if random_str.strip() != "":
+                args.random_blocks = [int(x.strip()) for x in random_str.split(",")]
+        except ValueError:
+            if " r[" in args.pr_notes:
+                random_str = args.pr_notes.split(" r[")[1].split("]")[0]
+                if random_str.strip() != "":
+                    args.random_blocks = [int(x.strip()) for x in random_str.split(",")]
     args.delete_blocks = []
     if "d[" in args.pr_notes:
         delete_str = args.pr_notes.split("d[")[1].split("]")[0]
