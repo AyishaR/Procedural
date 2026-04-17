@@ -513,7 +513,7 @@ def main(args):
             log_writer.set_step(epoch * num_training_steps_per_epoch * args.update_freq)
         if wandb_logger:
             wandb_logger.set_steps()
-        train_stats = train_one_epoch(
+        train_stats, parameter_norm = train_one_epoch(
             model, criterion, data_loader_train, optimizer,
             device, epoch, loss_scaler, args.clip_grad, model_ema, mixup_fn,
             log_writer=log_writer, wandb_logger=wandb_logger, start_steps=epoch * num_training_steps_per_epoch,
@@ -536,7 +536,9 @@ def main(args):
                     epoch=epoch, 
                     args=args, 
                     prefix="", 
-                    shuffled_block_order=None
+                    shuffled_block_order=None,
+                    parameter_norm=parameter_norm,
+                    wandb_logger=wandb_logger
                 )
             else:
                 test_stats = evaluate(data_loader_val, model_without_ddp, device, use_amp=args.use_amp)
@@ -612,7 +614,8 @@ def main(args):
         data_loader=data_loader_val, 
         device=device, 
         args=args, 
-        classes=classes
+        classes=classes,
+        wandb_logger=wandb_logger
     )
 
 

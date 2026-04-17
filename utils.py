@@ -527,9 +527,12 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, mo
     
     if is_main_process() and isinstance(epoch, int):
         to_del = epoch - args.save_ckpt_num * args.save_ckpt_freq
-        old_ckpt = output_dir / ('checkpoint-%s.pth' % to_del)
-        if os.path.exists(old_ckpt):
-            os.remove(old_ckpt)
+        if to_del in [49, 99, 149, 199, 249, 299]: # keep every 50th checkpoint
+            pass
+        else:
+            old_ckpt = output_dir / ('checkpoint-%s.pth' % to_del)
+            if os.path.exists(old_ckpt):
+                os.remove(old_ckpt)
 
 
 def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, model_ema=None):
@@ -972,32 +975,35 @@ class HookCollector:
     def __enter__(self):
         def make_block_hook(idx):
             def hook_block(mod, inp, out):
-                self.acts[idx]['blk'] = out.detach()  # Full block output
+                x = out.detach()
+                self.acts[idx]['blk'] = x
+                
+                flat = x.reshape(x.shape[0], -1)
+                blk_act_norm_per_sample = flat.norm(dim=1)
+                # print(f"Block {idx} activation norm per sample: {self.acts[idx]['blk_act_norm_per_sample']}")
+                self.acts[idx]['blk_act_norm'] = blk_act_norm_per_sample.mean().item()
+                blk_act_rms_per_sample = torch.sqrt((flat ** 2).mean(dim=-1))
+                self.acts[idx]['blk_act_rms'] = blk_act_rms_per_sample.mean().item()
 
-            def hook_attn(mod, inp, out):
-                # out = (attn_output, attn_weights)
-                # attn_weights: [B, num_heads, seq_len, seq_len]
-                # print("Attn input:", inp)
+            def hook_attn_map(mod, inp, out):
                 B, N, C = inp[0].shape
                 qkv = mod.qkv(inp[0]).reshape(B, N, 3, mod.num_heads, C // mod.num_heads).permute(2, 0, 3, 1, 4)
                 q, k, v = qkv.unbind(0)
                 attn = (q @ k.transpose(-2, -1)) * mod.scale
                 attn = attn.softmax(dim=-1)
-                # if attn_mask is not None: attn = attn.masked_fill(attn_mask == 0, float('-inf'))
                 self.acts[idx]['attn_map'] = attn  # [B, heads, N, N]
-                # self.acts[idx]['attn'] = out.detach()  # Raw attention probs
 
-            def hook_attn_2(mod, inp, out):
+            def hook_attn_blk(mod, inp, out):
                 # out = attn_output
                 self.acts[idx]['attn'] = inp[0] + mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
 
-            return hook_block, hook_attn, hook_attn_2
+            return hook_block, hook_attn_map, hook_attn_blk
 
         for i, block in enumerate(self.model_without_ddp.blocks):
-            block_hook, attn_hook, attn_hook_2 = make_block_hook(i)
+            block_hook, attn_map_hook, attn_blk_hook = make_block_hook(i)
             h1 = block.register_forward_hook(block_hook)
-            h2 = block.attn.register_forward_hook(attn_hook)
-            h3 = block.register_forward_hook(attn_hook_2)
+            h2 = block.attn.register_forward_hook(attn_map_hook)
+            h3 = block.register_forward_hook(attn_blk_hook)
             self.handles.extend([h1, h2, h3])
 
         return self.acts

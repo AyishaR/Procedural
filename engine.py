@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import utils
 import json
 from matplotlib import pyplot as plt
+from collections import defaultdict
 
 from metrics.ddp_multiclassECE import DDPMulticlassECE
 
@@ -26,6 +27,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('min_lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+
+    grad_metric_logger = utils.MetricLogger(delimiter=" ")
+
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
 
@@ -120,6 +124,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 log_writer.update(grad_norm=grad_norm, head="opt")
             log_writer.set_step()
 
+        param_norms_logging = {}
+        if parameter_norm is not None:
+            for param_name, param_grad in parameter_norm.items():
+                param_norms_logging[f'Rank-0 Batch Wise/param_norm/{param_name}'] = param_grad
+                grad_metric_logger.meters[param_name].update(param_grad, n=samples.shape[0])
+
         if wandb_logger:
             wandb_logger._wandb.log({
                 'Rank-0 Batch Wise/train_loss': loss_value,
@@ -132,15 +142,16 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 if grad_norm is not None:
                     wandb_logger._wandb.log({'Rank-0 Batch Wise/train_grad_norm': grad_norm}, commit=False)
                 if parameter_norm is not None:
-                    for param_name, param_grad in parameter_norm.items():
-                        wandb_logger._wandb.log({f'Rank-0 Batch Wise/param_norm/{param_name}': param_grad}, commit=False)
+                    wandb_logger._wandb.log(param_norms_logging, commit=False)
+                        
             wandb_logger._wandb.log({'Rank-0 Batch Wise/global_train_step': it, 'Rank-0 Batch Wise/epoch': epoch})
-            
+
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
+    grad_metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()},{k: meter.global_avg for k, meter in grad_metric_logger.meters.items()}
 
 @torch.no_grad()
 def evaluate(data_loader, model, device, use_amp=False):
@@ -228,8 +239,21 @@ def compute_detailed_metrics(acts, i, images, metric_logger, num_heads, prefix="
     metric_logger.meters[f'{prefix}attn_mad_layer{i}'].update(mad_per_head.mean().item(), n=images.shape[0])
 
 @torch.no_grad()
-def model_analyse(model, data_loader, device, epoch, args, prefix="", shuffled_block_order=None):
+def model_analyse(
+    model, 
+    data_loader, 
+    device, 
+    epoch, 
+    args, 
+    prefix="", 
+    shuffled_block_order=None, 
+    parameter_norm=None, 
+    wandb_logger=None
+):
     criterion = torch.nn.CrossEntropyLoss()
+
+    stats = []
+    # cka_features = defaultdict(list)
 
     metric_logger = utils.MetricLogger(delimiter="  ")
     detailed_metrics_logger = utils.MetricLogger(delimiter="  ")
@@ -240,6 +264,7 @@ def model_analyse(model, data_loader, device, epoch, args, prefix="", shuffled_b
 
     layers_to_analyse = range(len(model.blocks))
     # layers_to_analyse = [1]
+
     patch_count = 14  # 224/16
     num_heads = model.blocks[0].attn.num_heads
     loss = None
@@ -259,9 +284,11 @@ def model_analyse(model, data_loader, device, epoch, args, prefix="", shuffled_b
                         if criterion is not None:
                             loss = criterion(output, target)
         else:
-            output = model(images)
-            if criterion is not None:
-                loss = criterion(output, target)
+            with utils.HookCollector(model) as acts:
+                with torch.no_grad():
+                    output = model(images)
+                    if criterion is not None:
+                        loss = criterion(output, target)
 
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
@@ -280,22 +307,26 @@ def model_analyse(model, data_loader, device, epoch, args, prefix="", shuffled_b
                     x = model.fc_norm(x)
                     x = model.head(x) 
                     x = F.softmax(x[:, 0, :].squeeze(), dim=-1)
-                layer_wise_attn_logits[i] = x.argmax(dim=-1)
+                # layer_wise_attn_logits[i] = x.argmax(dim=-1)
                 
                 attn_pred = accuracy(x, target)
-                detailed_metrics_logger.meters[f'{prefix}attn_{i}'].update(attn_pred[0].item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}attn_acc_layer{i}'].update(attn_pred[0].item(), n=images.shape[0])
 
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                     x = model.norm(acts[i]['blk'])
                     x = model.fc_norm(x)
                     x = model.head(x) 
                     x = F.softmax(x[:, 0, :].squeeze(), dim=-1)
-                layer_wise_blk_logits[i] = x.argmax(dim=-1)
+                # layer_wise_blk_logits[i] = x.argmax(dim=-1)
 
                 ece_metric.update(x, target)
 
                 blk_pred = accuracy(x, target)
-                detailed_metrics_logger.meters[f'{prefix}blk_{i}'].update(blk_pred[0].item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}blk_acc_layer{i}'].update(blk_pred[0].item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}blk_act_norm_layer{i}'].update(acts[i]['blk_act_norm'], n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}blk_act_rms_layer{i}'].update(acts[i]['blk_act_rms'], n=images.shape[0])
+
+                # cka_features[i].append(acts[i]['blk'].cpu())
 
                 if args.detailed_metrics:
                     compute_detailed_metrics(acts, i, images, detailed_metrics_logger, num_heads, prefix=prefix)
@@ -320,16 +351,109 @@ def model_analyse(model, data_loader, device, epoch, args, prefix="", shuffled_b
     if device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0):
         print("ECE:", ece)
         detailed_metrics_logger.meters["ece"].update(ece, n=1)
+
+    blk_metric_keys = ["cls_attn_entropy", "attn_entropy", "attn_mad", "blk_acc", "blk_act_norm", "blk_act_rms"]
+    attn_metric_keys = ["attn_acc"]
+
+    for layer in layers_to_analyse:
+        stats_dict = {
+            "epoch": epoch if prefix == "" else -1,
+            "layer": layer,
+        }
+        for head in range(num_heads):
+            head_stats_dict = stats_dict.copy()
+            head_stats_dict["head"] = head
+            for key in blk_metric_keys:
+                metric_name = f'{prefix}{key}_head{head}_layer{layer}'
+                # print(metric_name)
+                if metric_name in detailed_metrics_logger.meters:
+                    head_stats_dict.update({
+                        f'{prefix}{key}': detailed_metrics_logger.meters[metric_name].global_avg,
+                    })
+                else:
+                    # print(f"Metric Warning: {metric_name} not found in detailed_metrics_logger.meters")
+                    pass
+            # if args.gpu == 0: pprint(head_stats_dict)
+            stats.append(head_stats_dict)
+
+        blk_stats_dict = stats_dict.copy()
+        for key in blk_metric_keys:
+            metric_name = f'{prefix}{key}_layer{layer}'
+            # print(metric_name)
+            if metric_name in detailed_metrics_logger.meters:
+                if key == "blk_acc":
+                    blk_stats_dict["layer_sub"] = blk_stats_dict["layer"]
+                    key="acc"
+                blk_stats_dict.update({
+                    f'{prefix}{key}': detailed_metrics_logger.meters[metric_name].global_avg,
+                })
+            else:
+                # print(f"Metric Warning: {metric_name} not found in detailed_metrics_logger.meters")
+                pass
+        blk_stats_dict["grad_norm"] = parameter_norm[f'module.blocks.{layer}'] if parameter_norm is not None else None
+        # if epoch in [49, 99, 149, 199, 249, 299]: blk_stats_dict["cka_feature"] = torch.cat(cka_features[layer], dim=0).cpu().tolist() if layer in cka_features else None
+        # print("cka_feature shape:", blk_stats_dict["cka_feature"].shape if blk_stats_dict["cka_feature"] is not None else None)
+        if blk_stats_dict.keys() > stats_dict.keys():   # only append if at least one metric was found
+            stats.append(blk_stats_dict)
+            # if args.gpu == 0: pprint(blk_stats_dict)
+        if wandb_logger:
+            layer = blk_stats_dict["layer"]
+            epoch = blk_stats_dict["epoch"]
+            layer_sub = blk_stats_dict.get("layer_sub", None)
+
+            epoch_wise = {f"Epoch-wise/{k}_layer{layer}": v for k, v in blk_stats_dict.items() if k not in ['cka_feature', 'epoch', 'layer', 'layer_sub']}
+            epoch_wise["Epoch-wise/epoch"] = epoch
+            wandb_logger._wandb.log(epoch_wise)
+            layer_wise = {f"Layer-wise/{k}_epoch{epoch}": v for k, v in blk_stats_dict.items() if k not in ['cka_feature', 'epoch', 'layer', 'layer_sub']}
+            layer_wise["Layer-wise/layer"] = layer
+            layer_wise["Layer-wise/layer_sub"] = layer_sub if layer_sub is not None else layer
+            wandb_logger._wandb.log(layer_wise)
+
+        attn_stats_dict = stats_dict.copy()
+        for key in attn_metric_keys:
+            metric_name = f'{prefix}{key}_layer{layer}'
+            # print(metric_name)
+            if metric_name in detailed_metrics_logger.meters:
+                if key == "attn_acc":
+                    attn_stats_dict["layer_sub"] = attn_stats_dict["layer"]-0.5
+                    key="acc"
+                attn_stats_dict.update({
+                    f'{prefix}{key}': detailed_metrics_logger.meters[metric_name].global_avg,
+                })
+            else:
+                # print(f"Metric Warning: {metric_name} not found in detailed_metrics_logger.meters")
+                pass
+        if attn_stats_dict.keys() > stats_dict.keys():
+            stats.append(attn_stats_dict)
+            # if args.gpu == 0: pprint(attn_stats_dict)
+        if wandb_logger:
+            layer = attn_stats_dict.get("layer")
+            layer_sub = attn_stats_dict.get("layer_sub", None)
+            epoch = attn_stats_dict.get("epoch")
+
+            epoch_wise = {f"Epoch-wise/{k}_layer{layer}": v for k, v in attn_stats_dict.items() if k not in ['cka_feature', 'epoch', 'layer', 'layer_sub']}
+            epoch_wise["Epoch-wise/epoch"] = epoch
+            wandb_logger._wandb.log(epoch_wise)
+            layer_wise = {f"Layer-wise/{k}_epoch{epoch}": v for k, v in attn_stats_dict.items() if k not in ['cka_feature', 'epoch', 'layer', 'layer_sub']}
+            layer_wise["Layer-wise/layer"] = layer
+            layer_wise["Layer-wise/layer_sub"] = layer_sub if layer_sub is not None else layer
+            wandb_logger._wandb.log(layer_wise)
     
-    stats = {k: meter.global_avg for k, meter in detailed_metrics_logger.meters.items()}
+    # stats = {k: meter.global_avg for k, meter in detailed_metrics_logger.meters.items()}
     if args.gpu == 0:
         print("Averaged stats:", detailed_metrics_logger)
-        print("Layer-wise attention and block prediction accuracies:", stats)
+        # print("Layer-wise attention and block prediction accuracies:", stats)
 
         if args.accuracy_json:
             update_accuracy_json(
                 args=args,
                 stats=stats,
+                model_stats = {
+                    "acc1": metric_logger.meters["acc1"].global_avg,
+                    "acc5": metric_logger.meters["acc5"].global_avg,
+                    "ece": detailed_metrics_logger.meters["ece"].global_avg,
+                    "epoch": epoch
+                },
                 epoch=epoch,
                 shuffled_block_order=shuffled_block_order,
                 device=device
@@ -337,9 +461,8 @@ def model_analyse(model, data_loader, device, epoch, args, prefix="", shuffled_b
 
     return test_stats, stats
 
-
 @torch.no_grad()
-def attention_analyse_final(data_loader, device, args, classes=None):
+def attention_analyse_final(data_loader, device, args, classes=None, wandb_logger=None):
 
     shuffled_block_order = None
 
@@ -355,7 +478,8 @@ def attention_analyse_final(data_loader, device, args, classes=None):
         device=device,
         epoch=None,
         args=args,
-        prefix="rand_"
+        prefix="rand_",
+        wandb_logger=wandb_logger,
     )
 
     if args.initialize:
@@ -375,14 +499,15 @@ def attention_analyse_final(data_loader, device, args, classes=None):
             epoch=None,
             args=args,
             prefix="pr_",
-            shuffled_block_order=shuffled_block_order
+            shuffled_block_order=shuffled_block_order,
+            wandb_logger=wandb_logger
         )
 
     if args.output_dir:
         if args.output_dir.endswith(".pth"):
             ft_path = args.output_dir
         else:
-            ft_path = args.output_dir+f"/checkpoint-299.pth"
+            ft_path = args.output_dir+f"/checkpoint-{args.epochs-1}.pth"
         print(f"Loading fine-tuned model from: {ft_path}")
         model = utils.build_model(args)
         model.load_state_dict(model_rand_without_ddp.state_dict())
@@ -394,10 +519,11 @@ def attention_analyse_final(data_loader, device, args, classes=None):
             epoch=None,
             args=args,
             prefix="",
-            shuffled_block_order=shuffled_block_order
+            shuffled_block_order=shuffled_block_order,
+            wandb_logger=wandb_logger
         )
     
-def update_accuracy_json(args, stats, epoch, shuffled_block_order, device):
+def update_accuracy_json(args, stats, model_stats, epoch, shuffled_block_order, device):
     if args.analyse_only:    # loading form JSON file
         notes = f"{args.pr_notes}"
     else:
@@ -450,24 +576,15 @@ def update_accuracy_json(args, stats, epoch, shuffled_block_order, device):
             ft_index = fi
             break
     if ft_index is None:
-        path_map[block_index]['ft'].append({"path": args.output_dir, "seed": args.seed})
+        path_map[block_index]['ft'].append({"path": args.output_dir, "seed": args.seed, "stats": []})
         if shuffled_block_order is not None:
             path_map[block_index]['ft'][-1]["shuffled_block_order"] = shuffled_block_order
         ft_index = len(path_map[block_index]['ft'])-1
 
-    if epoch is None:
-        existing_stats = path_map[block_index]['ft'][ft_index].get("layers_accuracy", {})
-        existing_stats.update(stats)
-        path_map[block_index]['ft'][ft_index]["layers_accuracy"] = existing_stats
-        pprint(path_map[block_index]['ft'][ft_index]["layers_accuracy"])
-    else:
-        if "progress" not in path_map[block_index]['ft'][ft_index]:
-            path_map[block_index]['ft'][ft_index]["progress"] = {}
-        path_map[block_index]['ft'][ft_index]["progress"][epoch] = stats
-        path_map[block_index]['ft'][ft_index]["latest_epoch"] = epoch
-        print("Updated progress for epoch", epoch)
-        pprint(path_map[block_index]['ft'][ft_index]["progress"][epoch])
-
+    path_map[block_index]['ft'][ft_index].update(
+        model_stats
+    )
+    path_map[block_index]['ft'][ft_index].get("stats", []).extend(stats)
 
     # if device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0):
     with open(args.accuracy_json, "w") as f:
