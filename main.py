@@ -266,7 +266,9 @@ def main(args):
     torch.cuda.manual_seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
-    cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
     dataset_train, args.nb_classes = build_dataset(is_train=True, args=args)
     classes = dataset_train.classes if hasattr(dataset_train, 'classes') else None

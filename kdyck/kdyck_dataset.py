@@ -9,7 +9,6 @@ class KDyckDataset(torch.utils.data.Dataset):
         self.seq_length = self.args.seq_length
         self.p_open = self.args.p_open
         self.max_depth = self.args.max_depth
-        self.truncated = "truncated" in self.args.procedural_data
 
     def __len__(self):
         return 4000000
@@ -42,6 +41,33 @@ class KDyckDataset(torch.utils.data.Dataset):
 
         return torch.tensor(dyck.astype(np.int64))
 
+    def generate_kdyck_shuffled(self):
+        """
+        Generate random k-Dyck word (perfectly balanced brackets).
+        k: number of bracket types (64)
+        length: total symbols (196 for 14x14 flattened)
+        """
+        
+        stack = []
+        dyck = np.zeros(self.seq_length, dtype=np.int16)  # 0-127 vocab
+
+        for i in range(self.seq_length):
+            if len(stack) == self.seq_length-i:
+                while stack:
+                    top_type = stack.pop()
+                    dyck[i] = self.k + top_type
+                    i+=1
+                break
+            if len(stack) < self.min_depth or (np.random.rand() < self.p_open and len(stack)<self.max_depth): # p(open) given in appendix
+                bracket_type = np.random.randint(0, self.k)
+                dyck[i] = bracket_type  # Open symbol
+                stack.append(bracket_type)
+            else:
+                top_type = stack.pop(random.randint(0, len(stack)-1))  # Randomly pop from stack
+                dyck[i] = self.k + top_type  # Close symbol (64-127)
+
+        return torch.tensor(dyck.astype(np.int64))
+
     def generate_kdyck_truncated(self):
         result = []
         stack = []
@@ -68,10 +94,40 @@ class KDyckDataset(torch.utils.data.Dataset):
         # result = result[:self.max_depth]
         return torch.tensor(np.array(result), dtype=torch.int64)
 
+    def generate_kdyck_truncated_shuffled(self):
+        result = []
+        stack = []
+
+        # Initialize with minimum depth
+        for _ in range(self.min_depth):
+            opening_symbol = np.random.randint(0, self.k)
+            result.append(opening_symbol)
+            stack.append(opening_symbol)
+
+        while len(result) < self.seq_length:
+            if (len(stack) < self.max_depth and random.random() < self.p_open) or len(stack)<self.min_depth: 
+                # if len(result) >= self.max_depth - 1:
+                #     closing_symbol = stack.pop() + offset
+                #     result.append(closing_symbol)
+                #     continue
+                opening_symbol = np.random.randint(0, self.k)
+                result.append(opening_symbol)
+                stack.append(opening_symbol)
+            else: 
+                closing_symbol = stack.pop(random.randint(0, len(stack)-1)) + self.k
+                result.append(closing_symbol)
+
+        # result = result[:self.max_depth]
+        return torch.tensor(np.array(result), dtype=torch.int64)
+
     def __getitem__(self, _idx):
-        if self.truncated:
+        if self.args.procedural_data == "kdyck_truncated":
             kdyck_seq = self.generate_kdyck_truncated()
-        else:
+        elif self.args.procedural_data == "kdyck_truncated_shuffled":
+            kdyck_seq = self.generate_kdyck_truncated_shuffled()
+        elif self.args.procedural_data == "kdyck_shuffled": 
+            kdyck_seq = self.generate_kdyck_shuffled()
+        elif self.args.procedural_data == "kdyck":
             kdyck_seq = self.generate_kdyck()
         return kdyck_seq
 

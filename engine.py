@@ -376,6 +376,36 @@ def model_analyse(
             # if args.gpu == 0: pprint(head_stats_dict)
             stats.append(head_stats_dict)
 
+        attn_stats_dict = stats_dict.copy()
+        for key in attn_metric_keys:
+            metric_name = f'{prefix}{key}_layer{layer}'
+            # print(metric_name)
+            if metric_name in detailed_metrics_logger.meters:
+                if key == "attn_acc":
+                    attn_stats_dict["layer_sub"] = attn_stats_dict["layer"]-0.5
+                    key="acc"
+                attn_stats_dict.update({
+                    f'{prefix}{key}': detailed_metrics_logger.meters[metric_name].global_avg,
+                })
+            else:
+                # print(f"Metric Warning: {metric_name} not found in detailed_metrics_logger.meters")
+                pass
+        if attn_stats_dict.keys() > stats_dict.keys():
+            stats.append(attn_stats_dict)
+            # if args.gpu == 0: pprint(attn_stats_dict)
+        if wandb_logger:
+            layer = attn_stats_dict.get("layer")
+            layer_sub = attn_stats_dict.get("layer_sub", None)
+            epoch = attn_stats_dict.get("epoch")
+
+            epoch_wise = {f"Epoch-wise/{k}_layer{layer}": v for k, v in attn_stats_dict.items() if k not in ['cka_feature', 'epoch', 'layer', 'layer_sub']}
+            epoch_wise["Epoch-wise/epoch"] = epoch
+            wandb_logger._wandb.log(epoch_wise)
+            layer_wise = {f"Layer-wise/{k}_epoch{epoch}": v for k, v in attn_stats_dict.items() if k not in ['cka_feature', 'epoch', 'layer', 'layer_sub']}
+            layer_wise["Layer-wise/layer"] = layer
+            layer_wise["Layer-wise/layer_sub"] = layer_sub if layer_sub is not None else layer
+            wandb_logger._wandb.log(layer_wise)
+            
         blk_stats_dict = stats_dict.copy()
         for key in blk_metric_keys:
             metric_name = f'{prefix}{key}_layer{layer}'
@@ -405,36 +435,6 @@ def model_analyse(
             epoch_wise["Epoch-wise/epoch"] = epoch
             wandb_logger._wandb.log(epoch_wise)
             layer_wise = {f"Layer-wise/{k}_epoch{epoch}": v for k, v in blk_stats_dict.items() if k not in ['cka_feature', 'epoch', 'layer', 'layer_sub']}
-            layer_wise["Layer-wise/layer"] = layer
-            layer_wise["Layer-wise/layer_sub"] = layer_sub if layer_sub is not None else layer
-            wandb_logger._wandb.log(layer_wise)
-
-        attn_stats_dict = stats_dict.copy()
-        for key in attn_metric_keys:
-            metric_name = f'{prefix}{key}_layer{layer}'
-            # print(metric_name)
-            if metric_name in detailed_metrics_logger.meters:
-                if key == "attn_acc":
-                    attn_stats_dict["layer_sub"] = attn_stats_dict["layer"]-0.5
-                    key="acc"
-                attn_stats_dict.update({
-                    f'{prefix}{key}': detailed_metrics_logger.meters[metric_name].global_avg,
-                })
-            else:
-                # print(f"Metric Warning: {metric_name} not found in detailed_metrics_logger.meters")
-                pass
-        if attn_stats_dict.keys() > stats_dict.keys():
-            stats.append(attn_stats_dict)
-            # if args.gpu == 0: pprint(attn_stats_dict)
-        if wandb_logger:
-            layer = attn_stats_dict.get("layer")
-            layer_sub = attn_stats_dict.get("layer_sub", None)
-            epoch = attn_stats_dict.get("epoch")
-
-            epoch_wise = {f"Epoch-wise/{k}_layer{layer}": v for k, v in attn_stats_dict.items() if k not in ['cka_feature', 'epoch', 'layer', 'layer_sub']}
-            epoch_wise["Epoch-wise/epoch"] = epoch
-            wandb_logger._wandb.log(epoch_wise)
-            layer_wise = {f"Layer-wise/{k}_epoch{epoch}": v for k, v in attn_stats_dict.items() if k not in ['cka_feature', 'epoch', 'layer', 'layer_sub']}
             layer_wise["Layer-wise/layer"] = layer
             layer_wise["Layer-wise/layer_sub"] = layer_sub if layer_sub is not None else layer
             wandb_logger._wandb.log(layer_wise)

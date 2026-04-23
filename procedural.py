@@ -26,6 +26,7 @@ from models.vitp import VitProcedural
 from kdyck.kdyck_generation import *
 from kdyck.utils import *
 from kdyck.kdyck_dataset import *
+from procedural_data.repeat_dataset import *
 import utils
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -179,7 +180,14 @@ class Trainer:
             else:
                 print("No checkpoint found for auto-resume. Starting from scratch.")
 
-        self.dataset = KDyckDataset(self.args)
+        if "kdyck" in self.args.procedural_data:
+            self.dataset = KDyckDataset(self.args)
+            self.mask_function = mask_kdyck_dataset
+        elif "repeat" in self.args.procedural_data:
+            self.dataset = RepeatDataset(self.args)
+            self.mask_function = mask_repeat_dataset
+        else:
+            raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
         self.sampler_train = torch.utils.data.DistributedSampler(
             self.dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=True, seed=self.args.seed,
         )
@@ -198,7 +206,8 @@ class Trainer:
         except StopIteration:
             self.dataset_iter = iter(self.loader)
             targets = next(self.dataset_iter)
-        inputs = mask_kdyck_dataset(targets, mask_token=self.args.mask_token, mask_prob=self.args.mask_ratio, close_brack_start_token=self.args.k)
+        # inputs = mask_kdyck_dataset(targets, mask_token=self.args.mask_token, mask_prob=self.args.mask_ratio, close_brack_start_token=self.args.k)
+        inputs = self.mask_function(targets, mask_token=self.args.mask_token, mask_prob=self.args.mask_ratio)
 
         inputs = inputs.cuda()
         targets = targets.cuda()
