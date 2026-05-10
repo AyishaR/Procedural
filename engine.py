@@ -6,14 +6,24 @@
 import math
 from typing import Iterable, Optional
 import torch
+import torch.distributed as dist
 from timm.data import Mixup
 from timm.utils import accuracy, ModelEma
 from pprint import pprint
 import torch.nn.functional as F
 import utils
 import json
+import os
 from matplotlib import pyplot as plt
 from collections import defaultdict
+from cka_utils import linear_cka, gram_cka
+from models.vitp import VitProcedural
+from kdyck.kdyck_dataset import KDyckDataset, mask_kdyck_dataset
+from procedural_data.repeat_dataset import RepeatDataset, mask_repeat_dataset
+import numpy as np
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, random_split
+from torch.utils.data.distributed import DistributedSampler
 
 from metrics.ddp_multiclassECE import DDPMulticlassECE
 
@@ -590,3 +600,433 @@ def update_accuracy_json(args, stats, model_stats, epoch, shuffled_block_order, 
     with open(args.accuracy_json, "w") as f:
         json.dump(path_map, f, indent=4)
         print(f"Updated {args.accuracy_json} with new layer accuracies.")
+
+@torch.no_grad()
+def cka_final(data_loader, device, args, classes=None, wandb_logger=None):
+
+    shuffled_block_order = None
+
+    # pre-ft image
+    random_model = utils.build_model(args).to(device)
+    if args.distributed:
+        print("Using distributed data parallel with GPU %d" % args.gpu)
+        random_model = torch.nn.parallel.DistributedDataParallel(random_model, device_ids=[args.gpu], find_unused_parameters=False)
+        random_model_without_ddp = random_model.module
+    else:
+        random_model_without_ddp = random_model
+
+    if args.initialize:
+        print(f"Loading pr-tuned model from: {args.initialize}")
+        if args.analyse_only:
+            pr_args = utils.parse_args_for_blocks(args)
+        else:
+            pr_args = args
+        print(f"PR args for loading model: {pr_args}")
+        pre_ft = utils.build_model(pr_args)
+        pre_ft.load_state_dict(random_model_without_ddp.state_dict())
+        pre_ft, pre_ft_without_ddp, shuffled_block_order = utils.pr_load_model(args.initialize, pr_args, device, model=pre_ft)
+    else:
+        pre_ft_without_ddp = random_model_without_ddp
+
+    # procedural model
+    pr_model = VitProcedural(args).cuda()
+    state_for_pr = pre_ft_without_ddp.state_dict()
+    del state_for_pr["head.weight"]
+    del state_for_pr["head.bias"]
+    del state_for_pr["pos_embed"]
+    pr_model.model.load_state_dict(state_for_pr, strict=False)
+    if args.distributed:
+        pr_model = torch.nn.parallel.DistributedDataParallel(pr_model, device_ids=[args.gpu], find_unused_parameters=False)
+        pr_model_without_ddp = pr_model.module
+    else:
+        pr_model_without_ddp = pr_model
+    
+    # post-ft image
+    if args.output_dir:
+        if args.output_dir.endswith(".pth"):
+            ft_path = args.output_dir
+        else:
+            ft_path = args.output_dir+f"/checkpoint-{args.epochs-1}.pth"
+        print(f"Loading fine-tuned model from: {ft_path}")
+        model = utils.build_model(args)
+        model.load_state_dict(pre_ft_without_ddp.state_dict())
+        model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model)
+    
+    if args.model == "vit_small":
+        kdyck_embeddings_path = "kdyck/kdyck_orthogonal_embeddings_vits.pt"
+    else:
+        raise NotImplementedError(f"Model {args.model} not supported for kdyck embedding loading")
+
+    if "kdyck" in args.procedural_data:
+        pr_mask_function = mask_kdyck_dataset
+        dataset = KDyckDataset(args)
+    else:
+        pr_mask_function = mask_repeat_dataset
+        dataset = RepeatDataset(args)
+
+    sampler_train = torch.utils.data.DistributedSampler(
+        dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=True, seed=args.seed,
+    )
+    pr_loader = DataLoader(
+        dataset,
+        sampler=sampler_train,
+        batch_size=int((args.batch_size)*1.5)
+    )
+    print("*"*20, "CKA - random vs pre-ft", "*"*20)
+    cka_calculate(
+        model_A=random_model_without_ddp,
+        model_B=pre_ft_without_ddp,
+        data_loader=data_loader,
+        device=device,
+        args=args
+    )
+    print("*"*20, "CKA - pre-ft vs post-ft", "*"*20)
+    cka_calculate(
+        model_A=pre_ft_without_ddp,
+        model_B=model_without_ddp,
+        data_loader=data_loader,
+        device=device,
+        args=args,
+        procedural_data_loader=pr_loader,
+        pr_model=pr_model_without_ddp,
+        mask_function=pr_mask_function
+    )
+
+@torch.no_grad()
+def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
+
+    shuffled_block_order = None
+
+    # random_model image
+    random_model = utils.build_model(args).to(device)
+    if args.distributed:
+        print("Using distributed data parallel with GPU %d" % args.gpu)
+        random_model = torch.nn.parallel.DistributedDataParallel(random_model, device_ids=[args.gpu], find_unused_parameters=False)
+        random_model_without_ddp = random_model.module
+    else:
+        random_model_without_ddp = random_model
+
+    # model A
+    if args.output_dir:
+        if args.output_dir.endswith(".pth"):
+            ft_path = args.output_dir
+        else:
+            ft_path = args.output_dir+f"/checkpoint-{args.epochs-1}.pth"
+        print(f"Loading fine-tuned model from: {ft_path}")
+        model = utils.build_model(args)
+        model.load_state_dict(random_model_without_ddp.state_dict())
+        model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model)
+    
+    # model B
+    if args.output_dir_B:
+        if args.output_dir_B.endswith(".pth"):
+            ft_path = args.output_dir_B
+        else:
+            ft_path = args.output_dir_B+f"/checkpoint-{args.epochs-1}.pth"
+        print(f"Loading fine-tuned model from: {ft_path}")
+        model_B = utils.build_model(args)
+        model_B.load_state_dict(random_model_without_ddp.state_dict())
+        model_B, model_B_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model_B)
+    
+    if args.model == "vit_small":
+        kdyck_embeddings_path = "kdyck/kdyck_orthogonal_embeddings_vits.pt"
+    else:
+        raise NotImplementedError(f"Model {args.model} not supported for kdyck embedding loading")
+
+    if "kdyck" in args.procedural_data:
+        pr_mask_function = mask_kdyck_dataset
+        dataset = KDyckDataset(args)
+    else:
+        pr_mask_function = mask_repeat_dataset
+        dataset = RepeatDataset(args)
+
+    sampler_train = torch.utils.data.DistributedSampler(
+        dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=True, seed=args.seed,
+    )
+    pr_loader = DataLoader(
+        dataset,
+        sampler=sampler_train,
+        batch_size=int((args.batch_size)*1.5)
+    )
+    print("*"*20, "CKA - random model vs model A", "*"*20)
+    cka_calculate(
+        model_A=random_model_without_ddp,
+        model_B=model_without_ddp,
+        data_loader=data_loader,
+        device=device,
+        args=args
+    )
+    print("*"*20, "CKA - random model vs model B", "*"*20)
+    cka_calculate(
+        model_A=random_model_without_ddp,
+        model_B=model_B_without_ddp,
+        data_loader=data_loader,
+        device=device,
+        args=args
+    )
+    print("*"*20, "CKA - model A vs model B", "*"*20)
+    cka_calculate(
+        model_A=model_without_ddp,
+        model_B=model_B_without_ddp,
+        data_loader=data_loader,
+        device=device,
+        args=args
+    )
+
+def cka_calculate(model_A, model_B, data_loader, device, args, procedural_data_loader=None, pr_model=None, mask_function=None):
+    # Procedural data always compared against model A
+
+    # Image dataset forward pass
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    cka_feats_A = {str(lid): [] for lid in np.arange(-1, len(model_A.blocks)-0.5, 0.5)}
+    cka_feats_B = {str(lid): [] for lid in np.arange(-1, len(model_B.blocks)-0.5, 0.5)}
+    print("Initialized CKA feature storage for layers:", list(cka_feats_A.keys()))
+    cka_feats_pr = {str(lid): [] for lid in np.arange(-1, len(pr_model.model.blocks)-0.5, 0.5)} if pr_model is not None else None
+
+    pr_dataset_iter = None
+    if procedural_data_loader:
+        pr_dataset_iter = iter(procedural_data_loader)
+        assert pr_model is not None, "pr_model must be provided if procedural_data_loader is given"
+
+    for batch in metric_logger.log_every(data_loader, 10, "cka-only: "):
+        images = batch[0]
+        target = batch[-1]
+
+        images = images.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
+
+        # procedural
+        if pr_dataset_iter is not None:
+            try:
+                pr_target = next(pr_dataset_iter)
+            except StopIteration:
+                pr_dataset_iter = iter(procedural_data_loader)
+                pr_target = next(pr_dataset_iter)
+            pr_input = mask_function(pr_target).cuda()
+
+            with torch.no_grad():
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    with utils.HookCollector(pr_model.model) as acts_pr:
+                        pr_output = pr_model(pr_input)
+            for i in np.arange(-1, len(pr_model.model.blocks), 1.0): 
+                with torch.no_grad():
+                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                        if i == -1.0:
+                            cka_feats_pr[str(i)].append(acts_pr[0]["inp"])
+                        else:
+                            cka_feats_pr[str(i)].append(acts_pr[int(i)]['blk'])
+                            cka_feats_pr[str(i-0.5)].append(acts_pr[int(i)]['attn'])
+
+        if args.use_amp:
+            with torch.amp.autocast('cuda'):
+                with utils.HookCollector(model_A) as acts_A:
+                    with torch.no_grad():
+                        output = model_A(images)
+                with utils.HookCollector(model_B) as acts_B:
+                    with torch.no_grad():
+                        output = model_B(images)
+
+        with torch.no_grad():
+            for i in np.arange(-1, len(model_B.blocks), 1.0):
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    if i == -1.0:
+                        cka_feats_B[str(i)].append(acts_B[0]["inp"])
+                        cka_feats_A[str(i)].append(acts_A[0]["inp"])
+                    else:
+                        cka_feats_B[str(i)].append(acts_B[int(i)]['blk'])
+                        cka_feats_A[str(i)].append(acts_A[int(i)]['blk'])
+                        cka_feats_B[str(i-0.5)].append(acts_B[int(i)]['attn'])
+                        cka_feats_A[str(i-0.5)].append(acts_A[int(i)]['attn'])
+
+    cka_feats_B = {str(lid): torch.cat(cka_feats_B[str(lid)], dim=0) for lid, _ in cka_feats_B.items()}
+    cka_feats_A = {str(lid): torch.cat(cka_feats_A[str(lid)], dim=0) for lid, _ in cka_feats_A.items()}
+    if cka_feats_pr is not None: cka_feats_pr = {str(lid): torch.cat(cka_feats_pr[str(lid)], dim=0) for lid, _ in cka_feats_pr.items()}
+    
+    N = cka_feats_B["0.0"].shape[0]
+    if utils.get_rank()==0:
+        for l in np.arange(-1, len(model_B.blocks)-0.5, 0.5):
+            print("\n---------- Layer", l, "----------")
+            cka_layer_B = cka_feats_B[str(l)][:N, 0, :].reshape(N, -1)
+            cka_layer_A = cka_feats_A[str(l)][:N, 0, :].reshape(N, -1)
+
+            cka_gram_value = gram_cka(cka_layer_B, cka_layer_A)
+            print(f"CLS : {cka_gram_value:.4f}")
+
+            cka_layer_B = cka_feats_B[str(l)][:N, 1:, :].reshape(N, -1)
+            cka_layer_A = cka_feats_A[str(l)][:N, 1:, :].reshape(N, -1)
+
+            cka_gram_value = gram_cka(cka_layer_B, cka_layer_A)
+            print(f"Feat: {cka_gram_value:.4f}")
+
+            if cka_feats_pr is not None:
+                cka_layer_pr = cka_feats_pr[str(l)][:N, :, :].reshape(N, -1)
+                cka_gram_value_pr = gram_cka(cka_layer_pr, cka_layer_A)
+                print(f"Procedural vs Image CKA: {cka_gram_value_pr:.4f}")
+
+    # print(f"GPU {args.gpu} done with CKA computations, entering barrier")
+    dist.barrier()
+    # print(f"GPU {args.gpu} passed barrier, ending attention_analyse_final")
+
+
+
+def gather_tensor(cka_feat, rank, world_size):
+    """
+    Gather tensors from all ranks onto rank 0.
+    cka_feat: local [n_local, d] on current rank
+    returns: [n_total, d] on rank 0, None on others
+    """
+    # First communicate sizes (each rank may have different n_local)
+    local_size = torch.tensor([cka_feat.size(0)], device=cka_feat.device)
+    all_sizes = [torch.zeros(1, dtype=torch.long, device=cka_feat.device)
+                for _ in range(world_size)]
+    dist.all_gather(all_sizes, local_size)
+    all_sizes = [s.item() for s in all_sizes]
+
+    # Pad to max size so all_gather can work with uniform shape
+    max_size = max(all_sizes)
+    d = cka_feat.size(1)
+    padded = torch.zeros(max_size, d, device=cka_feat.device, dtype=cka_feat.dtype)
+    padded[:cka_feat.size(0)] = cka_feat
+
+    gathered = [torch.zeros(max_size, d, device=cka_feat.device, dtype=cka_feat.dtype)
+                for _ in range(world_size)]
+    if rank == 0:
+        dist.gather(padded, gather_list=gathered, dst=0)
+
+        # Trim padding from each rank's contribution
+        trimmed = [gathered[str(i)][:all_sizes[str(i)]] for i in range(world_size)]
+        return torch.cat(trimmed, dim=0)  # [n_total, d]
+    return None
+    
+@torch.no_grad()
+def attention_visualise(data_loader, model, device, args=None, per_head=True):
+    # criterion = torch.nn.CrossEntropyLoss()
+
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = 'attention_visualise:'
+
+    layers_to_analyse = range(len(model.blocks))
+    # layers_to_analyse = [1]
+    patch_size = 14  # 224/16
+    num_heads = model.blocks[0].attn.num_heads
+
+    targets = []
+
+    # switch to evaluation mode
+    model.eval()
+    for batch in metric_logger.log_every(data_loader, 10, header):
+        images = batch[0]
+        target = batch[-1]
+
+        images = images.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
+
+        with utils.HookCollector(model) as acts:
+            with torch.no_grad():
+                _ = model(images)
+
+        layer_wise_blk_logits = {}
+        layer_wise_attn_logits = {}
+        with torch.no_grad():
+            targets.extend(target)
+
+            for i in layers_to_analyse:
+                model.eval()
+                x = model.norm(acts[i]['blk'])
+                x = model.fc_norm(x)
+                x = model.head(x) 
+                x = F.softmax(x[:, 0, :].squeeze())
+                layer_wise_blk_logits[i] = x.argmax(dim=-1)
+                # layer_accuracy[i]['blk_pred'].extend(x)
+
+                x = model.norm(acts[i]['attn'])
+                x = model.fc_norm(x)
+                x = model.head(x) 
+                x = F.softmax(x[:, 0, :].squeeze())
+                layer_wise_attn_logits[i] = x.argmax(dim=-1)
+                # layer_accuracy[i]['attn_pred'].extend(x)
+
+        for si in range(10):
+            if per_head:
+                fig, axs = plt.subplots(num_heads+1, len(layers_to_analyse)+1, figsize=(5 * len(layers_to_analyse) + 1, 10*num_heads))
+
+                axs[0, 0].imshow(utils.denormalize(images[si].cpu().squeeze()).permute(1, 2, 0)); axs[0, 0].set_title('Input'); axs[0, 0].axis('off')
+                
+                for hi in range(-1, num_heads):
+                    for i, layer_idx in enumerate(layers_to_analyse, 1):
+                        
+                        pi = i
+                        # print()
+                        attn_map = acts[layer_idx]['attn_map']
+
+                        if hi==-1:
+                            cls_attn = attn_map[:, :, 0, 1:][si].mean(0).cpu().numpy()  # Avg heads [196] → [14,14]
+                        else:
+                            cls_attn = attn_map[:, :, 0, 1:][si][hi].cpu().numpy()  # Avg heads [196] → [14,14]
+
+                        cls_attn = cls_attn.reshape(patch_size, patch_size)
+                        cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
+                        
+                        # Resize overlay
+                        cls_resized = F.interpolate(
+                            torch.tensor(cls_attn[None, None, :, :]), size=(224, 224), mode='bilinear', align_corners=False
+                        ).squeeze().numpy()
+                        
+                        # Plots
+                        im = axs[hi+1, layer_idx+1].imshow(cls_attn, cmap='viridis')
+
+                        # add text to plot with colour, not title
+                        if hi==-1:
+                            # Logit lens
+                            pred_blk_label = layer_wise_blk_logits[layer_idx][si].item()
+                            pred_attn_label = layer_wise_attn_logits[layer_idx][si].item()
+                            axs[hi+1, layer_idx+1].set_title(f'Layer {layer_idx}')
+                        axs[hi+1, layer_idx+1].axis('off')
+
+                    if hi!=-1:
+                        axs[hi+1, 0].set_axis_off()
+                        axs[hi+1, 0].set_visible(False)
+                    plt.tight_layout()
+                    # plt.colorbar(im, ax=axs[hi+1, :], fraction=0.02, pad=0.01)
+
+            else:
+                plt_column = len(layers_to_analyse)//2 + 1
+                fig, axs = plt.subplots(2, plt_column, figsize=(5 * (len(layers_to_analyse)//2 + 1), 10))
+
+                axs[0, 0].imshow(utils.denormalize(images[si].squeeze()).numpy().permute(1, 2, 0)); axs[0, 0].set_title('Input'); axs[0, 0].axis('off')
+                
+                for i, layer_idx in enumerate(layers_to_analyse, 1):
+                    
+                    pi = i
+                    # print()
+                    attn_map = acts[layer_idx]['attn_map']
+                    # print(f"Layer {layer_idx} attention map shape:", attn_map.shape)
+
+                    cls_attn = attn_map[:, :, 0, 1:][si].mean(0).cpu().numpy()  # Avg heads [196] → [14,14]
+                    cls_attn = cls_attn.reshape(patch_size, patch_size)
+                    cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
+                    
+                    # Resize overlay
+                    cls_resized = F.interpolate(
+                        torch.tensor(cls_attn[None, None, :, :]), size=(224, 224), mode='bilinear', align_corners=False
+                    ).squeeze().numpy()
+                    
+                    # Plots
+                    im = axs[pi//plt_column, pi%plt_column].imshow(cls_attn, cmap='viridis')
+
+                    # Logit lens
+                    axs[pi//plt_column, pi%plt_column].set_title(f'Layer {layer_idx}')
+                    axs[pi//plt_column, pi%plt_column].axis('off')
+
+                axs[1, plt_column-1].set_axis_off()
+                axs[1, plt_column-1].set_visible(False) 
+                plt.tight_layout()
+            if args.visualise_output_path:
+                os.makedirs(args.visualise_output_path, exist_ok=True)
+            # if False:
+                plt.savefig(args.visualise_output_path+f"/sample_ph{per_head}_{si}.png", dpi=300, bbox_inches='tight')
+                # print(f"Saved attention visualization for sample {si}")
+            else:
+                plt.show()
+        break
+        

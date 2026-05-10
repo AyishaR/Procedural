@@ -176,6 +176,8 @@ def get_args_parser():
                         type=str, help='dataset path')
     parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
+    parser.add_argument('--output_dir_B', default='',
+                        help='path where to save, empty for no saving')
     parser.add_argument('--log_dir', default=None,
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda',
@@ -210,13 +212,47 @@ def get_args_parser():
     parser.add_argument('--pin_mem', type=str2bool, default=True,
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
 
+    # Procedural
+    parser.add_argument("--k", type=int, default=64,
+                        help="K")
+    parser.add_argument("--num_blocks", type=int, default=12,
+                        help="Number of transformer blocks in the model")
+    parser.add_argument("--p_open", type=float, default=0.6,
+                        help="Probability of opening a new bracket vs closing an existing one during generation")
+    parser.add_argument("--max_depth", type=int, default=4,
+                        help="Maximum depth of nested brackets during generation")
+    # parser.add_argument("--procedural_data", type=str, default="kdyck_truncated",
+    #                     help="Type of procedural data to generate (e.g., kdyck, kdyck_truncated)")
+    parser.add_argument("--seq_length", type=int, default=196,
+                        help="Length of input sequence (e.g., 196 for 14x14 patches)")
+    parser.add_argument("--mask_token", type=int, default=128,
+                        help="Mask token value (e.g., 128 for k=64)")
+    parser.add_argument("--mask_ratio", type=float, default=0.5,
+                        help="Ratio of closing brackets to mask")
+    parser.add_argument('--freeze_patch_embeddings', type=str2bool, default=True)
+    parser.add_argument('--freeze_pos_embeddings', type=str2bool, default=True)
+    parser.add_argument('--skip_pos_embeddings', type=str2bool, default=False)
+    parser.add_argument("--embeddings_path", type=str, default="kdyck/kdyck_orthogonal_embeddings_vits.pt",
+                        help="Path to fixed orthogonal embeddings for the patch tokens")
+    # parser.add_argument("--procedural_order", type=str, default="standard",
+    #                     help="Type of re-ordering (if any) to apply to the  procedural data (e.g., standard, spiral)")
+    parser.add_argument("--shuffle", type=str, default="input",
+                        help="Which part of the data to shuffle (e.g., input, pos) for different procedural orders")
+
+
     parser.add_argument('--analyse_only', type=str2bool, default=False,
                         help='Perform attention_analyse only on test set data')
+    parser.add_argument('--cka_only', type=str2bool, default=False,
+                        help='Perform cka only on test set data')
+    parser.add_argument('--cka_compare', type=str2bool, default=False,
+                        help='Perform cka only on test set data')
     parser.add_argument('--detailed_metrics', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
     parser.add_argument('--stage_wise_metrics', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
-    parser.add_argument('--visualise', type=str2bool, default=False,
+    parser.add_argument('--pr_visualise', type=str2bool, default=False,
+                        help='Perform visualisation only on test set data')
+    parser.add_argument('--ft_visualise', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
     parser.add_argument('--per_head', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
@@ -226,6 +262,17 @@ def get_args_parser():
                         help='path to save visualisation outputs, empty for no saving')
     parser.add_argument('--plot_count', default=10, type=int,
                         help='Number of samples to visualise')
+
+    parser.add_argument('--custom_init_qk_scale', default=1, type=float,
+                        help="Parameters to control custom init")
+    parser.add_argument('--custom_init_qk_noise', default=0, type=float,
+                        help="Parameters to control custom init")
+    parser.add_argument('--custom_init_vp_scale', default=0.05, type=float,
+                        help="Parameters to control custom init")
+    parser.add_argument('--custom_init_type', default="", type=str,
+                        help="Parameters to control custom init")
+    parser.add_argument('--custom_init_blocks', default="", type=str,
+                        help='Comma separated list of layer indices to apply custom init, e.g. "0,1,2" to apply custom init to the first 3 layers; supports "all" to apply custom init to all layers and "" to not apply custom init to any layers (default: "")')
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -377,26 +424,9 @@ def main(args):
     else:
         args.delete_blocks = [int(x) for x in args.delete_blocks.split(",")]
     args.delete_blocks.sort(reverse=True) # sort in reverse order to avoid messing up block indices when deleting
-    
+
     for block in model.blocks:
         block.attn.fused_attn = False
-
-    # if args.stage_wise_metrics and data_loader_val is not None:
-    #     if args.distributed:
-    #         print("Rand_init: Using distributed data parallel with GPU %d" % args.gpu)
-    #         model = torch.nn.parallel.DistributedDataParallel(model.to(device), device_ids=[args.gpu], find_unused_parameters=False)
-    #         model_without_ddp = model.module
-    #     else:
-    #         model_without_ddp = model
-    #     model_analyse(
-    #         model=model_without_ddp,
-    #         data_loader=data_loader_val,
-    #         device=device,
-    #         epoch=None,
-    #         args=args,
-    #         prefix="rand_"
-    #     )
-    # del model
 
     shuffled_block_order = None
 
@@ -406,17 +436,7 @@ def main(args):
         device = device,
         model = model
     )
-    # if args.stage_wise_metrics and data_loader_val is not None:
-    #     model_analyse(
-    #         model=model_without_ddp,
-    #         data_loader=data_loader_val,
-    #         device=device,
-    #         epoch=None,
-    #         args=args,
-    #         prefix="pr_",
-    #         shuffled_block_order=shuffled_block_order
-    #     )
-
+    
     total_params = sum(p.numel() for p in model_without_ddp.parameters())
     trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
     non_trainable = sum(p.numel() for p in model_without_ddp.parameters() if not p.requires_grad)
@@ -454,6 +474,24 @@ def main(args):
 
     if assigner is not None:
         print("Assigned values = %s" % str(assigner.values))
+
+    if args.pr_visualise:
+        attention_visualise(
+            data_loader = data_loader_val,
+            model = model_without_ddp,
+            device = device,
+            args = args,
+            per_head = args.per_head,
+        )
+        return
+
+    if args.cka_only:
+        cka_final(data_loader_val, device, args)
+        return
+
+    if args.cka_compare:
+        cka_compare(data_loader_val, device, args)
+        return
 
     optimizer = create_optimizer(
         args, model_without_ddp, skip_list=None,

@@ -975,6 +975,7 @@ class HookCollector:
     def __enter__(self):
         def make_block_hook(idx):
             def hook_block(mod, inp, out):
+                self.acts[idx]['inp'] = inp[0].detach()
                 x = out.detach()
                 self.acts[idx]['blk'] = x
                 
