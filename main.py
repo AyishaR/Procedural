@@ -254,6 +254,8 @@ def get_args_parser():
                         help='Perform visualisation only on test set data')
     parser.add_argument('--ft_visualise', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
+    parser.add_argument('--kde_l11', type=str2bool, default=False,
+                        help='Perform visualisation only on test set data')
     parser.add_argument('--per_head', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
     parser.add_argument('--per_stage', type=str2bool, default=False,
@@ -477,11 +479,10 @@ def main(args):
 
     if args.pr_visualise:
         attention_visualise(
-            data_loader = data_loader_val,
+            data_loader = data_loader_train,
             model = model_without_ddp,
             device = device,
-            args = args,
-            per_head = args.per_head,
+            args = args
         )
         return
 

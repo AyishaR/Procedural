@@ -14,6 +14,7 @@ import torch.nn.functional as F
 import utils
 import json
 import os
+import sys
 from matplotlib import pyplot as plt
 from collections import defaultdict
 from cka_utils import linear_cka, gram_cka
@@ -26,6 +27,9 @@ from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
 
 from metrics.ddp_multiclassECE import DDPMulticlassECE
+
+from matplotlib import colors
+from scipy.stats import gaussian_kde, skew, kurtosis, ks_2samp, wasserstein_distance
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
@@ -867,8 +871,6 @@ def cka_calculate(model_A, model_B, data_loader, device, args, procedural_data_l
     dist.barrier()
     # print(f"GPU {args.gpu} passed barrier, ending attention_analyse_final")
 
-
-
 def gather_tensor(cka_feat, rank, world_size):
     """
     Gather tensors from all ranks onto rank 0.
@@ -899,7 +901,7 @@ def gather_tensor(cka_feat, rank, world_size):
     return None
     
 @torch.no_grad()
-def attention_visualise(data_loader, model, device, args=None, per_head=True):
+def attention_visualise(data_loader, model, device, args=None):
     # criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -911,6 +913,9 @@ def attention_visualise(data_loader, model, device, args=None, per_head=True):
     num_heads = model.blocks[0].attn.num_heads
 
     targets = []
+
+    # attn_map_l11_per_head = {i: [] for i in range(-1, num_heads)} if args.kde_l11 else None
+    attn_map_l11_per_head_scaled = {i: [] for i in range(-1, num_heads)} if args.kde_l11 else None
 
     # switch to evaluation mode
     model.eval()
@@ -946,8 +951,27 @@ def attention_visualise(data_loader, model, device, args=None, per_head=True):
                 layer_wise_attn_logits[i] = x.argmax(dim=-1)
                 # layer_accuracy[i]['attn_pred'].extend(x)
 
-        for si in range(10):
-            if per_head:
+        for si in range(images.shape[0]):
+            if args.kde_l11:
+                for hi in range(-1, num_heads):
+                    for i, layer_idx in enumerate([11], 1):
+                        
+                        pi = i
+
+                        attn_map = acts[layer_idx]['attn_map']
+
+                        if hi==-1:
+                            cls_attn = attn_map[:, :, 0, 1:][si].mean(0).cpu().numpy()  # Avg heads [196] → [14,14]
+                        else:
+                            cls_attn = attn_map[:, :, 0, 1:][si][hi].cpu().numpy()  # Avg heads [196] → [14,14]
+
+                        cls_attn = cls_attn.reshape(patch_size, patch_size)
+                        # # print(f"Layer {layer_idx} head {hi} attention map shape:", cls_attn.shape, flush=True)
+                        # attn_map_l11_per_head[hi].append(cls_attn.flatten())
+                        cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
+                        attn_map_l11_per_head_scaled[hi].append(cls_attn.flatten())
+    
+            elif args.per_head:
                 fig, axs = plt.subplots(num_heads+1, len(layers_to_analyse)+1, figsize=(5 * len(layers_to_analyse) + 1, 10*num_heads))
 
                 axs[0, 0].imshow(utils.denormalize(images[si].cpu().squeeze()).permute(1, 2, 0)); axs[0, 0].set_title('Input'); axs[0, 0].axis('off')
@@ -966,11 +990,14 @@ def attention_visualise(data_loader, model, device, args=None, per_head=True):
 
                         cls_attn = cls_attn.reshape(patch_size, patch_size)
                         cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
+                        # print(f"Layer {layer_idx} head {hi} attention map shape:", cls_attn.shape, flush=True)
+                        if layer_idx==11:
+                            attn_map_l11_per_head[hi].append(cls_attn.flatten())
                         
-                        # Resize overlay
-                        cls_resized = F.interpolate(
-                            torch.tensor(cls_attn[None, None, :, :]), size=(224, 224), mode='bilinear', align_corners=False
-                        ).squeeze().numpy()
+                        # # Resize overlay
+                        # cls_resized = F.interpolate(
+                        #     torch.tensor(cls_attn[None, None, :, :]), size=(224, 224), mode='bilinear', align_corners=False
+                        # ).squeeze().numpy()
                         
                         # Plots
                         im = axs[hi+1, layer_idx+1].imshow(cls_attn, cmap='viridis')
@@ -1006,10 +1033,10 @@ def attention_visualise(data_loader, model, device, args=None, per_head=True):
                     cls_attn = cls_attn.reshape(patch_size, patch_size)
                     cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
                     
-                    # Resize overlay
-                    cls_resized = F.interpolate(
-                        torch.tensor(cls_attn[None, None, :, :]), size=(224, 224), mode='bilinear', align_corners=False
-                    ).squeeze().numpy()
+                    # # Resize overlay
+                    # cls_resized = F.interpolate(
+                    #     torch.tensor(cls_attn[None, None, :, :]), size=(224, 224), mode='bilinear', align_corners=False
+                    # ).squeeze().numpy()
                     
                     # Plots
                     im = axs[pi//plt_column, pi%plt_column].imshow(cls_attn, cmap='viridis')
@@ -1021,12 +1048,34 @@ def attention_visualise(data_loader, model, device, args=None, per_head=True):
                 axs[1, plt_column-1].set_axis_off()
                 axs[1, plt_column-1].set_visible(False) 
                 plt.tight_layout()
-            if args.visualise_output_path:
+            if args.visualise_output_path and args.per_head:
                 os.makedirs(args.visualise_output_path, exist_ok=True)
             # if False:
-                plt.savefig(args.visualise_output_path+f"/sample_ph{per_head}_{si}.png", dpi=300, bbox_inches='tight')
+                plt.savefig(args.visualise_output_path+f"/sample_{target[si]}_{si}.png", dpi=300, bbox_inches='tight')
                 # print(f"Saved attention visualization for sample {si}")
             else:
                 plt.show()
-        break
-        
+        sys.stdout.flush()
+
+    if args.kde_l11:
+        for hi in range(-1, num_heads):
+            # attn_map_l11_per_head[hi] = np.stack(attn_map_l11_per_head[hi], axis=0).flatten()
+            attn_map_l11_per_head_scaled[hi] = np.stack(attn_map_l11_per_head_scaled[hi], axis=0).flatten()
+        # single_kde([attn_map_l11_per_head[hi] for hi in range(-1, num_heads)], [f'Head avg', *[f'Head {hi}' for hi in range(num_heads)]], f'Attention Map Distribution', args.visualise_output_path+f"/kde_pr_attn.png")
+        os.makedirs(args.visualise_output_path, exist_ok=True)
+        single_kde([attn_map_l11_per_head_scaled[hi] for hi in range(-1, num_heads)],  [f'Head avg', *[f'Head {hi}' for hi in range(num_heads)]], f'Attention Map Distribution - scaled', args.visualise_output_path+f"/kde_pr_attn_scaled.png")
+    sys.stdout.flush()
+
+def single_kde(values, labels, title, save_path):
+    plt.figure(figsize=(12, 6))
+    for value, label in zip(values, labels):
+        print(f"Value shape for label {label}:", value.shape, flush=True)
+        kde = gaussian_kde(value)
+        x_range = np.linspace(value.min(), value.max(), 100)
+        plt.plot(x_range, kde(x_range), label=label)
+    plt.legend()
+    # plt.xlim(-3, 3)
+    # plt.ylim(-0.1, 15)
+    plt.title(f"KDE {title}")
+    plt.savefig(save_path, dpi=200, bbox_inches="tight", facecolor="white")
+    plt.close()
