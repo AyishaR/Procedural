@@ -1,10 +1,11 @@
 import os
 from torchvision import datasets, transforms
-
+import matplotlib.pyplot as plt
 from timm.data.constants import \
     IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, IMAGENET_INCEPTION_MEAN, IMAGENET_INCEPTION_STD
 from timm.data import create_transform
-
+import torch
+import torch.nn.functional as F
 import oxford_flowers_dataset, oxford_pets_dataset
 
 def build_dataset(is_train, args, transform_train=None):
@@ -34,6 +35,14 @@ def build_dataset(is_train, args, transform_train=None):
         dataset = datasets.ImageFolder(root, transform=transform)
         nb_classes = 1000
     elif args.data_set == 'IMNET100':
+        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+        dataset = datasets.ImageFolder(root, transform=transform)
+        nb_classes = 100
+    elif args.data_set == 'IMNET100_test':
+        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+        dataset = ImageFolderWithPaths(root, transform=transform)
+        nb_classes = 100
+    elif args.data_set == 'IMNET_EVAL':
         root = os.path.join(args.data_path, 'train' if is_train else 'val')
         dataset = datasets.ImageFolder(root, transform=transform)
         nb_classes = 100
@@ -136,3 +145,26 @@ def build_transform(is_train, args):
         t.append(transforms.Lambda(lambda x: x.transpose(1, 2)))
 
     return transforms.Compose(t)
+
+class ImageFolderWithPaths(datasets.ImageFolder):
+    def __getitem__(self, index):
+        img, label = super().__getitem__(index)
+        path = self.imgs[index][0]  # Full path
+        name = path.split("/")[-1].split(".")[0]  # Filename only
+        mask_path = path.replace("/val/", "/masks/").replace(".JPEG", ".png")
+
+        crop_pct = 224 / 256
+        size = int(224 / crop_pct)
+
+        mask_original_transform = transforms.Compose([
+            transforms.Resize(size, interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+        ])
+
+        mask = self.loader(mask_path)
+        mask_original = mask_original_transform(mask)
+
+        mask_patch = F.max_pool2d(mask_original.float(), kernel_size=16, stride=16)
+        
+        return img, label, mask_original, mask_patch, name

@@ -25,7 +25,7 @@ import numpy as np
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, random_split
 from torch.utils.data.distributed import DistributedSampler
-
+from scipy.stats import ks_2samp, ttest_ind
 from metrics.ddp_multiclassECE import DDPMulticlassECE
 
 from matplotlib import colors
@@ -904,7 +904,7 @@ def gather_tensor(cka_feat, rank, world_size):
 def attention_visualise(data_loader, model, device, args=None):
     # criterion = torch.nn.CrossEntropyLoss()
 
-    metric_logger = utils.MetricLogger(delimiter="  ")
+    # metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'attention_visualise:'
 
     layers_to_analyse = range(len(model.blocks))
@@ -916,12 +916,18 @@ def attention_visualise(data_loader, model, device, args=None):
 
     # attn_map_l11_per_head = {i: [] for i in range(-1, num_heads)} if args.kde_l11 else None
     attn_map_l11_per_head_scaled = {i: [] for i in range(-1, num_heads)} if args.kde_l11 else None
+    object_attn_map_l11_per_head_scaled = {i: [] for i in range(-1, num_heads)} if args.kde_l11 else None
+    non_object_attn_map_l11_per_head_scaled = {i: [] for i in range(-1, num_heads)} if args.kde_l11 else None
 
     # switch to evaluation mode
     model.eval()
-    for batch in metric_logger.log_every(data_loader, 10, header):
+    for batch in data_loader:
         images = batch[0]
-        target = batch[-1]
+        target = batch[1]
+        masks = batch[2]
+        patched_masks = batch[3]
+        im_names = batch[4]
+        print(f"Image shape: {images[0].shape}, Masks shape: {masks[0].shape}, Patched Masks shape: {patched_masks[0].shape}")
 
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
@@ -953,6 +959,7 @@ def attention_visualise(data_loader, model, device, args=None):
 
         for si in range(images.shape[0]):
             if args.kde_l11:
+                object_mask = patched_masks[si][0].cpu().numpy()
                 for hi in range(-1, num_heads):
                     for i, layer_idx in enumerate([11], 1):
                         
@@ -966,15 +973,21 @@ def attention_visualise(data_loader, model, device, args=None):
                             cls_attn = attn_map[:, :, 0, 1:][si][hi].cpu().numpy()  # Avg heads [196] → [14,14]
 
                         cls_attn = cls_attn.reshape(patch_size, patch_size)
-                        # # print(f"Layer {layer_idx} head {hi} attention map shape:", cls_attn.shape, flush=True)
-                        # attn_map_l11_per_head[hi].append(cls_attn.flatten())
+                        
                         cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
-                        attn_map_l11_per_head_scaled[hi].append(cls_attn.flatten())
+                        attn_map_l11_per_head_scaled[hi].extend(cls_attn.flatten())
+                        object_attn_map_l11_per_head_scaled[hi].extend(cls_attn.flatten()[object_mask.flatten()==1])
+                        non_object_attn_map_l11_per_head_scaled[hi].extend(cls_attn.flatten()[object_mask.flatten()==0])
     
             elif args.per_head:
+                object_mask = patched_masks[si][0].cpu().numpy()
+                original_object_mask = masks[si][0].cpu().numpy()
+
                 fig, axs = plt.subplots(num_heads+1, len(layers_to_analyse)+1, figsize=(5 * len(layers_to_analyse) + 1, 10*num_heads))
 
-                axs[0, 0].imshow(utils.denormalize(images[si].cpu().squeeze()).permute(1, 2, 0)); axs[0, 0].set_title('Input'); axs[0, 0].axis('off')
+                axs[0, 0].imshow(utils.denormalize(images[si].cpu().squeeze()).permute(1, 2, 0), alpha=0.8); axs[0, 0].set_title('Input'); axs[0, 0].axis('off')
+                axs[0,0].imshow(original_object_mask, cmap='Reds', alpha=0.8)
+                
                 
                 for hi in range(-1, num_heads):
                     for i, layer_idx in enumerate(layers_to_analyse, 1):
@@ -991,8 +1004,6 @@ def attention_visualise(data_loader, model, device, args=None):
                         cls_attn = cls_attn.reshape(patch_size, patch_size)
                         cls_attn = (cls_attn - cls_attn.min()) / (cls_attn.max() - cls_attn.min() + 1e-8)
                         # print(f"Layer {layer_idx} head {hi} attention map shape:", cls_attn.shape, flush=True)
-                        if layer_idx==11:
-                            attn_map_l11_per_head[hi].append(cls_attn.flatten())
                         
                         # # Resize overlay
                         # cls_resized = F.interpolate(
@@ -1001,6 +1012,7 @@ def attention_visualise(data_loader, model, device, args=None):
                         
                         # Plots
                         im = axs[hi+1, layer_idx+1].imshow(cls_attn, cmap='viridis')
+                        _ = axs[hi+1, layer_idx+1].imshow(object_mask, cmap='Reds', alpha=0.4)
 
                         # add text to plot with colour, not title
                         if hi==-1:
@@ -1051,31 +1063,50 @@ def attention_visualise(data_loader, model, device, args=None):
             if args.visualise_output_path and args.per_head:
                 os.makedirs(args.visualise_output_path, exist_ok=True)
             # if False:
-                plt.savefig(args.visualise_output_path+f"/sample_{target[si]}_{si}.png", dpi=300, bbox_inches='tight')
+                plt.savefig(args.visualise_output_path+f"/sample_{si}_{target[si]}_{im_names[si]}.png", dpi=300, bbox_inches='tight')
+                break
                 # print(f"Saved attention visualization for sample {si}")
-            else:
-                plt.show()
+            # else:
+            #     plt.show()
         sys.stdout.flush()
 
     if args.kde_l11:
+        print("|Head\t\t|KS Statistic\t\t|KS p-value\t\t|T-test Statistic\t\t|T-test p-value\t\t|Cohen's d\t\t|")
         for hi in range(-1, num_heads):
+            ks_stat, p_value = ks_2samp(object_attn_map_l11_per_head_scaled[hi], non_object_attn_map_l11_per_head_scaled[hi])
+            # print(f"KS test for head {hi}: statistic={ks_stat:.4f}, p-value={p_value:.4f}")
+
+            t_stat, p_t = ttest_ind(object_attn_map_l11_per_head_scaled[hi], non_object_attn_map_l11_per_head_scaled[hi], equal_var=False)
+            # print(f"T-test for head {hi}: statistic={t_stat:.4f}, p-value={p_t:.4f}")
+
+            d = cohens_d(object_attn_map_l11_per_head_scaled[hi], non_object_attn_map_l11_per_head_scaled[hi])
+            # print(f"Cohen's d for head {hi}: d={d:.4f}")
+
+            print(f"|{hi}\t\t|{ks_stat:.4f}\t\t|{p_value:.4f}\t\t|{t_stat:.4f}\t\t|{p_t:.4f}\t\t|{d:.4f}\t\t|")
+
             # attn_map_l11_per_head[hi] = np.stack(attn_map_l11_per_head[hi], axis=0).flatten()
-            attn_map_l11_per_head_scaled[hi] = np.stack(attn_map_l11_per_head_scaled[hi], axis=0).flatten()
+            # attn_map_l11_per_head_scaled[hi] = np.stack(attn_map_l11_per_head_scaled[hi], axis=0).flatten()
+            # object_attn_map_l11_per_head_scaled[hi] = np.stack(object_attn_map_l11_per_head_scaled[hi], axis=0).flatten()
         # single_kde([attn_map_l11_per_head[hi] for hi in range(-1, num_heads)], [f'Head avg', *[f'Head {hi}' for hi in range(num_heads)]], f'Attention Map Distribution', args.visualise_output_path+f"/kde_pr_attn.png")
         os.makedirs(args.visualise_output_path, exist_ok=True)
-        single_kde([attn_map_l11_per_head_scaled[hi] for hi in range(-1, num_heads)],  [f'Head avg', *[f'Head {hi}' for hi in range(num_heads)]], f'Attention Map Distribution - scaled', args.visualise_output_path+f"/kde_pr_attn_scaled.png")
+        single_kde([np.array(attn_map_l11_per_head_scaled[hi]) for hi in range(-1, num_heads)],  [f'Head avg', *[f'Head {hi}' for hi in range(num_heads)]], f'Attention Map Distribution - scaled', args.visualise_output_path+f"/kde_pr_attn_scaled.png")
+        single_kde([np.array(object_attn_map_l11_per_head_scaled[hi]) for hi in range(-1, num_heads)],  [f'Head avg', *[f'Head {hi}' for hi in range(num_heads)]], f'Object Attention Map Distribution - scaled', args.visualise_output_path+f"/kde_pr_attn_object_scaled.png")
+        single_kde([np.array(non_object_attn_map_l11_per_head_scaled[hi]) for hi in range(-1, num_heads)],  [f'Head avg', *[f'Head {hi}' for hi in range(num_heads)]], f'Object Attention Map Distribution - scaled', args.visualise_output_path+f"/kde_pr_attn_non_object_scaled.png")
     sys.stdout.flush()
 
 def single_kde(values, labels, title, save_path):
     plt.figure(figsize=(12, 6))
     for value, label in zip(values, labels):
-        print(f"Value shape for label {label}:", value.shape, flush=True)
+        # print(f"Value shape for label {label}:", value.shape, flush=True)
         kde = gaussian_kde(value)
         x_range = np.linspace(value.min(), value.max(), 100)
         plt.plot(x_range, kde(x_range), label=label)
     plt.legend()
     # plt.xlim(-3, 3)
-    # plt.ylim(-0.1, 15)
+    plt.ylim(0, 8)
     plt.title(f"KDE {title}")
     plt.savefig(save_path, dpi=200, bbox_inches="tight", facecolor="white")
     plt.close()
+
+def cohens_d(x1, x2):
+    return (np.mean(x1) - np.mean(x2)) / np.sqrt((np.var(x1) + np.var(x2)) / 2)
