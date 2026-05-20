@@ -835,7 +835,26 @@ def pr_load_model(path, args, device, model=None):
 
         print(f"Loading state dict with {len(checkpoint_model)} keys from pretrained checkpoint after custom modifications")
         print("Keys in checkpoint_model after custom modifications", checkpoint_model.keys())
-        
+
+        for l_no, l_segments in args.skip_attn_segments.items():
+            qkv_weight_default = state_dict.get(f"blocks.{l_no}.attn.qkv.weight", None)
+            qkv_bias_default = state_dict.get(f"blocks.{l_no}.attn.qkv.bias", None)
+            total_dim = qkv_weight_default.shape[0] if qkv_weight_default is not None else qkv_bias_default.shape[0]
+            embed_dim = total_dim // 3
+            for segment in l_segments:
+                if segment == "q": 
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.weight"][:embed_dim, :] = qkv_weight_default[:embed_dim, :]
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.bias"][:embed_dim] = qkv_bias_default[:embed_dim]
+                    print(f"Skipping query weights for block {l_no}. Replacing with default initialization")
+                elif segment == "k":
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.weight"][embed_dim:2*embed_dim, :] = qkv_weight_default[embed_dim:2*embed_dim, :]
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.bias"][embed_dim:2*embed_dim] = qkv_bias_default[embed_dim:2*embed_dim]
+                    print(f"Skipping key weights for block {l_no}. Replacing with default initialization")
+                elif segment == "v":
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.weight"][2*embed_dim:3*embed_dim, :] = qkv_weight_default[2*embed_dim:3*embed_dim, :]
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.bias"][2*embed_dim:3*embed_dim] = qkv_bias_default[2*embed_dim:3*embed_dim]
+                    print(f"Skipping value weights for block {l_no}. Replacing with default initialization")
+                
         load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
 
         if args.shuffle_load and "pr" in args.initialize.split("/")[-1]:
@@ -993,10 +1012,13 @@ class HookCollector:
                 attn = (q @ k.transpose(-2, -1)) * mod.scale
                 attn = attn.softmax(dim=-1)
                 self.acts[idx]['attn_map'] = attn  # [B, heads, N, N]
+                print(f"Shape of block.attn", out.shape)
+
 
             def hook_attn_blk(mod, inp, out):
                 # out = attn_output
                 self.acts[idx]['attn'] = inp[0] + mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
+                print(f"Shape of hook_attn_blk", self.acts[idx]['attn'].shape)
 
             return hook_block, hook_attn_map, hook_attn_blk
 

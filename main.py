@@ -211,6 +211,8 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=10, type=int)
     parser.add_argument('--pin_mem', type=str2bool, default=True,
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
+    parser.add_argument('--skip_attn_segments', type=str, default="",
+                        help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[q,k,v];2[v]" to skip attention segments when visualising attention maps')
 
     # Procedural
     parser.add_argument("--k", type=int, default=64,
@@ -430,6 +432,16 @@ def main(args):
     else:
         args.delete_blocks = [int(x) for x in args.delete_blocks.split(",")]
     args.delete_blocks.sort(reverse=True) # sort in reverse order to avoid messing up block indices when deleting
+
+    if args.skip_attn_segments == "":
+        args.skip_attn_segments = {}
+    else:
+        segments = args.skip_attn_segments.split(";")
+        args.skip_attn_segments = {}
+        for segment in segments:
+            layer_num = int(segment.split("[")[0])
+            segment_names = segment.split("[")[1].split("]")[0].split(",")
+            args.skip_attn_segments[layer_num] = segment_names
 
     for block in model.blocks:
         block.attn.fused_attn = False
