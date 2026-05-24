@@ -271,6 +271,12 @@ def get_args_parser():
     parser.add_argument('--plot_count', default=10, type=int,
                         help='Number of samples to visualise')
 
+    # residuals analysis
+    parser.add_argument('--attention_residual_analysis', type=str2bool, default=False,
+                        help="Stats on attention_residuals")
+    parser.add_argument('--attention_residual_stats_path', type=str, default="",
+                        help='Path to store attention residual stats')
+
     parser.add_argument('--custom_init_qk_scale', default=1, type=float,
                         help="Parameters to control custom init")
     parser.add_argument('--custom_init_qk_noise', default=0, type=float,
@@ -495,6 +501,16 @@ def main(args):
 
     if args.pr_visualise:
         attention_visualise(
+            data_loader = data_loader_val,
+            model = model_without_ddp,
+            device = device,
+            args = args
+        )
+        return
+
+    if args.attention_residual_analysis:
+        os.makedirs(args.attention_residual_stats_path, exist_ok=True)
+        attention_residual_analysis(
             data_loader = data_loader_val,
             model = model_without_ddp,
             device = device,

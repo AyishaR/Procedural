@@ -1110,3 +1110,101 @@ def single_kde(values, labels, title, save_path):
 
 def cohens_d(x1, x2):
     return (np.mean(x1) - np.mean(x2)) / np.sqrt((np.var(x1) + np.var(x2)) / 2)
+
+@torch.no_grad()
+def attention_residual_analysis(data_loader, model, device, args=None):
+    header = 'attention_residual_analysis:'
+
+    # layers_to_analyse = range(len(model.blocks))
+    layers_to_analyse = [11]
+    patch_size = 14  # 224/16
+    num_heads = model.blocks[0].attn.num_heads
+
+    all_attn_in = {i:[] for i in layers_to_analyse}
+    all_attn_out = {i:[] for i in layers_to_analyse}
+    all_attn_res_out = {i:[] for i in layers_to_analyse}
+    all_attn_delta = {i:[] for i in layers_to_analyse}
+
+    model.eval()
+    for batch in data_loader:
+        images = batch[0]
+        target = batch[1]
+        masks = batch[2]
+        patched_masks = batch[3]
+        im_names = batch[4]
+        
+        images = images.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
+
+        with utils.HookCollector(model) as acts:
+            with torch.no_grad():
+                _ = model(images)
+
+        with torch.no_grad():
+            for i in layers_to_analyse:
+                model.eval()
+                attn_in = model.norm(acts[i]['inp'])
+                attn_out = model.norm(acts[i]['attn_out'])
+                attn_res_out = model.norm(acts[i]['attn'])
+                attn_delta = attn_res_out - attn_in
+
+                all_attn_in[i].append(attn_in.cpu())
+                all_attn_out[i].append(attn_out.cpu())
+                all_attn_res_out[i].append(attn_res_out.cpu())
+                all_attn_delta[i].append(attn_delta.cpu())
+
+    stats = {i:{} for i in layers_to_analyse}
+    stats_aggregated = {}
+    for i in layers_to_analyse:
+        all_attn_in[i] = torch.cat(all_attn_in[i], dim=0)
+        all_attn_out[i] = torch.cat(all_attn_out[i], dim=0)
+        all_attn_res_out[i] = torch.cat(all_attn_res_out[i], dim=0)
+        all_attn_delta[i] = torch.cat(all_attn_delta[i], dim=0)
+
+        rin_norm = torch.norm(all_attn_in[i], dim=-1)
+        rout_norm = torch.norm(all_attn_res_out[i], dim=-1)
+        norm_ratio = rout_norm / (rin_norm + 1e-8)
+        delta_norm = torch.norm(all_attn_delta[i], dim=-1)
+        atnn_out_norm = torch.norm(all_attn_out[i], dim=-1)
+
+        cosine_rin_rout = F.cosine_similarity(all_attn_in[i], all_attn_res_out[i], dim=-1)
+        # save all_attn_in and all_attn_res_out to disk for layer i
+        # all_attn_in[i] = all_attn_in[i].cpu()
+        # all_attn_res_out[i] = all_attn_res_out[i].cpu()
+        # os.makedirs(args.attention_residual_stats_path, exist_ok=True)
+        # torch.save(all_attn_in[i], os.path.join(args.attention_residual_stats_path, f"attn_in_layer_{i}.pt"))
+        # torch.save(all_attn_res_out[i], os.path.join(args.attention_residual_stats_path, f"attn_res_out_layer_{i}.pt"))
+        
+        cka_rin_rout = gram_cka(all_attn_in[i].reshape(all_attn_in[i].shape[0], -1), all_attn_res_out[i].reshape(all_attn_res_out[i].shape[0], -1))
+
+        stats[i] = {
+            "rin_norm": rin_norm.tolist(),
+            "rout_norm": rout_norm.tolist(),
+            "norm_ratio": norm_ratio.tolist(),
+            "delta_norm": delta_norm.tolist(),
+            "atnn_out_norm": atnn_out_norm.tolist(),
+            "cosine_rin_rout": cosine_rin_rout.tolist(),
+            "cka_rin_rout": cka_rin_rout.item()
+        }
+    
+        stats_aggregated[i] = {
+            "rin_norm_mean": rin_norm.mean().item(),
+            "rin_norm_std": rin_norm.std().item(),
+            "rout_norm_mean": rout_norm.mean().item(),
+            "rout_norm_std": rout_norm.std().item(),
+            "norm_ratio_mean": norm_ratio.mean().item(),
+            "norm_ratio_std": norm_ratio.std().item(),
+            "delta_norm_mean": delta_norm.mean().item(),
+            "delta_norm_std": delta_norm.std().item(),
+            "attn_out_norm_mean": atnn_out_norm.mean().item(),
+            "attn_out_norm_std": atnn_out_norm.std().item(),
+            "cosine_rin_rout_mean": cosine_rin_rout.mean().item(),
+            "cosine_rin_rout_std": cosine_rin_rout.std().item(),
+            "cka_rin_rout": cka_rin_rout.item()
+        }
+    
+    stats.update({"aggregated": stats_aggregated})
+    pprint(stats_aggregated)
+    sys.stdout.flush()
+
+    json.dump(stats, open(args.attention_residual_stats_path+"/attn_res_stats.json", "w"), indent=4)

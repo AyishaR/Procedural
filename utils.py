@@ -1005,6 +1005,10 @@ class HookCollector:
                 blk_act_rms_per_sample = torch.sqrt((flat ** 2).mean(dim=-1))
                 self.acts[idx]['blk_act_rms'] = blk_act_rms_per_sample.mean().item()
 
+                attn_out = mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
+                self.acts[idx]['attn_out'] = attn_out.detach()
+                self.acts[idx]['attn'] = inp[0] + attn_out.detach()
+                
             def hook_attn_map(mod, inp, out):
                 B, N, C = inp[0].shape
                 qkv = mod.qkv(inp[0]).reshape(B, N, 3, mod.num_heads, C // mod.num_heads).permute(2, 0, 3, 1, 4)
@@ -1012,22 +1016,15 @@ class HookCollector:
                 attn = (q @ k.transpose(-2, -1)) * mod.scale
                 attn = attn.softmax(dim=-1)
                 self.acts[idx]['attn_map'] = attn  # [B, heads, N, N]
-                print(f"Shape of block.attn", out.shape)
+                
 
-
-            def hook_attn_blk(mod, inp, out):
-                # out = attn_output
-                self.acts[idx]['attn'] = inp[0] + mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
-                print(f"Shape of hook_attn_blk", self.acts[idx]['attn'].shape)
-
-            return hook_block, hook_attn_map, hook_attn_blk
+            return hook_block, hook_attn_map
 
         for i, block in enumerate(self.model_without_ddp.blocks):
-            block_hook, attn_map_hook, attn_blk_hook = make_block_hook(i)
+            block_hook, attn_map_hook = make_block_hook(i)
             h1 = block.register_forward_hook(block_hook)
             h2 = block.attn.register_forward_hook(attn_map_hook)
-            h3 = block.register_forward_hook(attn_blk_hook)
-            self.handles.extend([h1, h2, h3])
+            self.handles.extend([h1, h2])
 
         return self.acts
 
