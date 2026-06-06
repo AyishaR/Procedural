@@ -27,6 +27,8 @@ import utils
 import models.convnext
 import models.vision_transformer
 
+# from hessian_calculate import *
+
 def str2bool(v):
     """
     Converts string to bool type; enables command line 
@@ -193,6 +195,9 @@ def get_args_parser():
                         help="Additional notes about the procedural pretraining instance, to be saved in the output json and used for labelling visualisation plots")
     parser.add_argument('--pr_seed', default=42, type=int)
 
+    parser.add_argument('--calculate_hessian', type=str2bool, default=False,
+                        help='Whether to calculate hessian during training for analysis purposes, which is set to False by default to save time')
+
     parser.add_argument('--resume', default='',
                         help='resume from checkpoint')
     parser.add_argument('--auto_resume', type=str2bool, default=True)
@@ -287,7 +292,8 @@ def get_args_parser():
                         help="Parameters to control custom init")
     parser.add_argument('--custom_init_blocks', default="", type=str,
                         help='Comma separated list of layer indices to apply custom init, e.g. "0,1,2" to apply custom init to the first 3 layers; supports "all" to apply custom init to all layers and "" to not apply custom init to any layers (default: "")')
-
+    parser.add_argument('--save_for_analysis', default=True, type=bool,
+                        help='Whether to save model checkpoints and training data for further analysis, which will be used for the paper but is set to False by default to save storage space and speed up training')
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
@@ -555,6 +561,31 @@ def main(args):
 
     print("criterion = %s" % str(criterion))
 
+    if args.hessian_calculate:
+        total_params = sum(p.numel() for p in model_without_ddp.parameters())
+        trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
+        non_trainable = sum(p.numel() for p in model_without_ddp.parameters() if not p.requires_grad)
+        print(f"bf: Parameters - Total: {total_params:,} Trainable: {trainable:,}, Non-trainable: {non_trainable:,}")
+
+        if args.start_epoch==0:
+            eigenvalues_1, eigenvectors_1, meta_1, layer_hessian_values = compute_hessian_at_initialization(
+                model_without_ddp, criterion, data_loader_train, num_eigenvalues=10, device=device
+            )
+            print(f"Hessian top eigenvalues at initialization: {eigenvalues_1}")
+            layer_hessian_values["overall"] = eigenvalues_1
+
+            trace_1 = compute_hessian_trace(model_without_ddp, criterion, data_loader_train, device=device)
+            print(f"Hessian trace at initialization: {trace_1}")
+            layer_hessian_values["trace"] = trace_1
+
+            # save in destination folder
+            if args.output_dir:
+                os.makedirs(args.output_dir, exist_ok=True)
+                hessian_stats_path = os.path.join(args.output_dir, "hessian_stats_initialization.json")
+                with open(hessian_stats_path, "w") as f:
+                    json.dump(layer_hessian_values, f, indent=4)
+        return
+
     if args.analyse_only:
         print(f"Attention analyse only mode")
         stats = attention_analyse_final(data_loader_val, device, args=args, classes=classes)
@@ -599,6 +630,10 @@ def main(args):
                 utils.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
+            if args.save_for_analysis:
+                checkpoint_path = Path(args.output_dir) / ('checkpoint-%s-model.pth' % str(epoch))
+                torch.save({k: v.half() for k, v in model_without_ddp.state_dict().items()}, checkpoint_path)
+            
         if data_loader_val is not None and \
         ((args.model == "vit_base" and (epoch+1)%5 == 0) or (args.model != "vit_base")):
             if (epoch+1)%10 == 0 or epoch < 20:
@@ -613,8 +648,10 @@ def main(args):
                     parameter_norm=parameter_norm,
                     wandb_logger=wandb_logger
                 )
+                train_stats_temp = evaluate(data_loader_train, model_without_ddp, device, use_amp=args.use_amp)
             else:
                 test_stats = evaluate(data_loader_val, model_without_ddp, device, use_amp=args.use_amp)
+                train_stats_temp = evaluate(data_loader_train, model_without_ddp, device, use_amp=args.use_amp)
             print(f"Accuracy of the model on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
             if max_accuracy < test_stats["acc1"]:
                 max_accuracy = test_stats["acc1"]
@@ -633,6 +670,11 @@ def main(args):
                          **{f'test_{k}': v for k, v in test_stats.items()},
                          'epoch': epoch,
                          'n_parameters': n_parameters}
+            if train_stats_temp is not None:
+                log_stats_train = {
+                    f'train_eval_{k}': v for k, v in train_stats_temp.items()
+                }
+                log_stats.update(log_stats_train)
 
             # repeat testing routines for EMA, if ema eval is turned on
             if args.model_ema and args.model_ema_eval:
