@@ -698,6 +698,7 @@ def cka_final(data_loader, device, args, classes=None, wandb_logger=None):
 
 @torch.no_grad()
 def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
+    print("Running cka compare")
 
     shuffled_block_order = None
 
@@ -720,9 +721,17 @@ def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
         model = utils.build_model(args)
         model.load_state_dict(random_model_without_ddp.state_dict())
         model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model)
+
+    print("*"*20, "CKA - model A vs model A", "*"*20)
+    cka_calculate_self(
+        model_A=model_without_ddp,
+        data_loader=data_loader,
+        device=device,
+        args=args
+    )
     
     # model B
-    if args.output_dir_B:
+    if args.output_dir_B != "":
         if args.output_dir_B.endswith(".pth"):
             ft_path = args.output_dir_B
         else:
@@ -731,7 +740,9 @@ def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
         model_B = utils.build_model(args)
         model_B.load_state_dict(random_model_without_ddp.state_dict())
         model_B, model_B_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model_B)
-    
+    else:
+        return   # only comparing model A with random, skipping model B
+
     if args.model == "vit_small":
         kdyck_embeddings_path = "kdyck/kdyck_orthogonal_embeddings_vits.pt"
     else:
@@ -752,6 +763,7 @@ def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
         sampler=sampler_train,
         batch_size=int((args.batch_size)*1.5)
     )
+
     print("*"*20, "CKA - random model vs model A", "*"*20)
     cka_calculate(
         model_A=random_model_without_ddp,
@@ -776,6 +788,61 @@ def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
         device=device,
         args=args
     )
+
+def cka_calculate_self(model_A, data_loader, device, args, mask_function=None):
+    # Procedural data always compared against model A
+    print("Calculating self-CKA for model A")
+
+    # Image dataset forward pass
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    cka_feats_A = {str(lid): [] for lid in np.arange(-1, len(model_A.blocks)-0.5, 0.5)}
+    print("Initialized CKA feature storage for layers:", list(cka_feats_A.keys()))
+
+    for batch in metric_logger.log_every(data_loader, 10, "cka-only: "):
+        images = batch[0]
+        target = batch[-1]
+
+        images = images.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
+
+        if args.use_amp:
+            with torch.amp.autocast('cuda'):
+                with utils.HookCollector(model_A) as acts_A:
+                    with torch.no_grad():
+                        output = model_A(images)
+
+        with torch.no_grad():
+            for i in np.arange(-1, len(model_A.blocks), 1.0):
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    if i == -1.0:
+                        cka_feats_A[str(i)].append(acts_A[0]["inp"])
+                    else:
+                        cka_feats_A[str(i)].append(acts_A[int(i)]['blk'])
+                        cka_feats_A[str(i-0.5)].append(acts_A[int(i)]['attn'])
+
+    cka_feats_A = {str(lid): torch.cat(cka_feats_A[str(lid)], dim=0) for lid, _ in cka_feats_A.items()}
+    print(cka_feats_A.keys())
+    
+    N = cka_feats_A["0.0"].shape[0]
+    if utils.get_rank()==0:
+        for l in np.arange(-1, len(model_A.blocks)-1, 0.5):
+            print("\n---------- Layer", l, l+0.5, "----------")
+            cka_layer_A_p = cka_feats_A[str(l)][:N, 0, :].reshape(N, -1)
+            cka_layer_A = cka_feats_A[str(l+0.5)][:N, 0, :].reshape(N, -1)
+
+            cka_gram_value = gram_cka(cka_layer_A_p, cka_layer_A)
+            print(f"CLS : {cka_gram_value:.4f}")
+
+            cka_layer_A_p = cka_feats_A[str(l)][:N, 1:, :].reshape(N, -1)
+            cka_layer_A = cka_feats_A[str(l+0.5)][:N, 1:, :].reshape(N, -1)
+
+            cka_gram_value = gram_cka(cka_layer_A_p, cka_layer_A)
+            print(f"Feat: {cka_gram_value:.4f}")
+
+    # print(f"GPU {args.gpu} done with CKA computations, entering barrier")
+    dist.barrier()
+    # print(f"GPU {args.gpu} passed barrier, ending attention_analyse_final")
+
 
 def cka_calculate(model_A, model_B, data_loader, device, args, procedural_data_loader=None, pr_model=None, mask_function=None):
     # Procedural data always compared against model A
@@ -1143,9 +1210,9 @@ def attention_residual_analysis(data_loader, model, device, args=None):
         with torch.no_grad():
             for i in layers_to_analyse:
                 model.eval()
-                attn_in = model.norm(acts[i]['inp'])
-                attn_out = model.norm(acts[i]['attn_out'])
-                attn_res_out = model.norm(acts[i]['attn'])
+                attn_in = acts[i]['inp']
+                attn_out = acts[i]['attn_out']
+                attn_res_out = acts[i]['attn']
                 attn_delta = attn_res_out - attn_in
 
                 all_attn_in[i].append(attn_in.cpu())
@@ -1167,13 +1234,17 @@ def attention_residual_analysis(data_loader, model, device, args=None):
         delta_norm = torch.norm(all_attn_delta[i], dim=-1)
         atnn_out_norm = torch.norm(all_attn_out[i], dim=-1)
 
-        cosine_rin_rout = F.cosine_similarity(all_attn_in[i], all_attn_res_out[i], dim=-1)
+        rin_unit = all_attn_in[i] / (rin_norm.unsqueeze(-1) + 1e-8)
+        rout_unit = all_attn_res_out[i] / (rout_norm.unsqueeze(-1) + 1e-8)
+        cosine_rin_rout = F.cosine_similarity(rin_unit, rout_unit, dim=-1)
         # save all_attn_in and all_attn_res_out to disk for layer i
-        # all_attn_in[i] = all_attn_in[i].cpu()
-        # all_attn_res_out[i] = all_attn_res_out[i].cpu()
-        # os.makedirs(args.attention_residual_stats_path, exist_ok=True)
-        # torch.save(all_attn_in[i], os.path.join(args.attention_residual_stats_path, f"attn_in_layer_{i}.pt"))
-        # torch.save(all_attn_res_out[i], os.path.join(args.attention_residual_stats_path, f"attn_res_out_layer_{i}.pt"))
+        all_attn_in[i] = all_attn_in[i].cpu()
+        all_attn_res_out[i] = all_attn_res_out[i].cpu()
+        os.makedirs(args.attention_residual_stats_path, exist_ok=True)
+        torch.save(all_attn_in[i], os.path.join(args.attention_residual_stats_path, f"attn_in_layer_{i}.pt"))
+        print(f"Saved attn_in for layer {i} with shape {all_attn_in[i].shape} to {os.path.join(args.attention_residual_stats_path, f'attn_in_layer_{i}.pt')}")
+        torch.save(all_attn_res_out[i], os.path.join(args.attention_residual_stats_path, f"attn_res_out_layer_{i}.pt"))
+        print(f"Saved attn_res_out for layer {i} with shape {all_attn_res_out[i].shape} to {os.path.join(args.attention_residual_stats_path, f'attn_res_out_layer_{i}.pt')}")
         
         cka_rin_rout = gram_cka(all_attn_in[i].reshape(all_attn_in[i].shape[0], -1), all_attn_res_out[i].reshape(all_attn_res_out[i].shape[0], -1))
 
