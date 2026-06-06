@@ -527,12 +527,12 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, mo
     
     if is_main_process() and isinstance(epoch, int):
         to_del = epoch - args.save_ckpt_num * args.save_ckpt_freq
-        if to_del in [49, 99, 149, 199, 249, 299]: # keep every 50th checkpoint
-            pass
-        else:
-            old_ckpt = output_dir / ('checkpoint-%s.pth' % to_del)
-            if os.path.exists(old_ckpt):
-                os.remove(old_ckpt)
+        # if to_del in [49, 99, 149, 199, 249, 299] and not args.save_for_analysis: # keep every 50th checkpoint
+        #     pass
+        # else:
+        old_ckpt = output_dir / ('checkpoint-%s.pth' % to_del)
+        if os.path.exists(old_ckpt):
+            os.remove(old_ckpt)
 
 
 def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, model_ema=None):
@@ -916,6 +916,17 @@ def pr_load_model(path, args, device, model=None):
             print(f"Freezing all params in block {i}")
             for p in model.blocks[i].parameters():
                 p.requires_grad = False
+
+    try:
+        for pname, p in model.named_parameters():
+            if pname in args.train_param_list:
+                pass
+                print(f"-- Training {pname}")
+            else:
+                p.requires_grad = False
+                print(f"-- Freezing {pname}")
+    except AttributeError:
+        pass
             
     for i in args.delete_blocks:
         print(f"Deleting block {i}")
@@ -1008,6 +1019,58 @@ class HookCollector:
                 attn_out = mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
                 self.acts[idx]['attn_out'] = attn_out.detach()
                 self.acts[idx]['attn'] = inp[0] + attn_out.detach()
+                
+            def hook_attn_map(mod, inp, out):
+                B, N, C = inp[0].shape
+                qkv = mod.qkv(inp[0]).reshape(B, N, 3, mod.num_heads, C // mod.num_heads).permute(2, 0, 3, 1, 4)
+                q, k, v = qkv.unbind(0)
+                attn = (q @ k.transpose(-2, -1)) * mod.scale
+                attn = attn.softmax(dim=-1)
+                self.acts[idx]['attn_map'] = attn  # [B, heads, N, N]
+                
+
+            return hook_block, hook_attn_map
+
+        for i, block in enumerate(self.model_without_ddp.blocks):
+            block_hook, attn_map_hook = make_block_hook(i)
+            h1 = block.register_forward_hook(block_hook)
+            h2 = block.attn.register_forward_hook(attn_map_hook)
+            self.handles.extend([h1, h2])
+
+        return self.acts
+
+    def __exit__(self, *args):
+        for h in self.handles:
+            h.remove()
+
+class HookCollectorTrain:
+    def __init__(self, model):
+        self.model = model
+        try:
+            self.model_without_ddp = model.module
+        except AttributeError:
+            self.model_without_ddp = model
+        self.handles = []
+        # Cache: {layer: {'resid': tensor, 'attn': tensor}}
+        self.acts = defaultdict(dict)
+
+    def __enter__(self):
+        def make_block_hook(idx):
+            def hook_block(mod, inp, out):
+                self.acts[idx]['inp'] = inp[0]
+                x = out
+                self.acts[idx]['blk'] = x
+                
+                flat = x.reshape(x.shape[0], -1)
+                blk_act_norm_per_sample = flat.norm(dim=1)
+                # print(f"Block {idx} activation norm per sample: {self.acts[idx]['blk_act_norm_per_sample']}")
+                self.acts[idx]['blk_act_norm'] = blk_act_norm_per_sample.mean().item()
+                blk_act_rms_per_sample = torch.sqrt((flat ** 2).mean(dim=-1))
+                self.acts[idx]['blk_act_rms'] = blk_act_rms_per_sample.mean().item()
+
+                attn_out = mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
+                self.acts[idx]['attn_out'] = attn_out
+                self.acts[idx]['attn'] = inp[0] + attn_out
                 
             def hook_attn_map(mod, inp, out):
                 B, N, C = inp[0].shape
