@@ -30,13 +30,20 @@ from metrics.ddp_multiclassECE import DDPMulticlassECE
 
 from matplotlib import colors
 from scipy.stats import gaussian_kde, skew, kurtosis, ks_2samp, wasserstein_distance
+from custom_lr import *
 
-def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
+from optim_factory import *
+
+def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
                     model_ema: Optional[ModelEma] = None, mixup_fn: Optional[Mixup] = None, log_writer=None,
                     wandb_logger=None, start_steps=None, lr_schedule_values=None, wd_schedule_values=None,
-                    num_training_steps_per_epoch=None, update_freq=None, use_amp=False):
+                    num_training_steps_per_epoch=None, update_freq=None, use_amp=False,
+                    custom_lr_layer=False,
+                    custom_lr_transition_start=None,
+                    custom_lr_transition_end=None,
+                    custom_block_targets=None, custom_non_block_targets=None, args=None):
     model.train(True)
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -57,11 +64,23 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         # Update LR & WD for the first acc
         if data_iter_step % update_freq == 0:
             if lr_schedule_values is not None or wd_schedule_values is not None:
-                for i, param_group in enumerate(optimizer.param_groups):
-                    if lr_schedule_values is not None:
-                        param_group["lr"] = lr_schedule_values[it] * param_group["lr_scale"]
-                    if wd_schedule_values is not None and param_group["weight_decay"] > 0:
-                        param_group["weight_decay"] = wd_schedule_values[it]
+                if custom_lr_layer:
+                    apply_custom_lr_to_optimizer(
+                        optimizer=optimizer,
+                        model=model_without_ddp,
+                        base_lr=lr_schedule_values[it],
+                        epoch=epoch,
+                        custom_block_targets=custom_block_targets,
+                        custom_non_block_targets=custom_non_block_targets,
+                        transition_start=custom_lr_transition_start,
+                        transition_end=custom_lr_transition_end
+                    )
+                else:
+                    for i, param_group in enumerate(optimizer.param_groups):
+                        if lr_schedule_values is not None:
+                            param_group["lr"] = lr_schedule_values[it] * param_group.get("lr_scale", 1)
+                        if wd_schedule_values is not None and param_group["weight_decay"] > 0:
+                            param_group["weight_decay"] = wd_schedule_values[it]
 
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
@@ -113,9 +132,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(class_acc=class_acc)
         min_lr = 10.
         max_lr = 0.
-        for group in optimizer.param_groups:
+        param_group_lrs = {}
+        for gi, group in enumerate(optimizer.param_groups):
             min_lr = min(min_lr, group["lr"])
             max_lr = max(max_lr, group["lr"])
+            # print(group)
+            param_group_lrs[group.get("group_name", f"group{gi}")] = group["lr"]
 
         metric_logger.update(lr=max_lr)
         metric_logger.update(min_lr=min_lr)
@@ -150,6 +172,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 'Rank-0 Batch Wise/train_max_lr': max_lr,
                 'Rank-0 Batch Wise/train_min_lr': min_lr
             }, commit=False)
+            for pname, lr_val in param_group_lrs.items():
+                wandb_logger._wandb.log({f'lr/{pname}': lr_val}, commit=False)
             if class_acc:
                 wandb_logger._wandb.log({'Rank-0 Batch Wise/train_class_acc': class_acc}, commit=False)
             if use_amp:

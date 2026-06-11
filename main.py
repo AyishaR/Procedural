@@ -101,7 +101,14 @@ def get_args_parser():
     parser.add_argument('--weight_decay_end', type=float, default=None, help="""Final value of the
         weight decay. We use a cosine schedule for WD and using a larger decay by
         the end of training improves performance for ViTs.""")
-
+    parser.add_argument('--custom_lr_layer', type=bool, default=False,
+                        help='Whether to use custom layer-wise learning rates, which is used for testing whether the block-wise learning rate decay contributes to the performance of procedural pretraining')
+    parser.add_argument('--custom_lr_transition_start', type=int, default=0,
+                        help='Epoch to start transition to custom layer-wise learning rates, used for testing whether the block-wise learning rate decay contributes to the performance of procedural pretraining')
+    parser.add_argument('--custom_lr_transition_end', type=int, default=0,
+                        help='Epoch to end transition to custom layer-wise learning rates, used for testing whether the block-wise learning rate decay contributes to the performance of procedural pretraining')
+    parser.add_argument('--custom_block_targets_scale', type=str, default="",
+                        help='Comma separated list of target scales for custom block-wise learning rates, e.g. "0.1,0.1,0.1,0.1,0.5,0.5,0.5,0.5,1.0,1.0,1.0,1.0" to set the target learning rate for the 12 blocks in convnext_small to gradually increase from 0.1x to 1x the base learning rate; supports "all" to set the same target scale for all blocks and "" to not apply custom block-wise learning rates (default: "0.1,0.1,0.1,0.1,0.5,0.5,0.5,0.5,1.0,1.0,1.0,1.0")')
     parser.add_argument('--lr', type=float, default=4e-3, metavar='LR',
                         help='learning rate (default: 4e-3), with total batch size 4096')
     parser.add_argument('--layer_decay', type=float, default=1.0)
@@ -532,17 +539,33 @@ def main(args):
         cka_compare(data_loader_val, device, args)
         return
 
-    optimizer = create_optimizer(
-        args, model_without_ddp, skip_list=None,
-        get_num_layer=assigner.get_layer_id if assigner is not None else None, 
-        get_layer_scale=assigner.get_scale if assigner is not None else None)
-
     loss_scaler = NativeScaler() # if args.use_amp is False, this won't be used
 
     print("Use Cosine LR scheduler")
     lr_schedule_values = utils.cosine_scheduler(
         args.lr, args.min_lr, args.epochs, num_training_steps_per_epoch,
         warmup_epochs=args.warmup_epochs, warmup_steps=args.warmup_steps,
+    )
+
+    custom_block_targets = args.custom_block_targets_scale.split(",") if args.custom_block_targets_scale != "" else []
+    custom_block_targets = [float(x) for x in custom_block_targets] if custom_block_targets else []
+    custom_non_block_targets = {
+        "patch_embed": 1.0,
+        "cls_token": 1.0,
+        "pos_embed": 1.0,
+        "norm": 1.0,
+        "head": 1.0
+    }
+    
+    optimizer = create_optimizer(
+        args, model_without_ddp, skip_list=None,
+        get_num_layer=assigner.get_layer_id if assigner is not None else None, 
+        get_layer_scale=assigner.get_scale if assigner is not None else None,
+        start_lr = lr_schedule_values[0],
+        custom_block_targets = custom_block_targets,
+        custom_non_block_targets = custom_non_block_targets,
+        custom_lr_transition_start = args.custom_lr_transition_start,
+        custom_lr_transition_end = args.custom_lr_transition_end
     )
 
     if args.weight_decay_end is None:
@@ -561,7 +584,7 @@ def main(args):
 
     print("criterion = %s" % str(criterion))
 
-    if args.hessian_calculate:
+    if args.calculate_hessian:
         total_params = sum(p.numel() for p in model_without_ddp.parameters())
         trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
         non_trainable = sum(p.numel() for p in model_without_ddp.parameters() if not p.requires_grad)
@@ -608,6 +631,12 @@ def main(args):
     if args.start_epoch==0 and shuffled_block_order is not None:
         wandb_logger.update_config("block_order", shuffled_block_order)
 
+    if args.start_epoch==0 and args.custom_lr_layer:
+        for bi, blrs in enumerate(custom_block_targets):
+            wandb_logger.update_config(f"block_{bi}_scale", blrs)
+        for npname, nplrs in custom_non_block_targets.items():
+            wandb_logger.update_config(f"{npname}_scale", nplrs)
+
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
@@ -617,13 +646,19 @@ def main(args):
             log_writer.set_step(epoch * num_training_steps_per_epoch * args.update_freq)
         if wandb_logger:
             wandb_logger.set_steps()
-        train_stats, parameter_norm = train_one_epoch(
-            model, criterion, data_loader_train, optimizer,
+
+       train_stats, parameter_norm = train_one_epoch(
+            model, model_without_ddp, criterion, data_loader_train, optimizer,
             device, epoch, loss_scaler, args.clip_grad, model_ema, mixup_fn,
             log_writer=log_writer, wandb_logger=wandb_logger, start_steps=epoch * num_training_steps_per_epoch,
             lr_schedule_values=lr_schedule_values, wd_schedule_values=wd_schedule_values,
             num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq,
-            use_amp=args.use_amp
+            use_amp=args.use_amp,
+            custom_lr_layer=args.custom_lr_layer,
+            custom_lr_transition_start=args.custom_lr_transition_start,
+            custom_lr_transition_end=args.custom_lr_transition_start,
+            custom_block_targets=custom_block_targets,
+            custom_non_block_targets=custom_non_block_targets, args=args
         )
         if args.output_dir and args.save_ckpt:
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
@@ -648,10 +683,14 @@ def main(args):
                     parameter_norm=parameter_norm,
                     wandb_logger=wandb_logger
                 )
-                train_stats_temp = evaluate(data_loader_train, model_without_ddp, device, use_amp=args.use_amp)
             else:
                 test_stats = evaluate(data_loader_val, model_without_ddp, device, use_amp=args.use_amp)
+                # train_stats_temp = evaluate(data_loader_train, model_without_ddp, device, use_amp=args.use_amp)
+            if (epoch+1)%20 == 0:
                 train_stats_temp = evaluate(data_loader_train, model_without_ddp, device, use_amp=args.use_amp)
+            else:
+                train_stats_temp = None
+
             print(f"Accuracy of the model on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
             if max_accuracy < test_stats["acc1"]:
                 max_accuracy = test_stats["acc1"]
