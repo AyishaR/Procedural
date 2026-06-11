@@ -616,6 +616,228 @@ def _extract_coarse_layer_normalized_from_checkpoint_dir(checkpoint_dir: str, no
 
     return coarse_normalized, n
 
+def plot_value_heatmap_fixed_scale(
+    value_df,
+    output_path,
+    title,
+    global_layers,
+    selected_epochs,
+    by_seed=True,
+    annotate=True,
+    cmap="turbo",
+    vmin=0.0,
+    vmax=1.6,
+):
+    """
+    Plot a heatmap colored by actual normalized-distance values
+    using a fixed color scale across all heatmaps.
+
+    Parameters
+    ----------
+    value_df : pd.DataFrame
+        Must contain columns:
+        - seed
+        - epoch
+        - layer
+        - normalized_distance
+    output_path : str or Path
+        Path to save the figure.
+    title : str
+        Plot title.
+    global_layers : list[str]
+        Desired numeric layer order.
+    selected_epochs : list[int]
+        Epochs to include, e.g. [100, 150, 200, 250].
+    by_seed : bool
+        If True, columns are MultiIndex (seed, epoch).
+        If False, values are averaged across seeds and columns are epochs only.
+    annotate : bool
+        If True, write the actual normalized distance in each heatmap cell.
+    cmap : str
+        Matplotlib colormap.
+    vmin, vmax : float
+        Fixed color scale bounds.
+    """
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    df = value_df[value_df["epoch"].isin(selected_epochs)].copy()
+
+    if by_seed:
+        pivot_df = df.pivot(index="layer", columns=["seed", "epoch"], values="normalized_distance")
+    else:
+        mean_df = (
+            df.groupby(["layer", "epoch"], as_index=False)["normalized_distance"]
+            .mean()
+        )
+        pivot_df = mean_df.pivot(index="layer", columns="epoch", values="normalized_distance")
+
+    pivot_df = pivot_df.reindex(global_layers)
+
+    fig, ax = plt.subplots(figsize=(16, max(6, len(global_layers) * 0.45)))
+    im = ax.imshow(
+        pivot_df.values,
+        aspect="auto",
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+    )
+
+    ax.set_yticks(np.arange(pivot_df.shape[0]))
+    ax.set_yticklabels(pivot_df.index)
+
+    ax.set_xticks(np.arange(pivot_df.shape[1]))
+    if by_seed:
+        ax.set_xticklabels(
+            [f"{seed}\n{epoch}" for seed, epoch in pivot_df.columns],
+            rotation=45,
+            ha="right",
+        )
+    else:
+        ax.set_xticklabels([str(epoch) for epoch in pivot_df.columns], rotation=0)
+
+    if annotate:
+        threshold = (vmin + vmax) / 2.0
+        for i in range(pivot_df.shape[0]):
+            for j in range(pivot_df.shape[1]):
+                val = pivot_df.iat[i, j]
+                if pd.notna(val):
+                    text_color = "white" if val > threshold else "black"
+                    ax.text(
+                        j,
+                        i,
+                        f"{val:.2f}",
+                        ha="center",
+                        va="center",
+                        color=text_color,
+                        fontsize=8,
+                    )
+
+    ax.set_title(title)
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label(f"Normalized distance to final checkpoint ({vmin:.1f} to {vmax:.1f})")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
+def plot_epoch_relative_gap_heatmap(
+    value_df,
+    output_path,
+    title,
+    global_layers,
+    selected_epochs,
+    by_seed=True,
+    annotate=True,
+    cmap="turbo",
+    vmin=0.0,
+    vmax=0.4,
+):
+    """
+    Plot a heatmap where each cell color is:
+        normalized_distance - minimum normalized_distance in that column
+
+    So for each epoch-column, the best layer has color 0 and others are colored
+    by how much larger their value is than the best layer at that epoch.
+
+    Parameters
+    ----------
+    value_df : pd.DataFrame
+        Must contain columns:
+        - seed
+        - epoch
+        - layer
+        - normalized_distance
+    output_path : str or Path
+        Path to save the figure.
+    title : str
+        Plot title.
+    global_layers : list[str]
+        Desired numeric layer order.
+    selected_epochs : list[int]
+        Epochs to include, e.g. [100, 150, 200, 250].
+    by_seed : bool
+        If True, columns are (seed, epoch).
+        If False, values are averaged across seeds and columns are epochs only.
+    annotate : bool
+        If True, annotate each cell with the raw normalized distance value.
+    cmap : str
+        Matplotlib colormap.
+    vmin, vmax : float
+        Fixed color scale for the gap values.
+        Example: if typical within-epoch gaps are up to 0.2, use vmax=0.2.
+    """
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    df = value_df[value_df["epoch"].isin(selected_epochs)].copy()
+
+    if by_seed:
+        raw_pivot = df.pivot(index="layer", columns=["seed", "epoch"], values="normalized_distance")
+    else:
+        mean_df = (
+            df.groupby(["layer", "epoch"], as_index=False)["normalized_distance"]
+            .mean()
+        )
+        raw_pivot = mean_df.pivot(index="layer", columns="epoch", values="normalized_distance")
+
+    raw_pivot = raw_pivot.reindex(global_layers)
+
+    # Subtract the minimum value in each column
+    column_min = raw_pivot.min(axis=0)
+    gap_pivot = raw_pivot.subtract(column_min, axis=1)
+
+    fig, ax = plt.subplots(figsize=(16, max(6, len(global_layers) * 0.45)))
+    im = ax.imshow(
+        gap_pivot.values,
+        aspect="auto",
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+    )
+
+    ax.set_yticks(np.arange(gap_pivot.shape[0]))
+    ax.set_yticklabels(gap_pivot.index)
+
+    ax.set_xticks(np.arange(gap_pivot.shape[1]))
+    if by_seed:
+        ax.set_xticklabels(
+            [f"{seed}\n{epoch}" for seed, epoch in gap_pivot.columns],
+            rotation=45,
+            ha="right",
+        )
+    else:
+        ax.set_xticklabels([str(epoch) for epoch in gap_pivot.columns], rotation=0)
+
+    if annotate:
+        threshold = vmin + 0.55 * (vmax - vmin)
+        for i in range(raw_pivot.shape[0]):
+            for j in range(raw_pivot.shape[1]):
+                raw_val = raw_pivot.iat[i, j]
+                gap_val = gap_pivot.iat[i, j]
+                if pd.notna(raw_val):
+                    # text_color = "white" if gap_val > threshold else "black"
+                    text_color = "white" if gap_val < 0.05 or gap_val > 0.35 else "black"
+                    ax.text(
+                        j,
+                        i,
+                        f"{raw_val:.2f}",
+                        ha="center",
+                        va="center",
+                        color=text_color,
+                        fontsize=8,
+                    )
+
+    ax.set_title(title)
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("Value minus column minimum")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=220)
+    plt.close(fig)
+
 
 def visualize_layer_rankings_across_seeds(
     seed_dirs: list[str],
@@ -712,7 +934,7 @@ def visualize_layer_rankings_across_seeds(
     value_pivot = value_df.pivot(index="layer", columns=["seed", "epoch"], values="normalized_distance").reindex(global_layers)
 
     fig, ax = plt.subplots(figsize=(30, max(6, len(global_layers) * 0.45)))
-    im = ax.imshow(rank_pivot.values, aspect="auto", cmap="viridis_r")
+    im = ax.imshow(rank_pivot.values, aspect="auto", cmap="turbo")
 
     ax.set_xticks(np.arange(rank_pivot.shape[1]))
     ax.set_yticks(np.arange(rank_pivot.shape[0]))
@@ -733,7 +955,7 @@ def visualize_layer_rankings_across_seeds(
     cbar.set_label("Rank (1 = lowest normalized distance)")
 
     fig.tight_layout()
-    fig.savefig(output_dir / "layer_rank_heatmap_selected_epochs_annotated_detailedv2.png", dpi=220)
+    fig.savefig(output_dir / "layer_rank_heatmap_selected_epochs_annotated_detailed_focussed.png", dpi=220)
     plt.close(fig)
 
 
@@ -770,6 +992,59 @@ def visualize_layer_rankings_across_seeds(
         fig.tight_layout()
         fig.savefig(output_dir / f"{seed_name}_layer_rank_bump.png", dpi=220)
         plt.close(fig)
+
+    plot_value_heatmap_fixed_scale(
+        value_df=value_df,
+        output_path=output_dir / "layer_value_heatmap_fixed_scale_by_seed.png",
+        title="Layer normalized distance heatmap (fixed scale 0 to 1.6)",
+        global_layers=global_layers,
+        selected_epochs=valid_epochs,
+        by_seed=True,
+        annotate=True,
+        cmap="turbo",
+        vmin=0.0,
+        vmax=1.6,
+    )
+
+    plot_value_heatmap_fixed_scale(
+        value_df=value_df,
+        output_path=output_dir / "layer_value_heatmap_fixed_scale_mean_across_seeds.png",
+        title="Layer normalized distance heatmap, mean across seeds (fixed scale 0 to 1.6)",
+        global_layers=global_layers,
+        selected_epochs=valid_epochs,
+        by_seed=False,
+        annotate=True,
+        cmap="turbo",
+        vmin=0.0,
+        vmax=1.6,
+    )
+
+    plot_epoch_relative_gap_heatmap(
+        value_df=value_df,
+        output_path=output_dir / "layer_gap_heatmap_by_seed.png",
+        title="Layer heatmap colored by value minus best layer in each epoch",
+        global_layers=global_layers,
+        selected_epochs=valid_epochs,
+        by_seed=True,
+        annotate=True,
+        cmap="turbo",
+        vmin=0.0,
+        vmax=0.4,   # adjust if your gaps are usually smaller or larger
+    )
+
+    plot_epoch_relative_gap_heatmap(
+        value_df=value_df,
+        output_path=output_dir / "layer_gap_heatmap_mean_across_seeds.png",
+        title="Layer heatmap colored by value minus best layer in each epoch (mean across seeds)",
+        global_layers=global_layers,
+        selected_epochs=valid_epochs,
+        by_seed=False,
+        annotate=True,
+        cmap="turbo",
+        vmin=0.0,
+        vmax=0.4,
+    )
+
 
     # 3) Mean-across-seeds rank bump chart
     mean_df = value_df.groupby(["epoch", "layer"], as_index=False)["normalized_distance"].mean()
@@ -846,13 +1121,21 @@ if __name__ == "__main__":
     # Then edit these paths as needed.
     dir_list = [
         # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4912447",
-        # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4912448",
+        "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4912448",
         # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4912449",
-        # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4912446",
+        "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4912446",
         # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4912439",
-        "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4922834",
-        # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4922831",
+        # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4922834",
+        # # # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4922831",
         # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4922829",
+        "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4922828",
+        "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4922830",
+        "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4922832",
+        # # # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4951438",
+        # # # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4951437",
+        # # # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4951413",
+        # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4950779",
+        # # # "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/results_v2/imnet100_small/results_IMNET100_SMALL_4960278",
     ]
     output_main_dir = "/pfs/work9/workspace/scratch/fr_ad457-pr_pretrain/metrics_v2/layer_convergence"
     for dir_item in dir_list:
@@ -876,7 +1159,7 @@ if __name__ == "__main__":
             seed_dirs=seed_dirs,
             output_dir=output_main_dir + f"/{slurm_id}",
             # selected_epochs=[100, 150, 200, 250],
-            selected_epochs=list(range(0, 300, 10)),  # use this line instead to include more epochs in the analysis
+            selected_epochs=list(range(50, 200, 10)),  # use this line instead to include more epochs in the analysis
             norm_mode="l2",
         )
 
