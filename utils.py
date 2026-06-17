@@ -224,6 +224,8 @@ class WandbLogger(object):
         metrics.pop('epoch')
 
         for k, v in metrics.items():
+            if "probe" in k:
+                self._wandb.log({f'Probe/{k}': v}, commit=False)
             if 'train' in k:
                 self._wandb.log({f'Global Train/{k}': v}, commit=False)
             elif 'test' in k:
@@ -1016,9 +1018,20 @@ class HookCollector:
                 blk_act_rms_per_sample = torch.sqrt((flat ** 2).mean(dim=-1))
                 self.acts[idx]['blk_act_rms'] = blk_act_rms_per_sample.mean().item()
 
-                attn_out = mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
+                # attn_out = mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
+                # self.acts[idx]['attn_out'] = attn_out.detach()
+                # self.acts[idx]['attn'] = inp[0] + attn_out.detach()
+
+                step_wise = mod.norm1(inp[0])
+                self.acts[idx]['ln1'] = step_wise.detach()
+                step_wise = mod.attn(step_wise)
+                self.acts[idx]['qkvp1'] = step_wise.detach()
+                step_wise = mod.ls1(step_wise)
+                self.acts[idx]['ls1'] = step_wise.detach()
+                attn_out = mod.drop_path1(step_wise)
                 self.acts[idx]['attn_out'] = attn_out.detach()
                 self.acts[idx]['attn'] = inp[0] + attn_out.detach()
+
                 
             def hook_attn_map(mod, inp, out):
                 B, N, C = inp[0].shape
@@ -1104,3 +1117,28 @@ def denormalize(tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
     # Reverse: x_norm * std + mean
     deno = tensor * std.to(tensor.device) + mean.to(tensor.device)
     return torch.clamp(deno, 0, 1)
+
+def apply_layer_11_scale(model, init_value):
+    model.blocks[11].ls1.gamma.data.fill_(init_value)
+    model.blocks[11].ls2.gamma.data.fill_(init_value)
+
+def scale_layer_11_weights(model, scale_type, scale_factor):
+    depth = len(model.blocks)
+    for block_idx in [depth - 1]:
+        block = model.blocks[block_idx]
+        if scale_type == "scale_weights_attn_blk_only":
+            block.norm1.weight.data *= scale_factor.get("norm1", 1.0)
+            scale_qk = scale_factor.get("qk", 1.0)
+            scale_v = scale_factor.get("v", 1.0)
+            if scale_qk==scale_v:
+                block.attn.qkv.weight.data *= scale_qk
+            else:
+                total_dim = block.attn.qkv.weight.data.shape[0]
+                embed_dim = total_dim // 3
+                block.attn.qkv.weight.data[:embed_dim, :] *= scale_qk
+                block.attn.qkv.weight.data[embed_dim:2*embed_dim, :] *= scale_qk
+                block.attn.qkv.weight.data[2*embed_dim:3*embed_dim, :] *= scale_v
+            block.attn.proj.weight.data *= scale_factor.get("proj", 1.0)
+            # block.mlp.fc1.weight.data *= scale_factor
+            # block.mlp.fc2.weight.data *= scale_factor
+

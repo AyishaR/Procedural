@@ -324,6 +324,14 @@ def get_args_parser():
     parser.add_argument('--wandb_ckpt', type=str2bool, default=False,
                         help="Save model checkpoints as W&B Artifacts.")
 
+    parser.add_argument('--layer_11_scale_ln', type=float, default=1.0)
+    # parser.add_argument('--layer_11_scale_attn', type=float, default=1.0)
+    parser.add_argument('--layer_11_scale_attn_qk', type=float, default=1.0)
+    parser.add_argument('--layer_11_scale_attn_v', type=float, default=1.0)
+    parser.add_argument('--layer_11_scale_attn_proj', type=float, default=1.0)
+    parser.add_argument('--layer_11_scale_method', type=str, default="")
+
+
     return parser
 
 def main(args):
@@ -473,6 +481,15 @@ def main(args):
         device = device,
         model = model
     )
+
+    if args.layer_11_scale_method !="":
+        scale_weights = {
+            "norm1": args.layer_11_scale_ln,
+            "qk": args.layer_11_scale_attn_qk,
+            "v": args.layer_11_scale_attn_v,
+            "proj": args.layer_11_scale_attn_proj
+        }
+        utils.scale_layer_11_weights(model_without_ddp, args.layer_11_scale_method, scale_weights)
     
     total_params = sum(p.numel() for p in model_without_ddp.parameters())
     trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
@@ -637,6 +654,18 @@ def main(args):
         for npname, nplrs in custom_non_block_targets.items():
             wandb_logger.update_config(f"{npname}_scale", nplrs)
 
+    if args.start_epoch==0 and args.layer_11_scale_method != "":
+        # if args.attention_residual_analysis:
+        # os.makedirs(args.attention_residual_stats_path, exist_ok=True)
+        if args.model != "vit_base":
+            attention_residual_analysis(
+                data_loader = data_loader_val,
+                model = model_without_ddp,
+                device = device,
+                args = args
+            )
+        # return
+    
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
@@ -647,7 +676,7 @@ def main(args):
         if wandb_logger:
             wandb_logger.set_steps()
 
-       train_stats, parameter_norm = train_one_epoch(
+        train_stats, parameter_norm = train_one_epoch(
             model, model_without_ddp, criterion, data_loader_train, optimizer,
             device, epoch, loss_scaler, args.clip_grad, model_ema, mixup_fn,
             log_writer=log_writer, wandb_logger=wandb_logger, start_steps=epoch * num_training_steps_per_epoch,
@@ -686,7 +715,7 @@ def main(args):
             else:
                 test_stats = evaluate(data_loader_val, model_without_ddp, device, use_amp=args.use_amp)
                 # train_stats_temp = evaluate(data_loader_train, model_without_ddp, device, use_amp=args.use_amp)
-            if (epoch+1)%20 == 0:
+            if args.model != "vit_base" and (epoch+1)%20 == 0:
                 train_stats_temp = evaluate(data_loader_train, model_without_ddp, device, use_amp=args.use_amp)
             else:
                 train_stats_temp = None
@@ -744,8 +773,8 @@ def main(args):
             print("Logging metrics to wandb")
             wandb_logger.log_epoch_metrics(log_stats)
 
-        if args.model == "vit_base" and (epoch+1)!=args.epochs:
-            return
+        # if args.model == "vit_base" and (epoch+1)!=args.epochs and (epoch+1)%2 == 0:
+        #     return
 
     if wandb_logger and args.wandb_ckpt and args.save_ckpt and args.output_dir:
         wandb_logger.log_checkpoints()
