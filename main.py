@@ -876,6 +876,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.output_dir and not args.output_dir.endswith(".pth"):
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    if args.accuracy_json and not args.accuracy_json.endswith(".json"):
+        Path(args.accuracy_json).parent.mkdir(parents=True, exist_ok=True)
+    elif args.accuracy_json and args.accuracy_json.endswith(".json"):
+        Path(args.accuracy_json).parent.mkdir(parents=True, exist_ok=True)
     main(args)
 
     if dist.is_initialized():
