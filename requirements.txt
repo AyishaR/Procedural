@@ -5,8 +5,9 @@ numpy
 pytest
 requests
 einops
-deepspeed==0.4.0
 scipy
-timm==0.6.12
+timm>=1.0.20
+huggingface_hub
 six
 wandb
+matplotlib
