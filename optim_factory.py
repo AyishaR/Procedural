@@ -5,12 +5,13 @@ from timm.optim.adafactor import Adafactor
 from timm.optim.adahessian import Adahessian
 from timm.optim.adamp import AdamP
 from timm.optim.lookahead import Lookahead
-from timm.optim.nadam import Nadam
+# from timm.optim.nadam import Nadam
 #from timm.optim.novograd import NovoGrad
 #from timm.optim.nvnovograd import NvNovoGrad
-from timm.optim.radam import RAdam
-from timm.optim.rmsprop_tf import RMSpropTF
-from timm.optim.sgdp import SGDP
+# from timm.optim.radam import RAdam
+# from timm.optim.rmsprop_tf import RMSpropTF
+# from timm.optim.sgdp import SGDP
+from custom_lr import *
 
 import json
 
@@ -104,7 +105,7 @@ def get_parameter_groups(model, weight_decay=1e-5, skip_list=(), get_num_layer=N
     return list(parameter_group_vars.values())
 
 
-def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filter_bias_and_bn=True, skip_list=None):
+def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filter_bias_and_bn=True, skip_list=None, start_lr=None, custom_block_targets=None, custom_non_block_targets=None, custom_lr_transition_start=90, custom_lr_transition_end=110):
     opt_lower = args.opt.lower()
     weight_decay = args.weight_decay
     # if weight_decay and filter_bias_and_bn:
@@ -117,7 +118,18 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
         parameters = get_parameter_groups(model, weight_decay, skip, get_num_layer, get_layer_scale)
         weight_decay = 0.
     else:
-        parameters = model.parameters()
+        parameters = [p for p in model.parameters() if p.requires_grad]
+
+    if args.custom_lr_layer:
+        parameters = build_vit_param_groups(
+            model=model,
+            base_lr=start_lr if start_lr is not None else args.lr,
+            epoch=0,
+            custom_block_targets=custom_block_targets,
+            custom_non_block_targets=custom_non_block_targets,
+            transition_start=custom_lr_transition_start,
+            transition_end=custom_lr_transition_end
+        )
 
     if 'fused' in opt_lower:
         assert has_apex and torch.cuda.is_available(), 'APEX and CUDA required for fused optimizers'
@@ -140,14 +152,14 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
         optimizer = optim.Adam(parameters, **opt_args)
     elif opt_lower == 'adamw':
         optimizer = optim.AdamW(parameters, **opt_args)
-    elif opt_lower == 'nadam':
-        optimizer = Nadam(parameters, **opt_args)
-    elif opt_lower == 'radam':
-        optimizer = RAdam(parameters, **opt_args)
+    # elif opt_lower == 'nadam':
+    #     optimizer = Nadam(parameters, **opt_args)
+    # elif opt_lower == 'radam':
+    #     optimizer = RAdam(parameters, **opt_args)
     elif opt_lower == 'adamp':
         optimizer = AdamP(parameters, wd_ratio=0.01, nesterov=True, **opt_args)
-    elif opt_lower == 'sgdp':
-        optimizer = SGDP(parameters, momentum=args.momentum, nesterov=True, **opt_args)
+    # elif opt_lower == 'sgdp':
+    #     optimizer = SGDP(parameters, momentum=args.momentum, nesterov=True, **opt_args)
     elif opt_lower == 'adadelta':
         optimizer = optim.Adadelta(parameters, **opt_args)
     elif opt_lower == 'adafactor':
@@ -158,8 +170,8 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
         optimizer = Adahessian(parameters, **opt_args)
     elif opt_lower == 'rmsprop':
         optimizer = optim.RMSprop(parameters, alpha=0.9, momentum=args.momentum, **opt_args)
-    elif opt_lower == 'rmsproptf':
-        optimizer = RMSpropTF(parameters, alpha=0.9, momentum=args.momentum, **opt_args)
+    # elif opt_lower == 'rmsproptf':
+    #     optimizer = RMSpropTF(parameters, alpha=0.9, momentum=args.momentum, **opt_args)
     elif opt_lower == 'novograd':
         optimizer = NovoGrad(parameters, **opt_args)
     elif opt_lower == 'nvnovograd':
