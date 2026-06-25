@@ -330,7 +330,7 @@ def get_args_parser():
     parser.add_argument('--layer_11_scale_attn_v', type=float, default=1.0)
     parser.add_argument('--layer_11_scale_attn_proj', type=float, default=1.0)
     parser.add_argument('--layer_11_scale_method', type=str, default="")
-
+    parser.add_argument('--init_method', type=str, default="default", help='Initialization method for the model weights. Options: "default", "match_L11_activations"')
 
     return parser
 
@@ -475,21 +475,43 @@ def main(args):
 
     shuffled_block_order = None
 
-    model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
-        path = args.initialize,
-        args = args,
-        device = device,
-        model = model
-    )
-
-    if args.layer_11_scale_method !="":
-        scale_weights = {
-            "norm1": args.layer_11_scale_ln,
-            "qk": args.layer_11_scale_attn_qk,
-            "v": args.layer_11_scale_attn_v,
-            "proj": args.layer_11_scale_attn_proj
-        }
-        utils.scale_layer_11_weights(model_without_ddp, args.layer_11_scale_method, scale_weights)
+    if args.init_method == "default":
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model
+        )
+    elif args.init_method == "upscale_random_match_L11_attn_norms":
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = "",
+            args = args,
+            device = device,
+            model = model
+        )
+        model_temp = utils.build_model(args)
+        model_temp.load_state_dict(model_without_ddp.state_dict())
+        _, target_model_without_ddp, _ = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model_temp
+        )
+    elif args.init_method == "downscale_pr_match_L11_attn_norms":
+        target_model_without_ddp = utils.build_model(args)
+        target_model_without_ddp.load_state_dict(model.state_dict())
+        _, target_model_without_ddp, _ = utils.pr_load_model(
+            path = "",
+            args = args,
+            device = device,
+            model = target_model_without_ddp
+        )
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model
+        )
     
     total_params = sum(p.numel() for p in model_without_ddp.parameters())
     trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
@@ -654,17 +676,64 @@ def main(args):
         for npname, nplrs in custom_non_block_targets.items():
             wandb_logger.update_config(f"{npname}_scale", nplrs)
 
-    if args.start_epoch==0 and args.layer_11_scale_method != "":
-        # if args.attention_residual_analysis:
-        # os.makedirs(args.attention_residual_stats_path, exist_ok=True)
-        if args.model != "vit_base":
-            attention_residual_analysis(
+    if args.start_epoch==0:
+        if args.layer_11_scale_method != "":
+            scale_weights = {
+                "norm1": args.layer_11_scale_ln,
+                "qk": args.layer_11_scale_attn_qk,
+                "v": args.layer_11_scale_attn_v,
+                "proj": args.layer_11_scale_attn_proj
+            }
+            utils.scale_layer_11_weights(model_without_ddp, args.layer_11_scale_method, scale_weights)
+            if args.model != "vit_base":
+                attention_residual_analysis(
+                    data_loader = data_loader_val,
+                    model = model_without_ddp,
+                    device = device,
+                    args = args
+                )
+        if args.init_method in ["downscale_pr_match_L11_attn_norms", "upscale_random_match_L11_attn_norms"]:
+            current_stats = attention_residual_analysis(
                 data_loader = data_loader_val,
                 model = model_without_ddp,
                 device = device,
-                args = args
+                args = args,
+                save=False
             )
-        # return
+            # current_stats = {}
+            target_stats = attention_residual_analysis(
+                data_loader = data_loader_val,
+                model = target_model_without_ddp,
+                device = device,
+                args = args,
+                save=False
+            )
+            scale_sq = target_stats[11]["norm_ratio_qkvp1_ln1_mean"]/current_stats[11]["norm_ratio_qkvp1_ln1_mean"]
+            print(f"Scale squared for layer 11 qkvp1 norm ratio: {scale_sq}", flush=True)
+            scale = math.sqrt(scale_sq)
+            print(f"Scale for layer 11 qkvp1 norm ratio: {scale}", flush=True)
+            scale_weights = {
+                "norm1": 1.0,
+                "qk": 1.0,
+                "v": scale,
+                "proj": scale
+            }
+            for s, sw in scale_weights.items():
+                wandb_logger.update_config(f"calculated_layer_11_scale_{s}", sw)
+            wandb_logger.update_config(f"current_qkvp_ln1_norm_ratio", current_stats[11]["norm_ratio_qkvp1_ln1_mean"])
+            wandb_logger.update_config(f"target_qkvp_ln1_norm_ratio", target_stats[11]["norm_ratio_qkvp1_ln1_mean"])
+
+            utils.scale_layer_11_weights(model_without_ddp, "scale_weights_attn_blk_only", scale_weights)
+            if args.model != "vit_base":
+                updated_stats = attention_residual_analysis(
+                    data_loader = data_loader_val,
+                    model = model_without_ddp,
+                    device = device,
+                    args = args
+                )
+                wandb_logger.update_config(f"updated_qkvp_ln1_norm_ratio", updated_stats[11]["norm_ratio_qkvp1_ln1_mean"])
+
+    # return
     
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()

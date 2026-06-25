@@ -56,7 +56,8 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
 
     optimizer.zero_grad()
 
-    for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+    # for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+    for data_iter_step, batch_inputs in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         step = data_iter_step // update_freq
         if step >= num_training_steps_per_epoch:
             continue
@@ -82,8 +83,10 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                         if wd_schedule_values is not None and param_group["weight_decay"] > 0:
                             param_group["weight_decay"] = wd_schedule_values[it]
 
-        samples = samples.to(device, non_blocking=True)
-        targets = targets.to(device, non_blocking=True)
+        # samples = samples.to(device, non_blocking=True)
+        # targets = targets.to(device, non_blocking=True)
+        samples = batch_inputs[0].to(device, non_blocking=True)
+        targets = batch_inputs[1].to(device, non_blocking=True)
 
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
@@ -202,7 +205,7 @@ def evaluate(data_loader, model, device, use_amp=False):
     model.eval()
     for batch in metric_logger.log_every(data_loader, 10, header):
         images = batch[0]
-        target = batch[-1]
+        target = batch[1]
 
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
@@ -309,7 +312,7 @@ def model_analyse(
     model.eval()
     for batch in metric_logger.log_every(data_loader, 10, header):
         images = batch[0]
-        target = batch[-1]
+        target = batch[1]
 
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
@@ -458,7 +461,7 @@ def model_analyse(
             else:
                 # print(f"Metric Warning: {metric_name} not found in detailed_metrics_logger.meters")
                 pass
-        blk_stats_dict["grad_norm"] = parameter_norm[f'module.blocks.{layer}'] if parameter_norm is not None else None
+        blk_stats_dict["grad_norm"] = parameter_norm.get(f'module.blocks.{layer}', -1) if parameter_norm is not None else None
         # if epoch in [49, 99, 149, 199, 249, 299]: blk_stats_dict["cka_feature"] = torch.cat(cka_features[layer], dim=0).cpu().tolist() if layer in cka_features else None
         # print("cka_feature shape:", blk_stats_dict["cka_feature"].shape if blk_stats_dict["cka_feature"] is not None else None)
         if blk_stats_dict.keys() > stats_dict.keys():   # only append if at least one metric was found
@@ -824,7 +827,7 @@ def cka_calculate_self(model_A, data_loader, device, args, mask_function=None):
 
     for batch in metric_logger.log_every(data_loader, 10, "cka-only: "):
         images = batch[0]
-        target = batch[-1]
+        target = batch[1]
 
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
@@ -885,7 +888,7 @@ def cka_calculate(model_A, model_B, data_loader, device, args, procedural_data_l
 
     for batch in metric_logger.log_every(data_loader, 10, "cka-only: "):
         images = batch[0]
-        target = batch[-1]
+        target = batch[1]
 
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
@@ -1203,8 +1206,10 @@ def cohens_d(x1, x2):
     return (np.mean(x1) - np.mean(x2)) / np.sqrt((np.var(x1) + np.var(x2)) / 2)
 
 @torch.no_grad()
-def attention_residual_analysis(data_loader, model, device, args=None):
+def attention_residual_analysis(data_loader, model, device, args=None, save=True):
     header = 'attention_residual_analysis:'
+
+    output_folder = args.attention_residual_stats_path if args.attention_residual_stats_path!="" else args.output_dir
 
     # layers_to_analyse = range(len(model.blocks))
     layers_to_analyse = [11]
@@ -1216,13 +1221,18 @@ def attention_residual_analysis(data_loader, model, device, args=None):
     all_attn_res_out = {i:[] for i in layers_to_analyse}
     all_attn_delta = {i:[] for i in layers_to_analyse}
 
+    ln1 = {i: [] for i in layers_to_analyse}
+    qkvp1 = {i: [] for i in layers_to_analyse}
+    ls1 = {i: [] for i in layers_to_analyse}
+
+
     model.eval()
     for batch in data_loader:
         images = batch[0]
         target = batch[1]
-        masks = batch[2]
-        patched_masks = batch[3]
-        im_names = batch[4]
+        # masks = batch[2]
+        # patched_masks = batch[3]
+        # im_names = batch[4]
         
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
@@ -1238,6 +1248,10 @@ def attention_residual_analysis(data_loader, model, device, args=None):
                 attn_out = acts[i]['attn_out']
                 attn_res_out = acts[i]['attn']
                 attn_delta = attn_res_out - attn_in
+
+                ln1[i].append(acts[i]['ln1'].cpu())
+                qkvp1[i].append(acts[i]['qkvp1'].cpu())
+                ls1[i].append(acts[i]['ls1'].cpu())
 
                 all_attn_in[i].append(attn_in.cpu())
                 all_attn_out[i].append(attn_out.cpu())
@@ -1258,18 +1272,29 @@ def attention_residual_analysis(data_loader, model, device, args=None):
         delta_norm = torch.norm(all_attn_delta[i], dim=-1)
         atnn_out_norm = torch.norm(all_attn_out[i], dim=-1)
 
+        ln1_norm = torch.norm(torch.cat(ln1[i], dim=0), dim=-1)
+        qkvp1_norm = torch.norm(torch.cat(qkvp1[i], dim=0), dim=-1)
+        ls1_norm = torch.norm(torch.cat(ls1[i], dim=0), dim=-1)
+
+        norm_ratio_ln1_inp = ln1_norm / (rin_norm + 1e-8)
+        norm_ratio_qkvp1_ln1 = qkvp1_norm / (ln1_norm + 1e-8)
+        norm_ratio_ls1_qkvp1 = ls1_norm / (qkvp1_norm + 1e-8)
+        norm_ratio_out_ls1 = atnn_out_norm / (ls1_norm + 1e-8)
+        norm_ratio_resout_out = rout_norm / (atnn_out_norm + 1e-8)
+
         rin_unit = all_attn_in[i] / (rin_norm.unsqueeze(-1) + 1e-8)
         rout_unit = all_attn_res_out[i] / (rout_norm.unsqueeze(-1) + 1e-8)
         cosine_rin_rout = F.cosine_similarity(rin_unit, rout_unit, dim=-1)
         # save all_attn_in and all_attn_res_out to disk for layer i
         all_attn_in[i] = all_attn_in[i].cpu()
         all_attn_res_out[i] = all_attn_res_out[i].cpu()
-        os.makedirs(args.attention_residual_stats_path, exist_ok=True)
-        torch.save(all_attn_in[i], os.path.join(args.attention_residual_stats_path, f"attn_in_layer_{i}.pt"))
-        print(f"Saved attn_in for layer {i} with shape {all_attn_in[i].shape} to {os.path.join(args.attention_residual_stats_path, f'attn_in_layer_{i}.pt')}")
-        torch.save(all_attn_res_out[i], os.path.join(args.attention_residual_stats_path, f"attn_res_out_layer_{i}.pt"))
-        print(f"Saved attn_res_out for layer {i} with shape {all_attn_res_out[i].shape} to {os.path.join(args.attention_residual_stats_path, f'attn_res_out_layer_{i}.pt')}")
-        
+        os.makedirs(output_folder, exist_ok=True)
+        # if save and utils.is_main_process():
+        #     torch.save(all_attn_in[i], os.path.join(output_folder, f"attn_in_layer_{i}.pt"))
+        #     print(f"Saved attn_in for layer {i} with shape {all_attn_in[i].shape} to {os.path.join(output_folder, f'attn_in_layer_{i}.pt')}")
+        #     torch.save(all_attn_res_out[i], os.path.join(output_folder, f"attn_res_out_layer_{i}.pt"))
+        #     print(f"Saved attn_res_out for layer {i} with shape {all_attn_res_out[i].shape} to {os.path.join(output_folder, f'attn_res_out_layer_{i}.pt')}")
+            
         cka_rin_rout = gram_cka(all_attn_in[i].reshape(all_attn_in[i].shape[0], -1), all_attn_res_out[i].reshape(all_attn_res_out[i].shape[0], -1))
 
         stats[i] = {
@@ -1279,7 +1304,12 @@ def attention_residual_analysis(data_loader, model, device, args=None):
             "delta_norm": delta_norm.tolist(),
             "atnn_out_norm": atnn_out_norm.tolist(),
             "cosine_rin_rout": cosine_rin_rout.tolist(),
-            "cka_rin_rout": cka_rin_rout.item()
+            "cka_rin_rout": cka_rin_rout.item(),
+            "norm_ratio_ln1_inp": norm_ratio_ln1_inp.tolist(),
+            "norm_ratio_qkvp1_ln1": norm_ratio_qkvp1_ln1.tolist(),
+            "norm_ratio_ls1_qkvp1": norm_ratio_ls1_qkvp1.tolist(),
+            "norm_ratio_out_ls1": norm_ratio_out_ls1.tolist(),
+            "norm_ratio_resout_out": norm_ratio_resout_out.tolist()
         }
     
         stats_aggregated[i] = {
@@ -1287,6 +1317,12 @@ def attention_residual_analysis(data_loader, model, device, args=None):
             "rin_norm_std": rin_norm.std().item(),
             "rout_norm_mean": rout_norm.mean().item(),
             "rout_norm_std": rout_norm.std().item(),
+            "ln1_norm_mean": ln1_norm.mean().item(),    
+            "ln1_norm_std": ln1_norm.std().item(),
+            "qkvp1_norm_mean": qkvp1_norm.mean().item(),
+            "qkvp1_norm_std": qkvp1_norm.std().item(),
+            "ls1_norm_mean": ls1_norm.mean().item(),
+            "ls1_norm_std": ls1_norm.std().item(),
             "norm_ratio_mean": norm_ratio.mean().item(),
             "norm_ratio_std": norm_ratio.std().item(),
             "delta_norm_mean": delta_norm.mean().item(),
@@ -1295,11 +1331,26 @@ def attention_residual_analysis(data_loader, model, device, args=None):
             "attn_out_norm_std": atnn_out_norm.std().item(),
             "cosine_rin_rout_mean": cosine_rin_rout.mean().item(),
             "cosine_rin_rout_std": cosine_rin_rout.std().item(),
-            "cka_rin_rout": cka_rin_rout.item()
+            "cka_rin_rout": cka_rin_rout.item(),
+            "norm_ratio_ln1_inp_mean": norm_ratio_ln1_inp.mean().item(),
+            "norm_ratio_ln1_inp_std": norm_ratio_ln1_inp.std().item(),
+            "norm_ratio_qkvp1_ln1_mean": norm_ratio_qkvp1_ln1.mean().item(),
+            "norm_ratio_qkvp1_ln1_std": norm_ratio_qkvp1_ln1.std().item(),
+            "norm_ratio_ls1_qkvp1_mean": norm_ratio_ls1_qkvp1.mean().item(),
+            "norm_ratio_ls1_qkvp1_std": norm_ratio_ls1_qkvp1.std().item(),
+            "norm_ratio_out_ls1_mean": norm_ratio_out_ls1.mean().item(),
+            "norm_ratio_out_ls1_std": norm_ratio_out_ls1.std().item(),
+            "norm_ratio_resout_out_mean": norm_ratio_resout_out.mean().item(),
+            "norm_ratio_resout_out_std": norm_ratio_resout_out.std().item()
+
         }
     
     stats.update({"aggregated": stats_aggregated})
-    pprint(stats_aggregated)
-    sys.stdout.flush()
+    if utils.is_main_process():
+        pprint(stats_aggregated)
+        sys.stdout.flush()
 
-    json.dump(stats, open(args.attention_residual_stats_path+"/attn_res_stats.json", "w"), indent=4)
+    if save and utils.is_main_process():
+        json.dump(stats_aggregated, open(output_folder+"/attn_res_stats.json", "w"), indent=4)
+
+    return stats_aggregated
