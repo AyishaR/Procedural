@@ -1,3 +1,30 @@
+# Procedural pre-training
+
+## Code setup
+
+1. Setup venv and install packages from requirements.txt
+2. To run vit-base training
+      - Update --partition, -o and -e in SLURM variables
+      - Update ROOT variable
+      - Check venv path
+      - Update the following as per local setup
+        - data_path: Path to IMNET dataset
+        - initialize: Path to procedural init checkpoint
+        - output_dir: Path to output folder
+        - accuracy_json: Path to final file with epoch wise stats, could be same as output dir
+
+To start model training
+
+- Ensure `SLURM_ID=0` in b_vitb_1.sh (the bash_loop file)
+```
+nohup ./b_vitb_1.sh >> imnet_base.log 2>&1 &
+```
+The slurm id is maintained constant in subsequent bash files submitted by this bash_loop file.
+
+To continue training in case of broken loop, 
+
+- Set `SLURM_ID` as requried before starting the bash_loop file.
+
 # Initializing Models with Larger Ones
 
 Official code release for **Initializing Models with Larger Ones**
