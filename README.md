@@ -4,9 +4,10 @@
 
 1. Setup venv and install packages from requirements.txt
 2. To run vit-base training
-      - Update --partition, -o and -e in SLURM variables
+      - Update --partition, GPUS, time, -o and -e in SLURM variables
       - Update ROOT variable
       - Check venv path
+      - Check wand credentials/project name
       - Update the following as per local setup
         - data_path: Path to IMNET dataset
         - initialize: Path to procedural init checkpoint
