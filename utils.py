@@ -1,17 +1,21 @@
 import os
 import math
 import time
-from collections import defaultdict, deque
+from collections import defaultdict, deque, OrderedDict
 import datetime
 import numpy as np
 from timm.utils import get_state_dict
 
 from pathlib import Path
 
+import random
 import torch
 from torch import inf
 from timm.models import create_model
 import torch.distributed as dist
+
+from functools import partial
+from collections import defaultdict
 # from tensorboardX import SummaryWriter
 
 class SmoothedValue(object):
@@ -204,7 +208,7 @@ class WandbLogger(object):
                 project=args.project,
                 config=args,
                 name=name,
-                notes=args.notes
+                notes=args.notes if args.notes!= "" else f"{args.procedural_data} {args.procedural_order} {args.pr_notes}".strip(),
             )
 
     def log_epoch_metrics(self, metrics, commit=True):
@@ -220,10 +224,18 @@ class WandbLogger(object):
         metrics.pop('epoch')
 
         for k, v in metrics.items():
+            if "probe" in k:
+                self._wandb.log({f'Probe/{k}': v}, commit=False)
             if 'train' in k:
                 self._wandb.log({f'Global Train/{k}': v}, commit=False)
             elif 'test' in k:
                 self._wandb.log({f'Global Test/{k}': v}, commit=False)
+            elif 'rand' in k:
+                self._wandb.log({f'Random/{k}': v}, commit=False)
+            elif 'pr' in k:
+                self._wandb.log({f'PR/{k}': v}, commit=False)
+            else:
+                self._wandb.log({f'PR/{k}': v}, commit=False)
 
         self._wandb.log({})
 
@@ -242,6 +254,9 @@ class WandbLogger(object):
         # Set epoch-wise step
         self._wandb.define_metric('Global Train/*', step_metric='epoch')
         self._wandb.define_metric('Global Test/*', step_metric='epoch')
+
+    def update_config(self, key, value):
+        self._wandb.config[key] = value
 
 
 def setup_for_distributed(is_master):
@@ -381,21 +396,77 @@ class NativeScalerWithGradNormCount:
     def __init__(self):
         self._scaler = torch.cuda.amp.GradScaler()
 
-    def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True):
-        self._scaler.scale(loss).backward(create_graph=create_graph)
-        if update_grad:
-            if clip_grad is not None:
-                assert parameters is not None
-                self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
-                norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
+    @staticmethod
+    def get_layer_grad_norms(parameters, norm_type=2.0, group_levels=[None, 3]):
+        group_fn = []
+        for group_level in group_levels:
+            if group_level is None:
+                group_fn.append(lambda name: name.rsplit(".", 1)[0])  # group weight+bias together
             else:
-                self._scaler.unscale_(optimizer)
-                norm = get_grad_norm_(parameters)
+                group_fn.append(lambda name: ".".join(name.split(".")[:group_level]))
+
+        total_grads = []
+        # device = parameters[0][1].grad.device
+
+
+        buckets = defaultdict(list)
+        for name, p in parameters:
+            if p.grad is not None:
+                grad_norm = p.grad.detach()
+                for fn in group_fn:
+                    buckets[fn(name)].append(grad_norm)
+                total_grads.append(grad_norm)
+                
+        # device = parameters[0][1].grad.device
+
+        layer_norms = {}
+        if norm_type == inf:
+            for layer, grads in buckets.items():
+                layer_norms[layer] = max([g.abs().max() for g in grads])
+            total_grad = max([g.abs().max() for g in grads])
+        else:
+            for layer, grads in buckets.items():
+                layer_norms[layer] = torch.norm(torch.stack([torch.norm(g, norm_type) for g in grads]), norm_type)
+            total_grad = torch.norm(torch.stack([torch.norm(g, norm_type) for g in total_grads]), norm_type)
+    
+
+        return total_grad, layer_norms
+
+    def __call__(
+        self,
+        loss,
+        optimizer,
+        clip_grad=None,
+        parameters=None,   # should be model.named_parameters()
+        create_graph=False,
+        update_grad=True,
+    ):
+        self._scaler.scale(loss).backward(create_graph=create_graph)
+
+        layer_grad_norms = None
+        norm = None
+
+        if update_grad:
+            self._scaler.unscale_(optimizer)
+
+            if clip_grad is not None:
+                assert parameters is not None, "parameters must be provided when clip_grad is not None"
+                norm = torch.nn.utils.clip_grad_norm_(
+                    [p for _, p in parameters], clip_grad
+                )
+            else:
+                norm, layer_grad_norms = self.get_layer_grad_norms(parameters)
+                # print("Layer grad norms:", layer_grad_norms)
+                # layer_grad_norms_g3 = self.get_layer_grad_norms(parameters, group_level=3)
+                # print("Layer grad norms with group_level=3:", layer_grad_norms_g3)
+                # layer_grad_norms.update(layer_grad_norms_g3)
+                # norm = get_grad_norm_([p for _, p in parameters])
+                # print("Total grad norm:", norm)
+
             self._scaler.step(optimizer)
             self._scaler.update()
-        else:
-            norm = None
-        return norm
+
+        return norm, layer_grad_norms
 
     def state_dict(self):
         return self._scaler.state_dict()
@@ -458,6 +529,9 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, mo
     
     if is_main_process() and isinstance(epoch, int):
         to_del = epoch - args.save_ckpt_num * args.save_ckpt_freq
+        # if to_del in [49, 99, 149, 199, 249, 299] and not args.save_for_analysis: # keep every 50th checkpoint
+        #     pass
+        # else:
         old_ckpt = output_dir / ('checkpoint-%s.pth' % to_del)
         if os.path.exists(old_ckpt):
             os.remove(old_ckpt)
@@ -465,6 +539,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, mo
 
 def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, model_ema=None):
     output_dir = Path(args.output_dir)
+    backup_resume = None
     if args.auto_resume and len(args.resume) == 0:
         import glob
         all_checkpoints = glob.glob(os.path.join(output_dir, 'checkpoint-*.pth'))
@@ -475,14 +550,25 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
                 latest_ckpt = max(int(t), latest_ckpt)
         if latest_ckpt >= 0:
             args.resume = os.path.join(output_dir, 'checkpoint-%d.pth' % latest_ckpt)
+            if latest_ckpt > 0:
+                backup_resume = os.path.join(output_dir, 'checkpoint-%d.pth' % (latest_ckpt - 1))
         print("Auto resume checkpoint: %s" % args.resume)
+        print("Backup resume checkpoint: %s" % backup_resume)
 
     if args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
+            try:
+                checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
+            except Exception as e:
+                print(f"Failed to load checkpoint from {args.resume} with error {e}")
+                if backup_resume is not None:
+                    print(f"Trying backup checkpoint {backup_resume}")
+                    checkpoint = torch.load(backup_resume, map_location='cpu', weights_only=False)
+                else:
+                    raise e
         if 'model' in checkpoint:
             model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         else:
@@ -562,3 +648,497 @@ def build_model(args):
             drop_path_rate=args.drop_path,
             )
     return model
+
+def ft_load_model(path, args, device, delete_blocks=None, model=None):
+    if model is None:
+        model = build_model(args)
+    for block in model.blocks:
+        block.attn.fused_attn = False
+    if delete_blocks is not None:
+        for i in delete_blocks:
+            print(f"Deleting block {i} from model")
+            del model.blocks[i]
+    if path:
+        print("Loading model from %s" % path)
+        if path.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(
+                path, map_location='cpu', check_hash=True)
+        else:
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+
+        print("Load initialization from %s" % path)
+        checkpoint_model = None
+        for model_key in args.model_key.split('|'):
+            if model_key in checkpoint:
+                checkpoint_model = checkpoint[model_key]
+                print("Load state_dict by model_key = %s" % model_key)
+                break
+        if checkpoint_model is None:
+            checkpoint_model = checkpoint
+        state_dict = model.state_dict()
+        print("All keys in checkpoint_model", checkpoint_model.keys())
+        if "pr" in path.split("/")[-1]:
+            for k in ['head.weight', 'head.bias', 'cls_token', 'pos_embed', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
+                if k in checkpoint_model:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+        else:
+            for k in ['head.weight', 'head.bias']:
+                print(f"Checking key {k} in pretrained checkpoint for finetuning", checkpoint_model[k].shape, state_dict[k].shape)
+                if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+        load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
+    model.to(device)
+    if args.distributed:
+        print("Using distributed data parallel with GPU %d" % args.gpu)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
+        model_without_ddp = model.module
+    else:
+        model_without_ddp = model
+    return model, model_without_ddp
+
+def pr_load_model(path, args, device, model=None):
+    random.seed(args.seed)
+    if model is None:
+        model = build_model(args)
+    new_block_order = None
+    block_attributes = ["norm1.weight", "norm1.bias", "attn.qkv.bias", "attn.proj.bias", "norm2.weight", "norm2.bias", "mlp.fc1.bias", "mlp.fc2.bias", "attn.qkv.weight", "attn.proj.weight", "mlp.fc1.weight", "mlp.fc2.weight"]
+    if path:
+        if path.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(
+                path, map_location='cpu', check_hash=True)
+        else:
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+
+        print("Load initialization from %s" % path)
+        checkpoint_model = None
+        for model_key in args.model_key.split('|'):
+            if model_key in checkpoint:
+                checkpoint_model = checkpoint[model_key]
+                print("Load state_dict by model_key = %s" % model_key)
+                break
+        if checkpoint_model is None:
+            checkpoint_model = checkpoint
+        state_dict = model.state_dict()
+        print("All keys in checkpoint_model", checkpoint_model.keys())
+        if "pr" in path.split("/")[-1]:
+            for k in ['head.weight', 'head.bias', 'cls_token', 'pos_embed', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
+                if k in checkpoint_model:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+        else:
+            for k in ['head.weight', 'head.bias']:
+                print(f"Checking key {k} in pretrained checkpoint for finetuning", checkpoint_model[k].shape, state_dict[k].shape)
+                if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+
+        # customise loading/copying weights
+        if args.custom_pr_load == "L3 - keep mid,end, repeat start":
+            for bi in range(len(model.blocks)-1, 0, -1):
+                if bi==11: ri=2
+                elif bi==10: ri=1
+                else: ri=0
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - keep start,end, repeat mid":
+            for bi in range(len(model.blocks)-1, 1, -1):
+                if bi==11: ri=2
+                else: ri=1
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - keep start,mid, repeat end":
+            for bi in range(len(model.blocks)-1, 2, -1):
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.2.{k}"]
+                print(f"Loading weights for block {bi} from block 2 in pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - keep end, repeat mid 8-10":
+            for bi in range(len(model.blocks)-1, 7, -1):
+                if bi==11: ri=2
+                else: ri=1
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in [0,1,2]:
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - repeat mid 8-11":
+            for bi in range(len(model.blocks)-1, 7, -1):
+                ri=1
+                for k in block_attributes:        
+                    checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+                print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in [0,1,2]:
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L3 - end 11":
+            bi=11
+            ri=2
+            for k in block_attributes:        
+                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+            print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in [0,1,2]:
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L12 - end 10":
+            bi=11
+            ri=10
+            for k in block_attributes:        
+                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+            print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in range(11):
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L12 - end 9":
+            bi=11
+            ri=9
+            for k in block_attributes:        
+                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+            print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in range(11):
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+        elif args.custom_pr_load == "L12 - end 0":
+            bi=11
+            ri=0
+            for k in block_attributes:        
+                checkpoint_model[f"blocks.{bi}.{k}"] = checkpoint_model[f"blocks.{ri}.{k}"]
+            print(f"Loading weights for block {bi} from block {ri} in pretrained checkpoint")
+            for bi in range(11):
+                for k in block_attributes:        
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+                print(f"Removing key blocks.{bi}... from pretrained checkpoint")
+
+        for bi in args.skip_load_blocks:
+            for k in args.skip_load_block_attributes:
+                if f"blocks.{bi}.{k}" in checkpoint_model:
+                    print(f"Removing key blocks.{bi}.{k} from pretrained checkpoint")
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+
+        for bi in args.random_blocks:
+            for k in block_attributes:
+                if f"blocks.{bi}.{k}" in checkpoint_model:
+                    print(f"Removing key blocks.{bi}.{k} from pretrained checkpoint")
+                    del checkpoint_model[f"blocks.{bi}.{k}"]
+
+        if args.skip_norm:
+            for k in ["norm.weight", "norm.bias"]:
+                if k in checkpoint_model:
+                    print(f"Removing key {k} from pretrained checkpoint")
+                    del checkpoint_model[k]
+
+        print(f"Loading state dict with {len(checkpoint_model)} keys from pretrained checkpoint after custom modifications")
+        print("Keys in checkpoint_model after custom modifications", checkpoint_model.keys())
+
+        for l_no, l_segments in args.skip_attn_segments.items():
+            qkv_weight_default = state_dict.get(f"blocks.{l_no}.attn.qkv.weight", None)
+            qkv_bias_default = state_dict.get(f"blocks.{l_no}.attn.qkv.bias", None)
+            total_dim = qkv_weight_default.shape[0] if qkv_weight_default is not None else qkv_bias_default.shape[0]
+            embed_dim = total_dim // 3
+            for segment in l_segments:
+                if segment == "q": 
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.weight"][:embed_dim, :] = qkv_weight_default[:embed_dim, :]
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.bias"][:embed_dim] = qkv_bias_default[:embed_dim]
+                    print(f"Skipping query weights for block {l_no}. Replacing with default initialization")
+                elif segment == "k":
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.weight"][embed_dim:2*embed_dim, :] = qkv_weight_default[embed_dim:2*embed_dim, :]
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.bias"][embed_dim:2*embed_dim] = qkv_bias_default[embed_dim:2*embed_dim]
+                    print(f"Skipping key weights for block {l_no}. Replacing with default initialization")
+                elif segment == "v":
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.weight"][2*embed_dim:3*embed_dim, :] = qkv_weight_default[2*embed_dim:3*embed_dim, :]
+                    checkpoint_model[f"blocks.{l_no}.attn.qkv.bias"][2*embed_dim:3*embed_dim] = qkv_bias_default[2*embed_dim:3*embed_dim]
+                    print(f"Skipping value weights for block {l_no}. Replacing with default initialization")
+                
+        load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
+
+        if args.shuffle_load and "pr" in args.initialize.split("/")[-1]:
+            if type(args.hold_back_blocks) == str:
+                if args.hold_back_blocks=="":
+                    args.hold_back_blocks = []
+                elif args.hold_back_blocks == "all":
+                    args.hold_back_blocks = list(range(len(model.blocks)))
+                else:
+                    args.hold_back_blocks = [int(x) for x in args.hold_back_blocks.split(",")]
+
+            shuffle_blocks = list(range(len(model.blocks)))
+            for bi in args.hold_back_blocks:
+                shuffle_blocks.remove(bi)
+            
+            while True:
+                new_block_order = random.sample(shuffle_blocks, len(shuffle_blocks))
+                if any(shuffle_blocks[i] == new_block_order[i] for i in range(len(shuffle_blocks))):
+                    pass
+                else:
+                    break
+            for bi in args.hold_back_blocks:
+                new_block_order.insert(bi, bi)
+
+            shuffled_block_order = ",".join([str(i) for i in new_block_order])
+            print(f"Shuffling blocks {shuffle_blocks} to new order {new_block_order}, while holding back blocks {args.hold_back_blocks}")
+
+            forward_map = {i:new_block_order[i] for i in range(len(new_block_order))}
+            reverse_map = {new_block_order[i]:i for i in range(len(new_block_order))}
+
+            current_state = model.state_dict()
+            shuffled_state = {}
+            for k, v in current_state.items():
+                if k.startswith("blocks."):
+                    parts = k.split(".")
+                    try:
+                        old_idx = int(parts[1])
+                    except ValueError:
+                        shuffled_state[k] = v
+                        continue
+
+                    if old_idx in reverse_map:
+                        parts[1] = str(reverse_map[old_idx])  # remap index
+                        new_k = ".".join(parts)
+                    else:
+                        new_k = k
+                    shuffled_state[new_k] = v
+                else:
+                    shuffled_state[k] = v
+            load_state_dict(model, shuffled_state, prefix=args.model_prefix)
+
+    for i in args.freeze_blocks:
+        if len(args.freeze_block_attributes) > 0:
+            for name, p in model.blocks[i].named_parameters():
+                if name in args.freeze_block_attributes:
+                    p.requires_grad = False
+                    print(f"Freezing param {name} in block {i}")
+        else:
+            print(f"Freezing all params in block {i}")
+            for p in model.blocks[i].parameters():
+                p.requires_grad = False
+
+    try:
+        for pname, p in model.named_parameters():
+            if pname in args.train_param_list:
+                pass
+                print(f"-- Training {pname}")
+            else:
+                p.requires_grad = False
+                print(f"-- Freezing {pname}")
+    except AttributeError:
+        pass
+            
+    for i in args.delete_blocks:
+        print(f"Deleting block {i}")
+        del model.blocks[i]
+
+    model.to(device)
+    if args.distributed:
+        print("Using distributed data parallel with GPU %d" % args.gpu)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
+        model_without_ddp = model.module
+    else:
+        model_without_ddp = model
+    return model, model_without_ddp, new_block_order
+
+def parse_args_for_blocks(args):
+    args.freeze_blocks = []
+    if "f[" in args.pr_notes:
+        freeze_str = args.pr_notes.split("f[")[1].split("]")[0]
+        if freeze_str.strip() != "":
+            args.freeze_blocks = [int(x.strip()) for x in freeze_str.split(",")]
+    args.skip_load_blocks = []
+    if "s[" in args.pr_notes:
+        skip_str = args.pr_notes.split("s[")[1].split("]")[0]
+        if skip_str.strip() != "":
+            args.skip_load_blocks = [int(x.strip()) for x in skip_str.split(",")]
+    args.skip_load_block_attributes = []
+    if "sba[" in args.pr_notes:
+        sba_str = args.pr_notes.split("sba[")[1].split("]")[0]
+        if sba_str.strip() != "":
+            args.skip_load_block_attributes = [x.strip() for x in sba_str.split(",")]
+    args.freeze_block_attributes = []
+    if "fba[" in args.pr_notes:
+        fba_str = args.pr_notes.split("fba[")[1].split("]")[0]
+        if fba_str.strip() != "":
+            args.freeze_block_attributes = [x.strip() for x in fba_str.split(",")]
+    args.random_blocks = []
+    if "r[" in args.pr_notes:
+        try:
+            random_str = args.pr_notes.split("r[")[1].split("]")[0]
+            if random_str.strip() != "":
+                args.random_blocks = [int(x.strip()) for x in random_str.split(",")]
+        except ValueError:
+            if " r[" in args.pr_notes:
+                random_str = args.pr_notes.split(" r[")[1].split("]")[0]
+                if random_str.strip() != "":
+                    args.random_blocks = [int(x.strip()) for x in random_str.split(",")]
+    args.delete_blocks = []
+    if "d[" in args.pr_notes:
+        delete_str = args.pr_notes.split("d[")[1].split("]")[0]
+        if delete_str.strip() != "":
+            args.delete_blocks = [int(x.strip()) for x in delete_str.split(",")]
+    if "sh" in args.pr_notes:
+        args.shuffle_load = True
+    args.hold_back_blocks = []
+    if "hb[" in args.pr_notes:
+        hb_str = args.pr_notes.split("hb[")[1].split("]")[0]
+        if hb_str.strip() != "":
+            args.hold_back_blocks = [int(x.strip()) for x in hb_str.split(",")]
+    args.custom_pr_load = ""
+    if "pr[" in args.pr_notes:
+        pr_str = args.pr_notes.split("pr[")[1].split("]")[0]
+        args.custom_pr_load = pr_str.strip()
+    return args
+
+class HookCollector:
+    def __init__(self, model):
+        self.model = model
+        try:
+            self.model_without_ddp = model.module
+        except AttributeError:
+            self.model_without_ddp = model
+        self.handles = []
+        # Cache: {layer: {'resid': tensor, 'attn': tensor}}
+        self.acts = defaultdict(dict)
+
+    def __enter__(self):
+        def make_block_hook(idx):
+            def hook_block(mod, inp, out):
+                self.acts[idx]['inp'] = inp[0].detach()
+                x = out.detach()
+                self.acts[idx]['blk'] = x
+                
+                flat = x.reshape(x.shape[0], -1)
+                blk_act_norm_per_sample = flat.norm(dim=1)
+                # print(f"Block {idx} activation norm per sample: {self.acts[idx]['blk_act_norm_per_sample']}")
+                self.acts[idx]['blk_act_norm'] = blk_act_norm_per_sample.mean().item()
+                blk_act_rms_per_sample = torch.sqrt((flat ** 2).mean(dim=-1))
+                self.acts[idx]['blk_act_rms'] = blk_act_rms_per_sample.mean().item()
+
+                # attn_out = mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
+                # self.acts[idx]['attn_out'] = attn_out.detach()
+                # self.acts[idx]['attn'] = inp[0] + attn_out.detach()
+
+                step_wise = mod.norm1(inp[0])
+                self.acts[idx]['ln1'] = step_wise.detach()
+                step_wise = mod.attn(step_wise)
+                self.acts[idx]['qkvp1'] = step_wise.detach()
+                step_wise = mod.ls1(step_wise)
+                self.acts[idx]['ls1'] = step_wise.detach()
+                attn_out = mod.drop_path1(step_wise)
+                self.acts[idx]['attn_out'] = attn_out.detach()
+                self.acts[idx]['attn'] = inp[0] + attn_out.detach()
+
+                
+            def hook_attn_map(mod, inp, out):
+                B, N, C = inp[0].shape
+                qkv = mod.qkv(inp[0]).reshape(B, N, 3, mod.num_heads, C // mod.num_heads).permute(2, 0, 3, 1, 4)
+                q, k, v = qkv.unbind(0)
+                attn = (q @ k.transpose(-2, -1)) * mod.scale
+                attn = attn.softmax(dim=-1)
+                self.acts[idx]['attn_map'] = attn  # [B, heads, N, N]
+                
+
+            return hook_block, hook_attn_map
+
+        for i, block in enumerate(self.model_without_ddp.blocks):
+            block_hook, attn_map_hook = make_block_hook(i)
+            h1 = block.register_forward_hook(block_hook)
+            h2 = block.attn.register_forward_hook(attn_map_hook)
+            self.handles.extend([h1, h2])
+
+        return self.acts
+
+    def __exit__(self, *args):
+        for h in self.handles:
+            h.remove()
+
+class HookCollectorTrain:
+    def __init__(self, model):
+        self.model = model
+        try:
+            self.model_without_ddp = model.module
+        except AttributeError:
+            self.model_without_ddp = model
+        self.handles = []
+        # Cache: {layer: {'resid': tensor, 'attn': tensor}}
+        self.acts = defaultdict(dict)
+
+    def __enter__(self):
+        def make_block_hook(idx):
+            def hook_block(mod, inp, out):
+                self.acts[idx]['inp'] = inp[0]
+                x = out
+                self.acts[idx]['blk'] = x
+                
+                flat = x.reshape(x.shape[0], -1)
+                blk_act_norm_per_sample = flat.norm(dim=1)
+                # print(f"Block {idx} activation norm per sample: {self.acts[idx]['blk_act_norm_per_sample']}")
+                self.acts[idx]['blk_act_norm'] = blk_act_norm_per_sample.mean().item()
+                blk_act_rms_per_sample = torch.sqrt((flat ** 2).mean(dim=-1))
+                self.acts[idx]['blk_act_rms'] = blk_act_rms_per_sample.mean().item()
+
+                attn_out = mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
+                self.acts[idx]['attn_out'] = attn_out
+                self.acts[idx]['attn'] = inp[0] + attn_out
+                
+            def hook_attn_map(mod, inp, out):
+                B, N, C = inp[0].shape
+                qkv = mod.qkv(inp[0]).reshape(B, N, 3, mod.num_heads, C // mod.num_heads).permute(2, 0, 3, 1, 4)
+                q, k, v = qkv.unbind(0)
+                attn = (q @ k.transpose(-2, -1)) * mod.scale
+                attn = attn.softmax(dim=-1)
+                self.acts[idx]['attn_map'] = attn  # [B, heads, N, N]
+                
+
+            return hook_block, hook_attn_map
+
+        for i, block in enumerate(self.model_without_ddp.blocks):
+            block_hook, attn_map_hook = make_block_hook(i)
+            h1 = block.register_forward_hook(block_hook)
+            h2 = block.attn.register_forward_hook(attn_map_hook)
+            self.handles.extend([h1, h2])
+
+        return self.acts
+
+    def __exit__(self, *args):
+        for h in self.handles:
+            h.remove()
+
+def denormalize(tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]):
+    """Denorm [B,C,H,W] or [C,H,W] -> [0,1] for imshow.
+    Works on uint8 or float32 inputs."""
+    mean = torch.tensor(mean).view(3, 1, 1)
+    std = torch.tensor(std).view(3, 1, 1)
+    
+    # Reverse: x_norm * std + mean
+    deno = tensor * std.to(tensor.device) + mean.to(tensor.device)
+    return torch.clamp(deno, 0, 1)
+
+def apply_layer_11_scale(model, init_value):
+    model.blocks[11].ls1.gamma.data.fill_(init_value)
+    model.blocks[11].ls2.gamma.data.fill_(init_value)
+
+def scale_layer_11_weights(model, scale_type, scale_factor):
+    depth = len(model.blocks)
+    for block_idx in [depth - 1]:
+        block = model.blocks[block_idx]
+        if scale_type == "scale_weights_attn_blk_only":
+            block.norm1.weight.data *= scale_factor.get("norm1", 1.0)
+            scale_qk = scale_factor.get("qk", 1.0)
+            scale_v = scale_factor.get("v", 1.0)
+            if scale_qk==scale_v:
+                block.attn.qkv.weight.data *= scale_qk
+            else:
+                total_dim = block.attn.qkv.weight.data.shape[0]
+                embed_dim = total_dim // 3
+                block.attn.qkv.weight.data[:embed_dim, :] *= scale_qk
+                block.attn.qkv.weight.data[embed_dim:2*embed_dim, :] *= scale_qk
+                block.attn.qkv.weight.data[2*embed_dim:3*embed_dim, :] *= scale_v
+            block.attn.proj.weight.data *= scale_factor.get("proj", 1.0)
+            # block.mlp.fc1.weight.data *= scale_factor
+            # block.mlp.fc2.weight.data *= scale_factor
+

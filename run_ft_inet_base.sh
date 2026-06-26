@@ -29,7 +29,7 @@ BATCH_SIZE=64
 UPDATE_FREQ=$((($TOTAL_BATCH_SIZE / $SLURM_GPUS_ON_NODE) / $BATCH_SIZE))
 
 for i in 0; do
-    torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE ft.py \
+    torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
         --model vit_base  --warmup_epochs 50 --epochs 300 \
         --total_batch_size $TOTAL_BATCH_SIZE \
         --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \

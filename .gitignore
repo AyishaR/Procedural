@@ -10,3 +10,8 @@ results
 logs
 .vscode
 imagenet100
+results*/
+pr_models/
+logs/
+wandb/
+*.sh

@@ -37,7 +37,7 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE procedural.py \
     --total_batch_size $TOTAL_BATCH_SIZE \
     --batch_size $BATCH_SIZE --lr 2e-3 \
     --update_freq $UPDATE_FREQ \
-    --output_dir "/home/dawooda/code/procedural/Procedural/results_pr_vitb" \
+    --output_dir "/work/dlclarge1/dawooda-pr_pretraining/results/results_pr_vitb" \
     --wandb_entity_name "procedural_pretraining" \
     --wandb_project_name "procedural_models" \
     --slurm_id $SLURM_JOB_ID \

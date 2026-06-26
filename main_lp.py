@@ -23,7 +23,7 @@ from engine import *
 
 from utils import NativeScalerWithGradNormCount as NativeScaler
 import utils
-
+from linear_probe_utils import *
 import models.convnext
 import models.vision_transformer
 
@@ -78,6 +78,9 @@ def get_args_parser():
     parser.add_argument('--custom_pr_load', default='', type=str, help='Custom config to control how weights are loaded from the pretrained checkpoint for procedural pretraining. Options: "L3 - keep start,end, repeat mid"')
     parser.add_argument('--random_blocks', default="", type=str,
                         help='Comma separated list of layer indices to keep random, e.g. "0,1,2" to keep the first 3 layers random; supports "all" to keep all layers random and "" to not keep any layers random (default: "")')
+    # parser.add_argument('--checkpoint_num', default=-1, type=int, help='Checkpoint number to load for evaluation or resuming training, default is 299 to load the last checkpoint saved at the end of training')
+    # add argument probe_mode default all
+    parser.add_argument('--probe_mode', type=str, default='flatten_patches', help='defines input to the linear probe')
     
     # EMA related parameters
     parser.add_argument('--model_ema', type=str2bool, default=False)
@@ -324,14 +327,6 @@ def get_args_parser():
     parser.add_argument('--wandb_ckpt', type=str2bool, default=False,
                         help="Save model checkpoints as W&B Artifacts.")
 
-    parser.add_argument('--layer_11_scale_ln', type=float, default=1.0)
-    # parser.add_argument('--layer_11_scale_attn', type=float, default=1.0)
-    parser.add_argument('--layer_11_scale_attn_qk', type=float, default=1.0)
-    parser.add_argument('--layer_11_scale_attn_v', type=float, default=1.0)
-    parser.add_argument('--layer_11_scale_attn_proj', type=float, default=1.0)
-    parser.add_argument('--layer_11_scale_method', type=str, default="")
-    parser.add_argument('--init_method', type=str, default="default", help='Initialization method for the model weights. Options: "default", "match_L11_activations"')
-
     return parser
 
 def main(args):
@@ -411,13 +406,13 @@ def main(args):
         data_loader_val = None
 
     mixup_fn = None
-    mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
-    if mixup_active:
-        print("Mixup is activated!")
-        mixup_fn = Mixup(
-            mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
-            prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
-            label_smoothing=args.smoothing, num_classes=args.nb_classes)
+    # mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
+    # if mixup_active:
+    #     print("Mixup is activated!")
+    #     mixup_fn = Mixup(
+    #         mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
+    #         prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
+    #         label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     model = utils.build_model(args)
 
@@ -475,43 +470,15 @@ def main(args):
 
     shuffled_block_order = None
 
-    if args.init_method == "default":
-        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
-            path = args.initialize,
-            args = args,
-            device = device,
-            model = model
-        )
-    elif args.init_method == "upscale_random_match_L11_attn_norms":
-        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
-            path = "",
-            args = args,
-            device = device,
-            model = model
-        )
-        model_temp = utils.build_model(args)
-        model_temp.load_state_dict(model_without_ddp.state_dict())
-        _, target_model_without_ddp, _ = utils.pr_load_model(
-            path = args.initialize,
-            args = args,
-            device = device,
-            model = model_temp
-        )
-    elif args.init_method == "downscale_pr_match_L11_attn_norms":
-        target_model_without_ddp = utils.build_model(args)
-        target_model_without_ddp.load_state_dict(model.state_dict())
-        _, target_model_without_ddp, _ = utils.pr_load_model(
-            path = "",
-            args = args,
-            device = device,
-            model = target_model_without_ddp
-        )
-        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
-            path = args.initialize,
-            args = args,
-            device = device,
-            model = model
-        )
+    # if args.checkpoint_num != -1:
+    #     args.initialize = args.output_dir + f"/checkpoint-{args.checkpoint_num}-model.pth" # default to loading the last checkpoint saved at the end of training if --initialize is not specified and --eval is True
+
+    model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+        path = args.initialize,
+        args = args,
+        device = device,
+        model = model
+    )
     
     total_params = sum(p.numel() for p in model_without_ddp.parameters())
     trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
@@ -578,84 +545,6 @@ def main(args):
         cka_compare(data_loader_val, device, args)
         return
 
-    loss_scaler = NativeScaler() # if args.use_amp is False, this won't be used
-
-    print("Use Cosine LR scheduler")
-    lr_schedule_values = utils.cosine_scheduler(
-        args.lr, args.min_lr, args.epochs, num_training_steps_per_epoch,
-        warmup_epochs=args.warmup_epochs, warmup_steps=args.warmup_steps,
-    )
-
-    custom_block_targets = args.custom_block_targets_scale.split(",") if args.custom_block_targets_scale != "" else []
-    custom_block_targets = [float(x) for x in custom_block_targets] if custom_block_targets else []
-    custom_non_block_targets = {
-        "patch_embed": 1.0,
-        "cls_token": 1.0,
-        "pos_embed": 1.0,
-        "norm": 1.0,
-        "head": 1.0
-    }
-    
-    optimizer = create_optimizer(
-        args, model_without_ddp, skip_list=None,
-        get_num_layer=assigner.get_layer_id if assigner is not None else None, 
-        get_layer_scale=assigner.get_scale if assigner is not None else None,
-        start_lr = lr_schedule_values[0],
-        custom_block_targets = custom_block_targets,
-        custom_non_block_targets = custom_non_block_targets,
-        custom_lr_transition_start = args.custom_lr_transition_start,
-        custom_lr_transition_end = args.custom_lr_transition_end
-    )
-
-    if args.weight_decay_end is None:
-        args.weight_decay_end = args.weight_decay
-    wd_schedule_values = utils.cosine_scheduler(
-        args.weight_decay, args.weight_decay_end, args.epochs, num_training_steps_per_epoch)
-    print("Max WD = %.7f, Min WD = %.7f" % (max(wd_schedule_values), min(wd_schedule_values)))
-
-    if mixup_fn is not None:
-        # smoothing is handled with mixup label transform
-        criterion = SoftTargetCrossEntropy()
-    elif args.smoothing > 0.:
-        criterion = LabelSmoothingCrossEntropy(smoothing=args.smoothing)
-    else:
-        criterion = torch.nn.CrossEntropyLoss()
-
-    print("criterion = %s" % str(criterion))
-
-    if args.calculate_hessian:
-        total_params = sum(p.numel() for p in model_without_ddp.parameters())
-        trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
-        non_trainable = sum(p.numel() for p in model_without_ddp.parameters() if not p.requires_grad)
-        print(f"bf: Parameters - Total: {total_params:,} Trainable: {trainable:,}, Non-trainable: {non_trainable:,}")
-
-        if args.start_epoch==0:
-            eigenvalues_1, eigenvectors_1, meta_1, layer_hessian_values = compute_hessian_at_initialization(
-                model_without_ddp, criterion, data_loader_train, num_eigenvalues=10, device=device
-            )
-            print(f"Hessian top eigenvalues at initialization: {eigenvalues_1}")
-            layer_hessian_values["overall"] = eigenvalues_1
-
-            trace_1 = compute_hessian_trace(model_without_ddp, criterion, data_loader_train, device=device)
-            print(f"Hessian trace at initialization: {trace_1}")
-            layer_hessian_values["trace"] = trace_1
-
-            # save in destination folder
-            if args.output_dir:
-                os.makedirs(args.output_dir, exist_ok=True)
-                hessian_stats_path = os.path.join(args.output_dir, "hessian_stats_initialization.json")
-                with open(hessian_stats_path, "w") as f:
-                    json.dump(layer_hessian_values, f, indent=4)
-        return
-
-    if args.analyse_only:
-        print(f"Attention analyse only mode")
-        stats = attention_analyse_final(data_loader_val, device, args=args, classes=classes)
-        return stats
-
-    utils.auto_load_model(
-        args=args, model=model, model_without_ddp=model_without_ddp,
-        optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
 
     if args.eval:
         print(f"Eval only mode")
@@ -667,183 +556,138 @@ def main(args):
     if args.model_ema and args.model_ema_eval:
         max_accuracy_ema = 0.0
 
-    if args.start_epoch==0 and shuffled_block_order is not None:
-        wandb_logger.update_config("block_order", shuffled_block_order)
+    vit_small_probe_dims = {
+        "cls": 384,
+        "mean_patch": 384,
+        "max_patch": 384,
+        "mean_all": 384,
+        "cls_mean_patch": 384,
+        "concat_cls_mean_patch": 768,
+        "identity": 384,
+        # for 224x224 with 16x16 patches: 14x14 = 196 patch tokens
+        "flatten_patches": 196 * 384,  # 75264
+    }
+    model_without_ddp.eval() # set model to eval mode to avoid any randomness from dropout or batchnorm, which is important for accurate evaluation of the probes and analysis of training dynamics
 
-    if args.start_epoch==0 and args.custom_lr_layer:
-        for bi, blrs in enumerate(custom_block_targets):
-            wandb_logger.update_config(f"block_{bi}_scale", blrs)
-        for npname, nplrs in custom_non_block_targets.items():
-            wandb_logger.update_config(f"{npname}_scale", nplrs)
+    master_epoch = get_master_epoch(args.initialize)
+    wandb_logger.update_config("master_epoch", master_epoch)
 
-    if args.start_epoch==0:
-        if args.layer_11_scale_method != "":
-            scale_weights = {
-                "norm1": args.layer_11_scale_ln,
-                "qk": args.layer_11_scale_attn_qk,
-                "v": args.layer_11_scale_attn_v,
-                "proj": args.layer_11_scale_attn_proj
-            }
-            utils.scale_layer_11_weights(model_without_ddp, args.layer_11_scale_method, scale_weights)
-            if args.model != "vit_base":
-                attention_residual_analysis(
-                    data_loader = data_loader_val,
-                    model = model_without_ddp,
-                    device = device,
-                    args = args
-                )
-        if args.init_method in ["downscale_pr_match_L11_attn_norms", "upscale_random_match_L11_attn_norms"]:
-            current_stats = attention_residual_analysis(
-                data_loader = data_loader_val,
-                model = model_without_ddp,
-                device = device,
-                args = args,
-                save=False
-            )
-            # current_stats = {}
-            target_stats = attention_residual_analysis(
-                data_loader = data_loader_val,
-                model = target_model_without_ddp,
-                device = device,
-                args = args,
-                save=False
-            )
-            scale_sq = target_stats[11]["norm_ratio_qkvp1_ln1_mean"]/current_stats[11]["norm_ratio_qkvp1_ln1_mean"]
-            print(f"Scale squared for layer 11 qkvp1 norm ratio: {scale_sq}", flush=True)
-            scale = math.sqrt(scale_sq)
-            print(f"Scale for layer 11 qkvp1 norm ratio: {scale}", flush=True)
-            scale_weights = {
-                "norm1": 1.0,
-                "qk": 1.0,
-                "v": scale,
-                "proj": scale
-            }
-            for s, sw in scale_weights.items():
-                wandb_logger.update_config(f"calculated_layer_11_scale_{s}", sw)
-            wandb_logger.update_config(f"current_qkvp_ln1_norm_ratio", current_stats[11]["norm_ratio_qkvp1_ln1_mean"])
-            wandb_logger.update_config(f"target_qkvp_ln1_norm_ratio", target_stats[11]["norm_ratio_qkvp1_ln1_mean"])
+    print(f"Running on model epoch {master_epoch}")
 
-            utils.scale_layer_11_weights(model_without_ddp, "scale_weights_attn_blk_only", scale_weights)
-            if args.model != "vit_base":
-                updated_stats = attention_residual_analysis(
-                    data_loader = data_loader_val,
-                    model = model_without_ddp,
-                    device = device,
-                    args = args
-                )
-                wandb_logger.update_config(f"updated_qkvp_ln1_norm_ratio", updated_stats[11]["norm_ratio_qkvp1_ln1_mean"])
 
-    # return
-    
+    probe_trainer =  LinearProbeTrainer(
+        num_probes=args.num_blocks*2,
+        input_dim=vit_small_probe_dims[args.probe_mode],
+        num_classes=args.nb_classes,
+        probe_mode=args.probe_mode,
+        device=device
+    )
+    load_probe_trainer(probe_trainer, args.output_dir, master_epoch)
+
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()
-    for epoch in range(args.start_epoch, args.epochs):
+    for epoch in range(probe_trainer.epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
         if log_writer is not None:
             log_writer.set_step(epoch * num_training_steps_per_epoch * args.update_freq)
         if wandb_logger:
             wandb_logger.set_steps()
+        epoch_stats = []
+        json_stats = {
+            "epoch": epoch
+        }
 
-        train_stats, parameter_norm = train_one_epoch(
-            model, model_without_ddp, criterion, data_loader_train, optimizer,
-            device, epoch, loss_scaler, args.clip_grad, model_ema, mixup_fn,
-            log_writer=log_writer, wandb_logger=wandb_logger, start_steps=epoch * num_training_steps_per_epoch,
-            lr_schedule_values=lr_schedule_values, wd_schedule_values=wd_schedule_values,
-            num_training_steps_per_epoch=num_training_steps_per_epoch, update_freq=args.update_freq,
-            use_amp=args.use_amp,
-            custom_lr_layer=args.custom_lr_layer,
-            custom_lr_transition_start=args.custom_lr_transition_start,
-            custom_lr_transition_end=args.custom_lr_transition_start,
-            custom_block_targets=custom_block_targets,
-            custom_non_block_targets=custom_non_block_targets, args=args
-        )
+        running_loss = 0.0
+        running_acc = torch.zeros(probe_trainer.num_probes)
+        running_probe_losses = torch.zeros(probe_trainer.num_probes)
+
+        for images, targets in data_loader_train:
+            images = images.to(device)
+            targets = targets.to(device)
+
+            if mixup_fn is not None:
+                images, targets = mixup_fn(images, targets)
+
+            if args.use_amp:
+                with torch.cuda.amp.autocast():
+                    with utils.HookCollector(model) as acts:
+                        with torch.no_grad():
+                            output = model(images)
+            else:
+                with utils.HookCollector(model) as acts:
+                    with torch.no_grad():
+                        output = model(images)
+            
+            probe_features = []
+            for bi in range(args.num_blocks):
+                probe_features.append(select_probe_feature(acts[bi]["attn"], mode=args.probe_mode))
+                probe_features.append(select_probe_feature(acts[bi]["blk"], mode=args.probe_mode))
+                        
+            step_out = probe_trainer.training_step(probe_features, targets)
+
+            torch.cuda.synchronize()
+
+            running_loss += step_out["loss"]
+            running_acc += torch.tensor(step_out["probe_accuracies"], dtype=torch.float64).cpu()
+            running_probe_losses += torch.tensor(step_out["probe_losses"], dtype=torch.float64).cpu()
+
+        json_stats.update({
+            "train_loss": running_loss / len(data_loader_train),
+            "train_running_probe_acc": (running_acc / len(data_loader_train)).tolist(),
+            "train_running_probe_losses": (running_probe_losses / len(data_loader_train)).tolist(),
+        })
+        for pi in range(probe_trainer.num_probes):
+            epoch_stats.append({
+                "epoch": epoch,
+                "probe_loss": running_probe_losses[pi].item() / len(data_loader_train),
+                "probe_acc": running_acc[pi].item() / len(data_loader_train),
+                "probe_num": pi,
+                "probe_name": get_probe_label(pi),
+            })
+
         if args.output_dir and args.save_ckpt:
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
-                utils.save_model(
-                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                    loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
-            if args.save_for_analysis:
-                checkpoint_path = Path(args.output_dir) / ('checkpoint-%s-model.pth' % str(epoch))
-                torch.save({k: v.half() for k, v in model_without_ddp.state_dict().items()}, checkpoint_path)
+                save_probe_trainer(probe_trainer, args.output_dir, epoch, master_epoch)
             
-        if data_loader_val is not None and \
-        ((args.model == "vit_base" and (epoch+1)%5 == 0) or (args.model != "vit_base")):
-            if (epoch+1)%10 == 0 or epoch < 20:
-                test_stats, stats = model_analyse(
-                    model=model_without_ddp, 
-                    data_loader=data_loader_val, 
-                    device=device, 
-                    epoch=epoch, 
-                    args=args, 
-                    prefix="", 
-                    shuffled_block_order=None,
-                    parameter_norm=parameter_norm,
-                    wandb_logger=wandb_logger
-                )
-            else:
-                test_stats = evaluate(data_loader_val, model_without_ddp, device, use_amp=args.use_amp)
-                # train_stats_temp = evaluate(data_loader_train, model_without_ddp, device, use_amp=args.use_amp)
-            if args.model != "vit_base" and (epoch+1)%20 == 0:
-                train_stats_temp = evaluate(data_loader_train, model_without_ddp, device, use_amp=args.use_amp)
-            else:
-                train_stats_temp = None
+        if data_loader_val is not None and not args.disable_eval:
+            eval_results = probe_trainer.evaluate(model_without_ddp, data_loader_val, device)
 
-            print(f"Accuracy of the model on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-            if max_accuracy < test_stats["acc1"]:
-                max_accuracy = test_stats["acc1"]
-                if args.output_dir and args.save_ckpt:
-                    utils.save_model(
-                        args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                        loss_scaler=loss_scaler, epoch="best", model_ema=model_ema)
-            print(f'Max accuracy: {max_accuracy:.2f}%')
+            for pi in range(probe_trainer.num_probes):
+                epoch_stats.append({
+                    "epoch": epoch,
+                    "eval_probe_acc": eval_results["probe_accuracies"][pi],
+                    "eval_probe_loss": eval_results["probe_losses"][pi],
+                    "probe_num": pi,
+                    "probe_name": get_probe_label(pi),
+                })
+            json_stats.update(eval_results)
+        
+        append_epoch_metrics_to_json(args.accuracy_json, json_stats)
 
-            if log_writer is not None:
-                log_writer.update(test_acc1=test_stats['acc1'], head="perf", step=epoch)
-                log_writer.update(test_acc5=test_stats['acc5'], head="perf", step=epoch)
-                log_writer.update(test_loss=test_stats['loss'], head="perf", step=epoch)
+        if wandb_logger:
+            for epoch_stat in epoch_stats:
+                probe_num = epoch_stat.get("probe_num")
+                probe_name = epoch_stat.get("probe_name")
+                epoch = epoch_stat.get("epoch")
 
-            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                         **{f'test_{k}': v for k, v in test_stats.items()},
-                         'epoch': epoch,
-                         'n_parameters': n_parameters}
-            if train_stats_temp is not None:
-                log_stats_train = {
-                    f'train_eval_{k}': v for k, v in train_stats_temp.items()
-                }
-                log_stats.update(log_stats_train)
+                epoch_wise = {f"Epoch-wise/{k}_probe_{probe_name}": v for k, v in epoch_stat.items() if k not in ['probe_name', 'epoch', 'probe_num']}
+                epoch_wise["Epoch-wise/epoch"] = epoch
+                wandb_logger._wandb.log(epoch_wise)
+                layer_wise = {f"Probe-wise/{k}_epoch{epoch:02d}": v for k, v in epoch_stat.items() if k not in ['probe_name', 'epoch', 'probe_num']}
+                layer_wise["Probe-wise/probe_num"] = probe_num
+                layer_wise["Probe-wise/probe_name"] = probe_name
+                wandb_logger._wandb.log(layer_wise)
 
-            # repeat testing routines for EMA, if ema eval is turned on
-            if args.model_ema and args.model_ema_eval:
-                test_stats_ema = evaluate(data_loader_val, model_ema.ema, device, use_amp=args.use_amp)
-                print(f"Accuracy of the model EMA on {len(dataset_val)} test images: {test_stats_ema['acc1']:.1f}%")
-                if max_accuracy_ema < test_stats_ema["acc1"]:
-                    max_accuracy_ema = test_stats_ema["acc1"]
-                    if args.output_dir and args.save_ckpt:
-                        utils.save_model(
-                            args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                            loss_scaler=loss_scaler, epoch="best-ema", model_ema=model_ema)
-                    print(f'Max EMA accuracy: {max_accuracy_ema:.2f}%')
-                if log_writer is not None:
-                    log_writer.update(test_acc1_ema=test_stats_ema['acc1'], head="perf", step=epoch)
-                log_stats.update({**{f'test_{k}_ema': v for k, v in test_stats_ema.items()}})
-        else:
-            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                         'epoch': epoch,
-                         'n_parameters': n_parameters}
 
         if args.output_dir and utils.is_main_process():
             if log_writer is not None:
                 log_writer.flush()
             with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
+                f.write(json.dumps(json_stats) + "\n")
 
-        if wandb_logger:
-            print("Logging metrics to wandb")
-            wandb_logger.log_epoch_metrics(log_stats)
-
-        # if args.model == "vit_base" and (epoch+1)!=args.epochs and (epoch+1)%2 == 0:
-        #     return
+        if args.model == "vit_base" and (epoch+1)!=args.epochs:
+            return
 
     if wandb_logger and args.wandb_ckpt and args.save_ckpt and args.output_dir:
         wandb_logger.log_checkpoints()
@@ -853,33 +697,12 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
-    # model_analyse(
-    #     model=model_without_ddp,
-    #     data_loader=data_loader_val, 
-    #     device=device, 
-    #     epoch=None, 
-    #     args=args, 
-    #     prefix="", 
-    #     shuffled_block_order=None
-    # )
-    attention_analyse_final(
-        data_loader=data_loader_val, 
-        device=device, 
-        args=args, 
-        classes=classes,
-        wandb_logger=wandb_logger
-    )
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
     if args.output_dir and not args.output_dir.endswith(".pth"):
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    if args.accuracy_json and not args.accuracy_json.endswith(".json"):
-        Path(args.accuracy_json).parent.mkdir(parents=True, exist_ok=True)
-    elif args.accuracy_json and args.accuracy_json.endswith(".json"):
-        Path(args.accuracy_json).parent.mkdir(parents=True, exist_ok=True)
     main(args)
 
     if dist.is_initialized():

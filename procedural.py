@@ -25,6 +25,9 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from models.vitp import VitProcedural
 from kdyck.kdyck_generation import *
 from kdyck.utils import *
+from kdyck.kdyck_dataset import *
+from procedural_data.repeat_dataset import *
+import utils
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["TORCH_NCCL_ENABLE_MONITORING"] = "0"
@@ -95,10 +98,10 @@ class Trainer:
             notes=self.args.wandb_notes
         )
 
-        self.initialize_training_objects()
-
         self.start_step = 0
-        
+
+        self.initialize_training_objects()    
+
         self.vitp_model = DDP(self.vitp_model.cuda(), device_ids=[self.gpu_id], find_unused_parameters=True)
         print(f"[GPU{self.gpu_id}]: DDP model initialized")
         assert hasattr(self.vitp_model, 'module'), "DDP model does not have 'module' attribute. Check DDP initialization." 
@@ -118,7 +121,21 @@ class Trainer:
         #     torch.tensor(targets, dtype=torch.long)
         # )
 
-        self.vitp_model = VitProcedural(self.args)
+        self.vitp_model = VitProcedural(self.args).cuda()
+        for i in range(len(self.vitp_model.model.blocks)-self.args.num_blocks):
+            del self.vitp_model.model.blocks[-1]
+
+        if self.args.initialize:
+            state_dict = torch.load(self.args.initialize, weights_only=False)["state"]
+            self.model.load_state_dict(state_dict)
+            print(f"Model initialized from {self.args.initialize}")
+
+        total_params = sum(p.numel() for p in self.vitp_model.model.parameters())
+        trainable = sum(p.numel() for p in self.vitp_model.model.parameters() if p.requires_grad)
+        non_trainable = sum(p.numel() for p in self.vitp_model.model.parameters() if not p.requires_grad)
+        if self.gpu_id == 0:
+            print(f"[GPU{self.gpu_id}]: Model initialized with {len(self.vitp_model.model.blocks)} blocks")
+            print(f"Parameters - Total: {total_params:,} Trainable: {trainable:,}, Non-trainable: {non_trainable:,}")
 
         # Optimizer
         self.optimizer = torch.optim.AdamW(self.vitp_model.model.parameters(), lr=self.args.lr, weight_decay=self.args.weight_decay)
@@ -131,15 +148,98 @@ class Trainer:
         anneal_scheduler = CosineAnnealingLR(
             self.optimizer, 
             T_max=self.args.training_steps-self.args.warmup_steps, 
-            eta_min=0.0
+            eta_min=self.args.eta_min_ratio*self.args.lr
             )
         self.lr_scheduler = SequentialLR(self.optimizer, schedulers=[warmup_scheduler, anneal_scheduler], milestones=[self.args.warmup_steps])
 
         # Loss
         self.ce_loss = torch.nn.CrossEntropyLoss(reduction='none').cuda()
 
+        if self.args.auto_resume:
+            import glob
+            all_checkpoints = glob.glob(os.path.join(self.args.output_dir, '*.pth'))
+            latest_ckpt = -1
+            for ckpt in all_checkpoints:
+                t = ckpt.split('_')[-1].split('.')[0]
+                if t.isdigit():
+                    latest_ckpt = max(int(t), latest_ckpt)
+            if latest_ckpt >= 0:
+                ckpt_path = os.path.join(self.args.output_dir, f'pr_{self.args.slurm_id}_{latest_ckpt}.pth')
+                print("Auto resume checkpoint: %s" % ckpt_path)
+
+                checkpoint = torch.load(ckpt_path, weights_only=False)
+                print("Checkpoint loaded. Keys in checkpoint:", checkpoint.keys())
+                self.vitp_model.model.load_state_dict(checkpoint["state"], strict=False)
+
+                if 'optimizer' in checkpoint and 'epoch' in checkpoint and 'lr_scheduler' in checkpoint:
+                    self.start_step = checkpoint['epoch'] + 1
+                    print(f"Starting from step {self.start_step}")
+                    self.optimizer.load_state_dict(checkpoint['optimizer'])
+                    self.lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+                    print("With optim & sched!")
+            else:
+                print("No checkpoint found for auto-resume. Starting from scratch.")
+
+        if "kdyck" in self.args.procedural_data:
+            self.dataset = KDyckDataset(self.args)
+            self.mask_function = mask_kdyck_dataset
+        elif "repeat" in self.args.procedural_data:
+            self.dataset = RepeatDataset(self.args)
+            self.mask_function = mask_repeat_dataset
+        else:
+            raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
+        self.sampler_train = torch.utils.data.DistributedSampler(
+            self.dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=True, seed=self.args.seed,
+        )
+        self.loader = DataLoader(
+            self.dataset,
+            sampler=self.sampler_train,
+            batch_size=self.args.batch_size
+        )
+        self.dataset_iter = iter(self.loader)
+
         print(f"[GPU{self.gpu_id}]: All training objects initialized")
 
+    def generate_kdyck_batch(self):
+        try:
+            targets = next(self.dataset_iter)
+        except StopIteration:
+            self.dataset_iter = iter(self.loader)
+            targets = next(self.dataset_iter)
+        # inputs = mask_kdyck_dataset(targets, mask_token=self.args.mask_token, mask_prob=self.args.mask_ratio, close_brack_start_token=self.args.k)
+        inputs = self.mask_function(targets, mask_token=self.args.mask_token, mask_prob=self.args.mask_ratio)
+
+        inputs = inputs.cuda()
+        targets = targets.cuda()
+
+        if self.args.procedural_order == "standard":
+            pass
+        elif self.args.procedural_order == "spiral":
+            inputs = spiral_unravel(inputs)
+            targets = spiral_unravel(targets)
+        elif self.args.procedural_order == "vertical":
+            inputs = vertical_unravel(inputs)
+            targets = vertical_unravel(targets)
+        elif self.args.procedural_order == "row_alternate":
+            inputs = row_alternate(inputs)
+            targets = row_alternate(targets)
+        elif self.args.procedural_order == "row_alternate_half":
+            inputs = row_alternate_half(inputs)
+            targets = row_alternate_half(targets)
+        elif self.args.procedural_order == "row_alternate_quarter":
+            inputs = row_alternate_quarter(inputs)
+            targets = row_alternate_quarter(targets)
+        elif self.args.procedural_order == "waterfall":
+            inputs = waterfall(inputs)
+            targets = waterfall(targets)
+        elif self.args.procedural_order == "waterfall_half":
+            inputs = waterfall_half(inputs)
+            targets = waterfall_half(targets)
+        else:
+            raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
+
+        return targets, inputs
+        
     def training(self):
         """
         Perform training according to the configuration in args.
@@ -151,60 +251,10 @@ class Trainer:
         self.vitp_model.module.set_train()
 
         for epoch in range(self.start_step, self.args.training_steps):
-
+            self.loader.sampler.set_epoch(epoch)
             for batch_step in range(self.args.update_freq):
                 with self.vitp_model.join():
-                    
-                    if self.args.procedural_data=="kdyck":
-                        targets, inputs = generate_dataset(
-                            length=self.args.batch_size, 
-                            k=self.args.k, 
-                            seq_length=self.args.seq_length, 
-                            mask_token=self.args.mask_token, 
-                            mask_prob=self.args.mask_ratio,
-                            p_open=self.args.p_open,
-                            max_depth=self.args.max_depth
-                        )
-                    elif self.args.procedural_data=="kdyck_truncated":
-                        targets, inputs = generate_dataset_truncated(
-                            length=self.args.batch_size, 
-                            k=self.args.k, 
-                            seq_length=self.args.seq_length, 
-                            mask_token=self.args.mask_token, 
-                            mask_prob=self.args.mask_ratio,
-                            p_open=self.args.p_open,
-                            max_depth=self.args.max_depth
-                        )
-                    else:
-                        raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
-                    inputs = inputs.cuda()
-                    targets = targets.cuda()
-
-                    if self.args.procedural_order == "standard":
-                        pass
-                    elif self.args.procedural_order == "spiral":
-                        inputs = spiral_unravel(inputs)
-                        targets = spiral_unravel(targets)
-                    elif self.args.procedural_order == "vertical":
-                        inputs = vertical_unravel(inputs)
-                        targets = vertical_unravel(targets)
-                    elif self.args.procedural_order == "row_alternate":
-                        inputs = row_alternate(inputs)
-                        targets = row_alternate(targets)
-                    elif self.args.procedural_order == "row_alternate_half":
-                        inputs = row_alternate_half(inputs)
-                        targets = row_alternate_half(targets)
-                    elif self.args.procedural_order == "row_alternate_quarter":
-                        inputs = row_alternate_quarter(inputs)
-                        targets = row_alternate_quarter(targets)
-                    elif self.args.procedural_order == "waterfall":
-                        inputs = waterfall(inputs)
-                        targets = waterfall(targets)
-                    elif self.args.procedural_order == "waterfall_half":
-                        inputs = waterfall_half(inputs)
-                        targets = waterfall_half(targets)
-                    else:
-                        raise ValueError(f"Unknown procedural order type: {self.args.procedural_order}")
+                    targets, inputs = self.generate_kdyck_batch()
 
                     masked_count = (inputs == self.args.mask_token).sum().item()
 
@@ -255,7 +305,7 @@ class Trainer:
                                 "state": self.vitp_model.module.model.state_dict(),
                                 "optimizer": self.optimizer.state_dict(),  
                                 "lr_scheduler": self.lr_scheduler.state_dict(),
-                                "epoch": epoch+1, 
+                                "epoch": epoch, 
                             },
                             os.path.join(self.args.output_dir, f"pr_{self.args.slurm_id}_{epoch}.pth")
                         )
@@ -303,10 +353,16 @@ if __name__ == "__main__":
                         help="Model name or config (e.g., vit_tiny_patch16_224)")
 
     parser.add_argument("--output_dir", type=str, default="./procedural_ckpts")
+    parser.add_argument('--initialize', default='',
+                        help='initialize from a model file')
+
+    parser.add_argument('--auto_resume', type=str2bool, default=True)
 
     # Procedural
     parser.add_argument("--k", type=int, default=64,
                         help="K")
+    parser.add_argument("--num_blocks", type=int, default=12,
+                        help="Number of transformer blocks in the model")
     parser.add_argument("--p_open", type=float, default=0.6,
                         help="Probability of opening a new bracket vs closing an existing one during generation")
     parser.add_argument("--max_depth", type=int, default=4,
@@ -321,10 +377,13 @@ if __name__ == "__main__":
                         help="Ratio of closing brackets to mask")
     parser.add_argument('--freeze_patch_embeddings', type=str2bool, default=True)
     parser.add_argument('--freeze_pos_embeddings', type=str2bool, default=True)
+    parser.add_argument('--skip_pos_embeddings', type=str2bool, default=False)
     parser.add_argument("--embeddings_path", type=str, default="kdyck/kdyck_orthogonal_embeddings_vitt.pt",
                         help="Path to fixed orthogonal embeddings for the patch tokens")
     parser.add_argument("--procedural_order", type=str, default="standard",
                         help="Type of re-ordering (if any) to apply to the  procedural data (e.g., standard, spiral)")
+    parser.add_argument("--shuffle", type=str, default="input",
+                        help="Which part of the data to shuffle (e.g., input, pos) for different procedural orders")
 
     # Hyperparameters
     parser.add_argument("--batch_size", type=int, default=128,
@@ -344,9 +403,11 @@ if __name__ == "__main__":
 
     parser.add_argument('--lr', type=float, default=2e-3, metavar='LR',
                         help='learning rate (default: 2e-3)')
-    parser.add_argument('--layer_decay', type=float, default=1.0)
-    parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR',
-                        help='lower lr bound for cyclic schedulers that hit 0 (1e-6)')
+    # parser.add_argument('--layer_decay', type=float, default=1.0)
+    # parser.add_argument('--min_lr', type=float, default=1e-6, metavar='LR',
+    #                     help='lower lr bound for cyclic schedulers that hit 0 (1e-6)')
+    parser.add_argument('--eta_min_ratio', type=float, default=0.0,
+                        help='eta_min ratio for cosine schedulers (default: 0.0)')
     parser.add_argument("--training_steps", type=int, default=15000,
                         help="Number of training steps")
     parser.add_argument("--warmup_steps", type=int, default=1000,
@@ -358,7 +419,7 @@ if __name__ == "__main__":
     # parser.add_argument("--val_batch_size", type=int, default=128,
     #                     help="Batch size")
 
-    parser.add_argument('--wandb_entity_name', default='procedural_pretraining', type=str,
+    parser.add_argument('--wandb_entity_name', default='ayisharyhanadawood-universit-t-freiburg', type=str,
                         help="The name of the W&B entity where you're sending the new run.")
     parser.add_argument('--wandb_project_name', default='procedural_training', type=str,
                         help="The name of the W&B project where you're sending the new run.")
