@@ -1142,3 +1142,38 @@ def scale_layer_11_weights(model, scale_type, scale_factor):
             # block.mlp.fc1.weight.data *= scale_factor
             # block.mlp.fc2.weight.data *= scale_factor
 
+def shuffle_weights(model, weight_shuffle_dict):
+    for block_idx, shuffle_info in weight_shuffle_dict.items():
+        block = model.blocks[block_idx]
+        for weight_name in shuffle_info:
+            print(f"Shuffling weights for block {block_idx}, weight {weight_name}")
+            if weight_name in ["attn.qk.weight", "attn.qk.bias", "attn.v.weight", "attn.v.bias"]:
+                weight_tensor = resolve_param_path(block, "attn.qkv.weight")
+                if weight_tensor is not None:
+                    total_dim = weight_tensor.data.shape[0]
+                    embed_dim = total_dim // 3
+                    if weight_name == "attn.qk.weight":
+                        qk_weights = weight_tensor.data[:2*embed_dim, :]
+                        flat_weights = qk_weights.view(-1)
+                        shuffled_weights = flat_weights[torch.randperm(flat_weights.size(0))]
+                        weight_tensor.data[:2*embed_dim, :].copy_(shuffled_weights.view(qk_weights.shape))
+                    elif weight_name == "attn.v.weight":
+                        v_weights = weight_tensor.data[2*embed_dim:3*embed_dim, :]
+                        flat_weights = v_weights.view(-1)
+                        shuffled_weights = flat_weights[torch.randperm(flat_weights.size(0))]
+                        weight_tensor.data[2*embed_dim:3*embed_dim, :].copy_(shuffled_weights.view(v_weights.shape))
+            else:
+                weight_tensor = resolve_param_path(block, weight_name)
+                if weight_tensor is not None:
+                    original_shape = weight_tensor.data.shape
+                    flat_weights = weight_tensor.data.view(-1)
+                    shuffled_weights = flat_weights[torch.randperm(flat_weights.size(0))]
+                    weight_tensor.data.copy_(shuffled_weights.view(original_shape))
+
+def resolve_param_path(obj, path):
+    for part in path.split("."):
+        if part.isdigit():
+            obj = obj[int(part)]
+        else:
+            obj = getattr(obj, part)
+    return obj
