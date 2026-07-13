@@ -57,6 +57,7 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --procedural_data "kdyck_truncated" \
     --procedural_order "standard" \
     --pr_notes "" \
+    --skip_norm true \
     --random_blocks "0,1,2,3,4,5,6,7,8,9,10" \
     --stage_wise_metrics true \
     --detailed_metrics true \
