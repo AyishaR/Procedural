@@ -11,7 +11,7 @@
 
 SECONDS=0
 
-ROOT='/home/fr/fr_fr/fr_ad457/procedural/Procedural'
+ROOT='/home/fr/fr_fr/fr_ad457'
 
 cd $ROOT
 echo "Started at $(date)";
@@ -47,25 +47,22 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
-    --initialize "" \
+    --initialize "/work/dlclarge1/dawooda-pr_pretraining/results/pr_vitb/pr_27267764_final.pth" \
     --output_dir "/work/dlclarge1/dawooda-pr_pretraining/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
     --enable_wandb true \
     --project "vit base" \
     --wandb_entity_name "ayisharyhanadawood-universit-t-freiburg" \
     --notes "" \
     --accuracy_json "/work/dlclarge1/dawooda-pr_pretraining/imnet_base/s$SLURM_ID.json" \
-    --procedural_data "" \
-    --procedural_order "" \
+    --procedural_data "kdyck_truncated" \
+    --procedural_order "standard" \
+    --pr_notes "" \
+    --random_blocks "0,1,2,3,4,5,6,7,8" \
     --stage_wise_metrics true \
     --detailed_metrics true \
-    --layer_11_scale_method "scale_weights_attn_blk_only" \
-    --layer_11_scale_ln 1.0 \
-    --layer_11_scale_attn_qk 1.0 \
-    --layer_11_scale_attn_v 12.3425 \
-    --layer_11_scale_attn_proj 12.3425 \
-    --pr_notes "" \
     --slurm_id $SLURM_ID \
     --seed $SEED
+    # --skip_keys $SKIP_KEYS 
 
 #     sleep 10
 # done

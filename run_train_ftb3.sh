@@ -58,8 +58,6 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --procedural_order "standard" \
     --pr_notes "" \
     --random_blocks "0,1,2,3,4,5,6,7,8,9,10" \
-    --skip_load_blocks "11" \
-    --skip_load_block_attributes "norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc2.weight,mlp.fc1.bias,mlp.fc2.bias" \
     --stage_wise_metrics true \
     --detailed_metrics true \
     --slurm_id $SLURM_ID \
