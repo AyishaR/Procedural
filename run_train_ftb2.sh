@@ -56,19 +56,13 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --procedural_data "kdyck_truncated" \
     --procedural_order "standard" \
     --pr_notes "" \
-    --random_blocks "0,1,2,3,4,5,6,7,8,9,10" \
-    --skip_load_blocks "11" \
-    --skip_load_block_attributes "norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc2.weight,mlp.fc1.bias,mlp.fc2.bias" \
+    --skip_norm true \
+    --random_blocks "0,1,2,3,4,5,6,7,8,9" \
     --stage_wise_metrics true \
     --detailed_metrics true \
-    --layer_11_scale_method "scale_weights_attn_blk_only" \
-    --layer_11_scale_ln 1.0 \
-    --layer_11_scale_attn_qk 1.0 \
-    --layer_11_scale_attn_v 0.08102 \
-    --layer_11_scale_attn_proj 0.08102 \
-    --pr_notes "" \
     --slurm_id $SLURM_ID \
     --seed $SEED
+    # --skip_keys $SKIP_KEYS 
 
 #     sleep 10
 # done

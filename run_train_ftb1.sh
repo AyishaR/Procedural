@@ -57,14 +57,9 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --procedural_order "" \
     --stage_wise_metrics true \
     --detailed_metrics true \
-    --layer_11_scale_method "scale_weights_attn_blk_only" \
-    --layer_11_scale_ln 1.0 \
-    --layer_11_scale_attn_qk 1.0 \
-    --layer_11_scale_attn_v 12.3425 \
-    --layer_11_scale_attn_proj 12.3425 \
-    --pr_notes "" \
     --slurm_id $SLURM_ID \
     --seed $SEED
+    # --skip_keys $SKIP_KEYS 
 
 #     sleep 10
 # done
