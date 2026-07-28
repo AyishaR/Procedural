@@ -20,7 +20,7 @@ from collections import defaultdict
 from cka_utils import linear_cka, gram_cka
 from models.vitp import VitProcedural
 from kdyck.kdyck_dataset import KDyckDataset, mask_kdyck_dataset
-from procedural_data.repeat_dataset import RepeatDataset, mask_repeat_dataset
+# from procedural_data.repeat_dataset import RepeatDataset, mask_repeat_dataset
 import numpy as np
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, random_split
@@ -712,8 +712,9 @@ def cka_final(data_loader, device, args, classes=None, wandb_logger=None):
         pr_mask_function = mask_kdyck_dataset
         dataset = KDyckDataset(args)
     else:
-        pr_mask_function = mask_repeat_dataset
-        dataset = RepeatDataset(args)
+        # pr_mask_function = mask_repeat_dataset
+        # dataset = RepeatDataset(args)
+        raise NotImplementedError(f"Procedural data {args.procedural_data} not supported for CKA calculation")
 
     sampler_train = torch.utils.data.DistributedSampler(
         dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=True, seed=args.seed,
@@ -795,12 +796,13 @@ def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
     else:
         raise NotImplementedError(f"Model {args.model} not supported for kdyck embedding loading")
 
-    # if "kdyck" in args.procedural_data:
-    pr_mask_function = mask_kdyck_dataset
-    dataset = KDyckDataset(args)
-    # else:
-    #     pr_mask_function = mask_repeat_dataset
-    #     dataset = RepeatDataset(args)
+    if "kdyck" in args.procedural_data:
+        pr_mask_function = mask_kdyck_dataset
+        dataset = KDyckDataset(args)
+    else:
+        # pr_mask_function = mask_repeat_dataset
+        # dataset = RepeatDataset(args)
+        raise NotImplementedError(f"Procedural data {args.procedural_data} not supported for CKA calculation")
 
     sampler_train = torch.utils.data.DistributedSampler(
         dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=True, seed=args.seed,
@@ -1432,14 +1434,6 @@ def attention_residual_analysis(data_loader, model, device, layers_to_analyse = 
                 "norm_ratio_mlp_delta_in_mean": norm_ratio_mlp_delta_in_mean,
                 "norm_ratio_mlp_delta_in_std": norm_ratio_mlp_delta_in_std,
             }
-
-
-
-        }
-    
-    stats.update({"aggregated": stats_aggregated})
-    
-        }
     
     stats.update({"aggregated": stats_aggregated})
     if utils.is_main_process():
