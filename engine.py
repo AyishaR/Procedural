@@ -367,6 +367,21 @@ def model_analyse(
                 detailed_metrics_logger.meters[f'{prefix}blk_act_norm_layer{i}'].update(acts[i]['blk_act_norm'], n=images.shape[0])
                 detailed_metrics_logger.meters[f'{prefix}blk_act_rms_layer{i}'].update(acts[i]['blk_act_rms'], n=images.shape[0])
 
+                attn_delta_norm = torch.norm(acts[i]['attn_out'], dim=-1)
+                mlp_delta_norm = torch.norm(acts[i]['blk']-acts[i]['attn'], dim=-1)
+                attn_out_norm = torch.norm(acts[i]['attn'], dim=-1)
+                blk_out_norm = torch.norm(acts[i]['blk'], dim=-1)
+                inp_norm = torch.norm(acts[i]['inp'], dim=-1)
+
+                detailed_metrics_logger.meters[f'{prefix}mlp_blk_act_norm_layer{i}'].update(blk_out_norm.mean().item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}attn_delta_norm_layer{i}'].update(attn_delta_norm.mean().item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}mlp_delta_norm_layer{i}'].update(mlp_delta_norm.mean().item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}attn_blk_act_norm_layer{i}'].update(attn_out_norm.mean().item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}inp_norm_layer{i}'].update(inp_norm.mean().item(), n=images.shape[0])
+
+                detailed_metrics_logger.meters[f'{prefix}attn_delta_norm_ratio_layer{i}'].update((attn_delta_norm/(inp_norm+1e-8)).mean().item(), n=images.shape[0])
+                detailed_metrics_logger.meters[f'{prefix}mlp_delta_norm_ratio_layer{i}'].update((mlp_delta_norm/(attn_out_norm+1e-8)).mean().item(), n=images.shape[0])
+
                 # cka_features[i].append(acts[i]['blk'].cpu())
 
                 if args.detailed_metrics:
@@ -393,8 +408,8 @@ def model_analyse(
         print("ECE:", ece)
         detailed_metrics_logger.meters["ece"].update(ece, n=1)
 
-    blk_metric_keys = ["cls_attn_entropy", "attn_entropy", "attn_mad", "blk_acc", "blk_act_norm", "blk_act_rms"]
-    attn_metric_keys = ["attn_acc"]
+    blk_metric_keys = ["cls_attn_entropy", "attn_entropy", "attn_mad", "blk_acc", "blk_act_norm", "mlp_blk_act_norm", "blk_act_rms", "mlp_delta_norm", "mlp_inp_norm", "mlp_delta_norm_ratio"]
+    attn_metric_keys = ["attn_acc", "attn_delta_norm", "attn_blk_act_norm", "attn_inp_norm", "attn_delta_norm_ratio"]
 
     for layer in layers_to_analyse:
         stats_dict = {
@@ -422,9 +437,10 @@ def model_analyse(
             metric_name = f'{prefix}{key}_layer{layer}'
             # print(metric_name)
             if metric_name in detailed_metrics_logger.meters:
-                if key == "attn_acc":
+                if key in ["attn_acc", "attn_blk_act_norm", "attn_delta_norm_ratio"]:
                     attn_stats_dict["layer_sub"] = attn_stats_dict["layer"]-0.5
-                    key="acc"
+                    if key == "attn_blk_act_norm": key = "act_norm"
+                    key=key.replace("attn_", "")
                 attn_stats_dict.update({
                     f'{prefix}{key}': detailed_metrics_logger.meters[metric_name].global_avg,
                 })
@@ -452,9 +468,12 @@ def model_analyse(
             metric_name = f'{prefix}{key}_layer{layer}'
             # print(metric_name)
             if metric_name in detailed_metrics_logger.meters:
-                if key == "blk_acc":
+                if key in ["blk_acc", "mlp_delta_norm_ratio", "blk_act_norm", "mlp_blk_act_norm"]:
                     blk_stats_dict["layer_sub"] = blk_stats_dict["layer"]
-                    key="acc"
+                    if key == "blk_acc": key = "acc"
+                    elif key == "mlp_blk_act_norm": key = "act_norm"
+                    key=key.replace("mlp_", "")
+
                 blk_stats_dict.update({
                     f'{prefix}{key}': detailed_metrics_logger.meters[metric_name].global_avg,
                 })
@@ -479,6 +498,7 @@ def model_analyse(
             layer_wise["Layer-wise/layer"] = layer
             layer_wise["Layer-wise/layer_sub"] = layer_sub if layer_sub is not None else layer
             wandb_logger._wandb.log(layer_wise)
+            print(f"Logged metrics for layer {layer} at epoch {epoch} to wandb.")
     
     # stats = {k: meter.global_avg for k, meter in detailed_metrics_logger.meters.items()}
     if args.gpu == 0:
@@ -775,12 +795,12 @@ def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
     else:
         raise NotImplementedError(f"Model {args.model} not supported for kdyck embedding loading")
 
-    if "kdyck" in args.procedural_data:
-        pr_mask_function = mask_kdyck_dataset
-        dataset = KDyckDataset(args)
-    else:
-        pr_mask_function = mask_repeat_dataset
-        dataset = RepeatDataset(args)
+    # if "kdyck" in args.procedural_data:
+    pr_mask_function = mask_kdyck_dataset
+    dataset = KDyckDataset(args)
+    # else:
+    #     pr_mask_function = mask_repeat_dataset
+    #     dataset = RepeatDataset(args)
 
     sampler_train = torch.utils.data.DistributedSampler(
         dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=True, seed=args.seed,
@@ -1206,13 +1226,14 @@ def cohens_d(x1, x2):
     return (np.mean(x1) - np.mean(x2)) / np.sqrt((np.var(x1) + np.var(x2)) / 2)
 
 @torch.no_grad()
-def attention_residual_analysis(data_loader, model, device, args=None, save=True):
+def attention_residual_analysis(data_loader, model, device, layers_to_analyse = None, args=None, save=True, detailed=True, filename="res_stats"):
     header = 'attention_residual_analysis:'
 
     output_folder = args.attention_residual_stats_path if args.attention_residual_stats_path!="" else args.output_dir
 
     # layers_to_analyse = range(len(model.blocks))
-    layers_to_analyse = [11]
+    if layers_to_analyse is None:
+        layers_to_analyse = list(range(len(model.blocks)))
     patch_size = 14  # 224/16
     num_heads = model.blocks[0].attn.num_heads
 
@@ -1220,6 +1241,8 @@ def attention_residual_analysis(data_loader, model, device, args=None, save=True
     all_attn_out = {i:[] for i in layers_to_analyse}
     all_attn_res_out = {i:[] for i in layers_to_analyse}
     all_attn_delta = {i:[] for i in layers_to_analyse}
+    mlp_delta = {i:[] for i in layers_to_analyse}
+    mlp_out = {i:[] for i in layers_to_analyse}
 
     ln1 = {i: [] for i in layers_to_analyse}
     qkvp1 = {i: [] for i in layers_to_analyse}
@@ -1247,102 +1270,175 @@ def attention_residual_analysis(data_loader, model, device, args=None, save=True
                 attn_in = acts[i]['inp']
                 attn_out = acts[i]['attn_out']
                 attn_res_out = acts[i]['attn']
-                attn_delta = attn_res_out - attn_in
+                blk_out = acts[i]['blk']
+                # attn_delta = attn_res_out - attn_in
+                blk_delta = blk_out - attn_res_out
 
-                ln1[i].append(acts[i]['ln1'].cpu())
-                qkvp1[i].append(acts[i]['qkvp1'].cpu())
-                ls1[i].append(acts[i]['ls1'].cpu())
+                # ln1[i].append(acts[i]['ln1'].cpu())
+                # qkvp1[i].append(acts[i]['qkvp1'].cpu())
+                # ls1[i].append(acts[i]['ls1'].cpu())
 
                 all_attn_in[i].append(attn_in.cpu())
-                all_attn_out[i].append(attn_out.cpu())
+                # all_attn_out[i].append(attn_out.cpu())
                 all_attn_res_out[i].append(attn_res_out.cpu())
-                all_attn_delta[i].append(attn_delta.cpu())
+                all_attn_delta[i].append(attn_out.cpu())
+
+                mlp_delta[i].append(blk_delta.cpu())
+                # mlp_out[i].append(blk_out.cpu())
+    print("Collected res stats")
 
     stats = {i:{} for i in layers_to_analyse}
     stats_aggregated = {}
     for i in layers_to_analyse:
-        all_attn_in[i] = torch.cat(all_attn_in[i], dim=0)
-        all_attn_out[i] = torch.cat(all_attn_out[i], dim=0)
-        all_attn_res_out[i] = torch.cat(all_attn_res_out[i], dim=0)
-        all_attn_delta[i] = torch.cat(all_attn_delta[i], dim=0)
+        if detailed:
+            raise NotImplementedError("Detailed stats not implemented yet")
+            # all_attn_in[i] = torch.cat(all_attn_in[i], dim=0)
+            # all_attn_out[i] = torch.cat(all_attn_out[i], dim=0)
+            # all_attn_res_out[i] = torch.cat(all_attn_res_out[i], dim=0)
+            # all_attn_delta[i] = torch.cat(all_attn_delta[i], dim=0)
 
+            # rin_norm = torch.norm(all_attn_in[i], dim=-1)
+            # rout_norm = torch.norm(all_attn_res_out[i], dim=-1)
+            # norm_ratio = rout_norm / (rin_norm + 1e-8)
+            # delta_norm = torch.norm(all_attn_delta[i], dim=-1)
+            # attn_out_norm = torch.norm(all_attn_out[i], dim=-1)
+            # norm_ratio_attn_delta_in = delta_norm / (rin_norm + 1e-8)
+
+            # ln1_norm = torch.norm(torch.cat(ln1[i], dim=0), dim=-1)
+            # qkvp1_norm = torch.norm(torch.cat(qkvp1[i], dim=0), dim=-1)
+            # ls1_norm = torch.norm(torch.cat(ls1[i], dim=0), dim=-1)
+
+            # mlp_delta_norm = torch.norm(torch.cat(mlp_delta[i], dim=0), dim=-1)
+            # mlp_out_norm = torch.norm(torch.cat(mlp_out[i], dim=0), dim=-1)
+
+            # norm_ratio_ln1_inp = ln1_norm / (rin_norm + 1e-8)
+            # norm_ratio_qkvp1_ln1 = qkvp1_norm / (ln1_norm + 1e-8)
+            # norm_ratio_ls1_qkvp1 = ls1_norm / (qkvp1_norm + 1e-8)
+            # norm_ratio_out_ls1 = attn_out_norm / (ls1_norm + 1e-8)
+            # norm_ratio_resout_out = rout_norm / (attn_out_norm + 1e-8)
+
+            # norm_ratio_blk_in_out = mlp_out_norm / (rin_norm + 1e-8)
+            # norm_ratio_mlp_delta_in = mlp_delta_norm / (rout_norm + 1e-8)
+            # norm_ratio_mlp_out_in = mlp_out_norm / (rout_norm + 1e-8)
+
+            # rin_unit = all_attn_in[i] / (rin_norm.unsqueeze(-1) + 1e-8)
+            # rout_unit = all_attn_res_out[i] / (rout_norm.unsqueeze(-1) + 1e-8)
+            # cosine_rin_rout = F.cosine_similarity(rin_unit, rout_unit, dim=-1)
+
+            # # all_attn_in[i] = all_attn_in[i].cpu()
+            # # all_attn_res_out[i] = all_attn_res_out[i].cpu()
+            # os.makedirs(output_folder, exist_ok=True)
+            
+            # # cka_rin_rout = gram_cka(all_attn_in[i].reshape(all_attn_in[i].shape[0], -1), all_attn_res_out[i].reshape(all_attn_res_out[i].shape[0], -1))
+
+            # rin_norm_mean, rin_norm_std = reduce_scalar_stats(rin_norm)
+            # rout_norm_mean, rout_norm_std = reduce_scalar_stats(rout_norm)
+            # ln1_norm_mean, ln1_norm_std = reduce_scalar_stats(ln1_norm)
+            # qkvp1_norm_mean, qkvp1_norm_std = reduce_scalar_stats(qkvp1_norm)
+            # ls1_norm_mean, ls1_norm_std = reduce_scalar_stats(ls1_norm)
+            # delta_norm_mean, delta_norm_std = reduce_scalar_stats(delta_norm)
+            # cosine_rin_rout_mean, cosine_rin_rout_std = reduce_scalar_stats(cosine_rin_rout)
+
+            # norm_ratio_ln1_inp_mean, norm_ratio_ln1_inp_std = reduce_scalar_stats(norm_ratio_ln1_inp)
+            # norm_ratio_qkvp1_ln1_mean, norm_ratio_qkvp1_ln1_std = reduce_scalar_stats(norm_ratio_qkvp1_ln1)
+            # norm_ratio_ls1_qkvp1_mean, norm_ratio_ls1_qkvp1_std = reduce_scalar_stats(norm_ratio_ls1_qkvp1)
+            # norm_ratio_out_ls1_mean, norm_ratio_out_ls1_std = reduce_scalar_stats(norm_ratio_out_ls1)
+            # norm_ratio_attn_delta_in_mean, norm_ratio_attn_delta_in_std = reduce_scalar_stats(norm_ratio_attn_delta_in)
+            # norm_ratio_attn_rout_rin_mean, norm_ratio_attn_rout_rin_std = reduce_scalar_stats(norm_ratio)
+
+            # mlp_delta_norm_mean, mlp_delta_norm_std = reduce_scalar_stats(mlp_delta_norm)
+            # mlp_out_norm_mean, mlp_out_norm_std = reduce_scalar_stats(mlp_out_norm)
+
+            # norm_ratio_mlp_delta_in_mean, norm_ratio_mlp_delta_in_std = reduce_scalar_stats(norm_ratio_mlp_delta_in)
+            # norm_ratio_mlp_out_in_mean, norm_ratio_mlp_out_in_std = reduce_scalar_stats(norm_ratio_mlp_out_in)
+            # norm_ratio_blk_in_out_mean, norm_ratio_blk_in_out_std = reduce_scalar_stats(norm_ratio_blk_in_out)
+
+            # # if utils.is_main_process():
+            
+            # stats_aggregated[i] = {
+            #     "rin_norm_mean": rin_norm_mean,
+            #     "rin_norm_std": rin_norm_std,
+            #     "rout_norm_mean": rout_norm_mean,
+            #     "rout_norm_std": rout_norm_std,
+            #     "ln1_norm_mean": ln1_norm_mean,    
+            #     "ln1_norm_std": ln1_norm_std,
+            #     "qkvp1_norm_mean": qkvp1_norm_mean,
+            #     "qkvp1_norm_std": qkvp1_norm_std,
+            #     "ls1_norm_mean": ls1_norm_mean,
+            #     "ls1_norm_std": ls1_norm_std,
+            #     "attn_delta_norm_mean": delta_norm_mean,
+            #     "attn_delta_norm_std": delta_norm_std,
+            #     "cosine_rin_rout_mean": cosine_rin_rout_mean,
+            #     "cosine_rin_rout_std": cosine_rin_rout_std,
+            #     # "cka_rin_rout": cka_rin_rout.item(),
+            #     "norm_ratio_ln1_inp_mean": norm_ratio_ln1_inp_mean,
+            #     "norm_ratio_ln1_inp_std": norm_ratio_ln1_inp_std,
+            #     "norm_ratio_qkvp1_ln1_mean": norm_ratio_qkvp1_ln1_mean,
+            #     "norm_ratio_qkvp1_ln1_std": norm_ratio_qkvp1_ln1_std,
+            #     "norm_ratio_ls1_qkvp1_mean": norm_ratio_ls1_qkvp1_mean,
+            #     "norm_ratio_ls1_qkvp1_std": norm_ratio_ls1_qkvp1_std,
+            #     "norm_ratio_out_ls1_mean": norm_ratio_out_ls1_mean,
+            #     "norm_ratio_out_ls1_std": norm_ratio_out_ls1_std,
+            #     "norm_ratio_attn_delta_in_mean": norm_ratio_attn_delta_in_mean,
+            #     "norm_ratio_attn_delta_in_std": norm_ratio_attn_delta_in_std,
+            #     "norm_ratio_attn_rout_rin_mean": norm_ratio_attn_rout_rin_mean,
+            #     "norm_ratio_attn_rout_rin_std": norm_ratio_attn_rout_rin_std,
+            #     "mlp_delta_norm_mean": mlp_delta_norm_mean,
+            #     "mlp_delta_norm_std": mlp_delta_norm_std,
+            #     "mlp_out_norm_mean": mlp_out_norm_mean,
+            #     "mlp_out_norm_std": mlp_out_norm_std,
+            #     "norm_ratio_mlp_delta_in_mean": norm_ratio_mlp_delta_in_mean,
+            #     "norm_ratio_mlp_delta_in_std": norm_ratio_mlp_delta_in_std,
+            #     "norm_ratio_mlp_out_in_mean": norm_ratio_mlp_out_in_mean,
+            #     "norm_ratio_mlp_out_in_std": norm_ratio_mlp_out_in_std,
+            #     "norm_ratio_blk_in_out_mean": norm_ratio_blk_in_out_mean,
+            #     "norm_ratio_blk_in_out_std": norm_ratio_blk_in_out_std,
+                
+            # }
+        else:
+            all_attn_in[i] = torch.cat(all_attn_in[i], dim=0)
+            all_attn_delta[i] = torch.cat(all_attn_delta[i], dim=0)
+            all_attn_res_out[i] = torch.cat(all_attn_res_out[i], dim=0)
+
+        rin_norm = torch.norm(all_attn_in[i], dim=-1)
         rin_norm = torch.norm(all_attn_in[i], dim=-1)
         rout_norm = torch.norm(all_attn_res_out[i], dim=-1)
         norm_ratio = rout_norm / (rin_norm + 1e-8)
-        delta_norm = torch.norm(all_attn_delta[i], dim=-1)
-        atnn_out_norm = torch.norm(all_attn_out[i], dim=-1)
+            rin_norm = torch.norm(all_attn_in[i], dim=-1)
+        rout_norm = torch.norm(all_attn_res_out[i], dim=-1)
+        norm_ratio = rout_norm / (rin_norm + 1e-8)
+            delta_norm = torch.norm(all_attn_delta[i], dim=-1)
+            norm_ratio_attn_delta_in = delta_norm / (rin_norm + 1e-8)
 
-        ln1_norm = torch.norm(torch.cat(ln1[i], dim=0), dim=-1)
-        qkvp1_norm = torch.norm(torch.cat(qkvp1[i], dim=0), dim=-1)
-        ls1_norm = torch.norm(torch.cat(ls1[i], dim=0), dim=-1)
+            rout_norm = torch.norm(all_attn_res_out[i], dim=-1)
+            mlp_delta_norm = torch.norm(torch.cat(mlp_delta[i], dim=0), dim=-1)
+            norm_ratio_mlp_delta_in = mlp_delta_norm / (rout_norm + 1e-8)
 
-        norm_ratio_ln1_inp = ln1_norm / (rin_norm + 1e-8)
-        norm_ratio_qkvp1_ln1 = qkvp1_norm / (ln1_norm + 1e-8)
-        norm_ratio_ls1_qkvp1 = ls1_norm / (qkvp1_norm + 1e-8)
-        norm_ratio_out_ls1 = atnn_out_norm / (ls1_norm + 1e-8)
-        norm_ratio_resout_out = rout_norm / (atnn_out_norm + 1e-8)
+            norm_ratio_attn_delta_in_mean, norm_ratio_attn_delta_in_std = norm_ratio_attn_delta_in.mean().item(), norm_ratio_attn_delta_in.std().item()
+            norm_ratio_mlp_delta_in_mean, norm_ratio_mlp_delta_in_std = norm_ratio_mlp_delta_in.mean().item(), norm_ratio_mlp_delta_in.std().item()
 
-        rin_unit = all_attn_in[i] / (rin_norm.unsqueeze(-1) + 1e-8)
-        rout_unit = all_attn_res_out[i] / (rout_norm.unsqueeze(-1) + 1e-8)
-        cosine_rin_rout = F.cosine_similarity(rin_unit, rout_unit, dim=-1)
-        # save all_attn_in and all_attn_res_out to disk for layer i
-        all_attn_in[i] = all_attn_in[i].cpu()
-        all_attn_res_out[i] = all_attn_res_out[i].cpu()
-        os.makedirs(output_folder, exist_ok=True)
-        # if save and utils.is_main_process():
-        #     torch.save(all_attn_in[i], os.path.join(output_folder, f"attn_in_layer_{i}.pt"))
-        #     print(f"Saved attn_in for layer {i} with shape {all_attn_in[i].shape} to {os.path.join(output_folder, f'attn_in_layer_{i}.pt')}")
-        #     torch.save(all_attn_res_out[i], os.path.join(output_folder, f"attn_res_out_layer_{i}.pt"))
-        #     print(f"Saved attn_res_out for layer {i} with shape {all_attn_res_out[i].shape} to {os.path.join(output_folder, f'attn_res_out_layer_{i}.pt')}")
-            
-        cka_rin_rout = gram_cka(all_attn_in[i].reshape(all_attn_in[i].shape[0], -1), all_attn_res_out[i].reshape(all_attn_res_out[i].shape[0], -1))
+            # if utils.is_main_process():
+            stats_aggregated[i] = {
+                # "rin_norm_mean": rin_norm_mean,
+                # "rin_norm_std": rin_norm_std,
+                # "rout_norm_mean": rout_norm_mean,
+                # "rout_norm_std": rout_norm_std,
+                # "attn_delta_norm_mean": delta_norm_mean,
+                # "attn_delta_norm_std": delta_norm_std,
+                "norm_ratio_attn_delta_in_mean": norm_ratio_attn_delta_in_mean,
+                "norm_ratio_attn_delta_in_std": norm_ratio_attn_delta_in_std,
+                # "mlp_delta_norm_mean": mlp_delta_norm_mean,
+                # "mlp_delta_norm_std": mlp_delta_norm_std,
+                "norm_ratio_mlp_delta_in_mean": norm_ratio_mlp_delta_in_mean,
+                "norm_ratio_mlp_delta_in_std": norm_ratio_mlp_delta_in_std,
+            }
 
-        stats[i] = {
-            "rin_norm": rin_norm.tolist(),
-            "rout_norm": rout_norm.tolist(),
-            "norm_ratio": norm_ratio.tolist(),
-            "delta_norm": delta_norm.tolist(),
-            "atnn_out_norm": atnn_out_norm.tolist(),
-            "cosine_rin_rout": cosine_rin_rout.tolist(),
-            "cka_rin_rout": cka_rin_rout.item(),
-            "norm_ratio_ln1_inp": norm_ratio_ln1_inp.tolist(),
-            "norm_ratio_qkvp1_ln1": norm_ratio_qkvp1_ln1.tolist(),
-            "norm_ratio_ls1_qkvp1": norm_ratio_ls1_qkvp1.tolist(),
-            "norm_ratio_out_ls1": norm_ratio_out_ls1.tolist(),
-            "norm_ratio_resout_out": norm_ratio_resout_out.tolist()
+
+
         }
     
-        stats_aggregated[i] = {
-            "rin_norm_mean": rin_norm.mean().item(),
-            "rin_norm_std": rin_norm.std().item(),
-            "rout_norm_mean": rout_norm.mean().item(),
-            "rout_norm_std": rout_norm.std().item(),
-            "ln1_norm_mean": ln1_norm.mean().item(),    
-            "ln1_norm_std": ln1_norm.std().item(),
-            "qkvp1_norm_mean": qkvp1_norm.mean().item(),
-            "qkvp1_norm_std": qkvp1_norm.std().item(),
-            "ls1_norm_mean": ls1_norm.mean().item(),
-            "ls1_norm_std": ls1_norm.std().item(),
-            "norm_ratio_mean": norm_ratio.mean().item(),
-            "norm_ratio_std": norm_ratio.std().item(),
-            "delta_norm_mean": delta_norm.mean().item(),
-            "delta_norm_std": delta_norm.std().item(),
-            "attn_out_norm_mean": atnn_out_norm.mean().item(),
-            "attn_out_norm_std": atnn_out_norm.std().item(),
-            "cosine_rin_rout_mean": cosine_rin_rout.mean().item(),
-            "cosine_rin_rout_std": cosine_rin_rout.std().item(),
-            "cka_rin_rout": cka_rin_rout.item(),
-            "norm_ratio_ln1_inp_mean": norm_ratio_ln1_inp.mean().item(),
-            "norm_ratio_ln1_inp_std": norm_ratio_ln1_inp.std().item(),
-            "norm_ratio_qkvp1_ln1_mean": norm_ratio_qkvp1_ln1.mean().item(),
-            "norm_ratio_qkvp1_ln1_std": norm_ratio_qkvp1_ln1.std().item(),
-            "norm_ratio_ls1_qkvp1_mean": norm_ratio_ls1_qkvp1.mean().item(),
-            "norm_ratio_ls1_qkvp1_std": norm_ratio_ls1_qkvp1.std().item(),
-            "norm_ratio_out_ls1_mean": norm_ratio_out_ls1.mean().item(),
-            "norm_ratio_out_ls1_std": norm_ratio_out_ls1.std().item(),
-            "norm_ratio_resout_out_mean": norm_ratio_resout_out.mean().item(),
-            "norm_ratio_resout_out_std": norm_ratio_resout_out.std().item()
-
+    stats.update({"aggregated": stats_aggregated})
+    
         }
     
     stats.update({"aggregated": stats_aggregated})
@@ -1350,7 +1446,88 @@ def attention_residual_analysis(data_loader, model, device, args=None, save=True
         pprint(stats_aggregated)
         sys.stdout.flush()
 
-    if save and utils.is_main_process():
-        json.dump(stats_aggregated, open(output_folder+"/attn_res_stats.json", "w"), indent=4)
+        if save:
+            if not os.path.exists(output_folder):
+                os.makedirs(output_folder)
+            if os.path.exists(output_folder+f"/{filename}.json"):
+                existing_stats = json.load(open(output_folder+f"/{filename}.json", "r"))
+            else:
+                existing_stats = {}
+            existing_stats.update(stats_aggregated)
+            json.dump(existing_stats, open(output_folder+f"/{filename}.json", "w"), indent=4)
 
     return stats_aggregated
+    # else:
+    #     return None
+
+@torch.no_grad()
+def reduce_scalar_stats(x, return_tensor=False):
+    """
+    x: local tensor on each rank, shape can differ on dim 0
+    unbiased: passed to torch.std
+    return_tensor: if True, also return concatenated global tensor on rank 0
+
+    returns:
+        on rank 0: (mean, std) or (mean, std, x_global)
+        on other ranks: (None, None) or (None, None, None)
+    """
+    x = x.detach()
+
+    if not utils.is_dist_avail_and_initialized():
+        x_global = x
+        mean = x_global.mean().item()
+        std = x_global.std().item()
+        if return_tensor:
+            return mean, std, x_global
+        return mean, std
+
+    print(f"Rank {utils.get_rank()} gathering tensor of shape {x.shape} for mean/std computation")
+    gathered = [None for _ in range(utils.get_world_size())]
+    dist.all_gather_object(gathered, x.cpu())
+    print(f"Rank {utils.get_rank()} finished gathering tensor for mean/std computation")
+
+    if utils.get_rank() != 0:
+        if return_tensor:
+            return None, None, None
+        return None, None
+
+    x_global = torch.cat(gathered, dim=0)
+    mean = x_global.mean().item()
+    std = x_global.std().item()
+    print(f"Rank 0 computed mean: {mean}, std: {std} from gathered tensor of shape {x_global.shape}")
+
+    if return_tensor:
+        return mean, std, x_global
+    return mean, std
+
+def broadcast_dict(obj, src=0, device=None):
+    """
+    Broadcast a Python dict from src rank to all ranks.
+    On src: obj must be a dict.
+    On other ranks: obj is ignored.
+    """
+    if not utils.is_dist_avail_and_initialized():
+        return obj
+
+    if dist.get_rank() == src:
+        payload = [obj]
+    else:
+        payload = [None]
+
+    dist.broadcast_object_list(payload, src=src, device=device)
+    return payload[0]
+
+@torch.no_grad()
+def reduce_scalar_stats(x):
+    x = x.detach().float().cuda()
+    s = x.sum()
+    ss = (x * x).sum()
+    n = torch.tensor([x.numel()], dtype=torch.float32).cuda()
+    vec = torch.stack([s, ss, n[0]]).cuda()
+    if utils.is_dist_avail_and_initialized():
+        dist.all_reduce(vec, op=dist.ReduceOp.SUM)
+    total_sum, total_sq, total_n = vec.tolist()
+    mean = total_sum / total_n
+    var = max(total_sq / total_n - mean * mean, 0.0)
+    std = math.sqrt(var)
+    return mean, std

@@ -677,7 +677,7 @@ def ft_load_model(path, args, device, delete_blocks=None, model=None):
             checkpoint_model = checkpoint
         state_dict = model.state_dict()
         print("All keys in checkpoint_model", checkpoint_model.keys())
-        if "pr" in path.split("/")[-1]:
+        if "pr" in path.split("/")[-1] or args.initialize_as_pr:
             for k in ['head.weight', 'head.bias', 'cls_token', 'pos_embed', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
                 if k in checkpoint_model:
                     print(f"Removing key {k} from pretrained checkpoint")
@@ -1018,10 +1018,6 @@ class HookCollector:
                 blk_act_rms_per_sample = torch.sqrt((flat ** 2).mean(dim=-1))
                 self.acts[idx]['blk_act_rms'] = blk_act_rms_per_sample.mean().item()
 
-                # attn_out = mod.drop_path1(mod.ls1(mod.attn(mod.norm1(inp[0]))))
-                # self.acts[idx]['attn_out'] = attn_out.detach()
-                # self.acts[idx]['attn'] = inp[0] + attn_out.detach()
-
                 step_wise = mod.norm1(inp[0])
                 self.acts[idx]['ln1'] = step_wise.detach()
                 step_wise = mod.attn(step_wise)
@@ -1122,28 +1118,31 @@ def apply_layer_11_scale(model, init_value):
     model.blocks[11].ls1.gamma.data.fill_(init_value)
     model.blocks[11].ls2.gamma.data.fill_(init_value)
 
-def scale_layer_11_weights(model, scale_type, scale_factor):
+def scale_layer_weights(model, layers, scale_factor):
     depth = len(model.blocks)
-    for block_idx in [depth - 1]:
+    for block_idx in layers:
         block = model.blocks[block_idx]
-        if scale_type == "scale_weights_attn_blk_only":
-            block.norm1.weight.data *= scale_factor.get("norm1", 1.0)
-            scale_qk = scale_factor.get("qk", 1.0)
-            scale_v = scale_factor.get("v", 1.0)
-            if scale_qk==scale_v:
-                block.attn.qkv.weight.data *= scale_qk
-            else:
-                total_dim = block.attn.qkv.weight.data.shape[0]
-                embed_dim = total_dim // 3
-                block.attn.qkv.weight.data[:embed_dim, :] *= scale_qk
-                block.attn.qkv.weight.data[embed_dim:2*embed_dim, :] *= scale_qk
-                block.attn.qkv.weight.data[2*embed_dim:3*embed_dim, :] *= scale_v
-            block.attn.proj.weight.data *= scale_factor.get("proj", 1.0)
-            # block.mlp.fc1.weight.data *= scale_factor
-            # block.mlp.fc2.weight.data *= scale_factor
+        # if scale_type == "scale_weights_attn_blk_only":
+        block.norm1.weight.data *= scale_factor.get("norm1", 1.0)
+        scale_qk = scale_factor.get("qk", 1.0)
+        scale_v = scale_factor.get("v", 1.0)
+        if scale_qk==scale_v:
+            block.attn.qkv.weight.data *= scale_qk
+        else:
+            total_dim = block.attn.qkv.weight.data.shape[0]
+            embed_dim = total_dim // 3
+            block.attn.qkv.weight.data[:embed_dim, :] *= scale_qk
+            block.attn.qkv.weight.data[embed_dim:2*embed_dim, :] *= scale_qk
+            block.attn.qkv.weight.data[2*embed_dim:3*embed_dim, :] *= scale_v
+        block.attn.proj.weight.data *= scale_factor.get("proj", 1.0)
+        
+        block.norm2.weight.data *= scale_factor.get("norm2", 1.0)
+        block.mlp.fc1.weight.data *= scale_factor.get("fc1", 1.0)
+        block.mlp.fc2.weight.data *= scale_factor.get("fc2", 1.0)
 
 def shuffle_weights(model, weight_shuffle_dict):
     for block_idx, shuffle_info in weight_shuffle_dict.items():
+        print(f"Shuffling weights for block {block_idx} with shuffle_info: {shuffle_info}")
         block = model.blocks[block_idx]
         for weight_name in shuffle_info:
             print(f"Shuffling weights for block {block_idx}, weight {weight_name}")
@@ -1177,3 +1176,10 @@ def resolve_param_path(obj, path):
         else:
             obj = getattr(obj, part)
     return obj
+
+def patched_last_block_forward(self, x):
+    y = self.norm1(x)
+    attn_out = self.attn(y)
+    x = (x * self.attn_res_scale) + (self.drop_path1(self.ls1(attn_out)) * self.attn_out_scale)
+    x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+    return x
