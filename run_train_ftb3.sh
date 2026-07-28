@@ -1,17 +1,17 @@
 #!/bin/bash
 #SBATCH --job-name ftb3
-#SBATCH --partition gpu_h100_short
+#SBATCH --partition lmbdlc2_gpu-h200
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:4
-#SBATCH --time 00:29:59
-#SBATCH -o /home/fr/fr_fr/fr_ad457/procedural/Procedural/logs/ft_%j_%x.out
-#SBATCH -e /home/fr/fr_fr/fr_ad457/procedural/Procedural/logs/ft_%j_%x.err # STDERR
+#SBATCH --time 23:29:59
+#SBATCH -o /home/schrodi/Procedural/logs/ft_%j_%x.out
+#SBATCH -e /home/schrodi/Procedural/logs/ft_%j_%x.err # STDERR
 #SBATCH --mail-type END,FAIL
-#SBATCH --mail-user ayishardawood@gmail.com 
+#SBATCH --mail-user schrodi@cs.uni-freiburg.de 
 
 SECONDS=0
 
-ROOT='/home/fr/fr_fr/fr_ad457'
+ROOT='/home/schrodi/Procedural'
 
 cd $ROOT
 echo "Started at $(date)";
@@ -27,9 +27,8 @@ if [[ -z "$SEED" ]] | [[ "$SEED" -eq "" ]]; then
 fi
 echo "Running with ID $SLURM_ID";
 
-module load devel/cuda/12.8
-module load devel/miniforge/25.3.1-python-3.12
-source ../../.venv/bin/activate
+export PATH="$HOME/.local/bin:$PATH"
+source .venv/bin/activate
 
 echo "Current working directory: $(pwd)";
 
@@ -47,19 +46,18 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
-    --initialize "/work/dlclarge1/dawooda-pr_pretraining/results/pr_vitb/pr_27267764_final.pth" \
-    --output_dir "/work/dlclarge1/dawooda-pr_pretraining/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
+    --initialize "results/pr_vitb/pr_27267764_final.pth" \
+    --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
     --enable_wandb true \
     --project "vit base" \
-    --wandb_entity_name "ayisharyhanadawood-universit-t-freiburg" \
+    --wandb_entity_name "procedural_pretraining" \
     --notes "" \
-    --accuracy_json "/work/dlclarge1/dawooda-pr_pretraining/imnet_base/s$SLURM_ID.json" \
+    --accuracy_json "results/imnet_base/accuracy_IMNET_BASE_$SLURM_ID.json" \
     --procedural_data "kdyck_truncated" \
     --procedural_order "standard" \
     --pr_notes "" \
+    --skip_norm true \
     --random_blocks "0,1,2,3,4,5,6,7,8,9,10" \
-    --skip_load_blocks "11" \
-    --skip_load_block_attributes "norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc2.weight,mlp.fc1.bias,mlp.fc2.bias" \
     --stage_wise_metrics true \
     --detailed_metrics true \
     --slurm_id $SLURM_ID \
