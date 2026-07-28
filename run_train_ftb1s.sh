@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name ftb3
+#SBATCH --job-name ftb1s
 #SBATCH --partition lmbdlc2_gpu-h200
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:4
@@ -57,9 +57,11 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --procedural_order "standard" \
     --pr_notes "" \
     --skip_norm true \
-    --random_blocks "0,1,2,3,4,5,6,7,8" \
-    --skip_load_blocks "9,10,11" \
+    --random_blocks "0,1,2,3,4,5,6,7,8,9,10" \
+    --skip_load_blocks "11" \
     --skip_load_block_attributes "norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc2.weight,mlp.fc1.bias,mlp.fc2.bias" \
+    --init_method "upscale_random_match_attn_delta_norms" \
+    --init_method_scaled_blocks "11" \
     --stage_wise_metrics true \
     --detailed_metrics true \
     --slurm_id $SLURM_ID \
