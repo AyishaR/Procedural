@@ -46,15 +46,20 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
-    --initialize "" \
+    --initialize "results/pr_vitb/pr_6066174_final.pth" \
     --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
     --enable_wandb true \
-    --project "vit base" \
+    --project "vit base kdyck" \
     --wandb_entity_name "procedural_pretraining" \
     --notes "" \
     --accuracy_json "results/imnet_base/accuracy_IMNET_BASE_$SLURM_ID.json" \
-    --procedural_data "" \
-    --procedural_order "" \
+    --procedural_data "kdyck" \
+    --procedural_order "standard" \
+    --pr_notes "" \
+    --skip_norm true \
+    --random_blocks "0,1,2,3,4,5,6,7,8,9,10" \
+    --skip_load_blocks "11" \
+    --skip_load_block_attributes "norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc2.weight,mlp.fc1.bias,mlp.fc2.bias" \
     --stage_wise_metrics true \
     --detailed_metrics true \
     --slurm_id $SLURM_ID \

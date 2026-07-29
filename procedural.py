@@ -26,8 +26,10 @@ from models.vitp import VitProcedural
 from kdyck.kdyck_generation import *
 from kdyck.utils import *
 from kdyck.kdyck_dataset import *
-from procedural_data.repeat_dataset import *
+# from procedural_data.repeat_dataset import *
+import utils2
 import utils
+from engine import *
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["TORCH_NCCL_ENABLE_MONITORING"] = "0"
@@ -127,7 +129,7 @@ class Trainer:
 
         if self.args.initialize:
             state_dict = torch.load(self.args.initialize, weights_only=False)["state"]
-            self.model.load_state_dict(state_dict)
+            self.vitp_model.model.load_state_dict(state_dict)
             print(f"Model initialized from {self.args.initialize}")
 
         total_params = sum(p.numel() for p in self.vitp_model.model.parameters())
@@ -183,9 +185,9 @@ class Trainer:
         if "kdyck" in self.args.procedural_data:
             self.dataset = KDyckDataset(self.args)
             self.mask_function = mask_kdyck_dataset
-        elif "repeat" in self.args.procedural_data:
-            self.dataset = RepeatDataset(self.args)
-            self.mask_function = mask_repeat_dataset
+        # elif "repeat" in self.args.procedural_data:
+        #     self.dataset = RepeatDataset(self.args)
+        #     self.mask_function = mask_repeat_dataset
         else:
             raise ValueError(f"Unknown procedural data type: {self.args.procedural_data}")
         self.sampler_train = torch.utils.data.DistributedSampler(
@@ -413,11 +415,8 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_steps", type=int, default=1000,
                         help="Number of warmup steps")
 
-    # Val 
-    # parser.add_argument("--test_dataset", type=str, default="kdyck/kdyck_dataset_test.npz",
-    #                     help="Path to test dataset")
-    # parser.add_argument("--val_batch_size", type=int, default=128,
-    #                     help="Batch size")
+    parser.add_argument('--visualise_output_path', default='', type=str,
+                        help='path to save visualisation outputs, empty for no saving')
 
     parser.add_argument('--wandb_entity_name', default='ayisharyhanadawood-universit-t-freiburg', type=str,
                         help="The name of the W&B entity where you're sending the new run.")
@@ -440,6 +439,13 @@ if __name__ == "__main__":
         
         trainer = Trainer(args)
         trainer.training()
+        # attention_visualise(
+        #     data_loader = trainer.loader,
+        #     model = trainer.vitp_model.module.model,
+        #     device = trainer.gpu_id,
+        #     args = args,
+        #     per_head = True,
+        # )
         trainer.run_stats.finish()
 
     finally:

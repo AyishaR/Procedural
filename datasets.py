@@ -7,8 +7,21 @@ from timm.data import create_transform
 import torch
 import torch.nn.functional as F
 import oxford_flowers_dataset, oxford_pets_dataset
+import numpy as np
+from spawrious.torch import get_spawrious_dataset
+from torch.utils.data import Dataset
 
-def build_dataset(is_train, args, transform_train=None):
+def build_dataset(is_train, args, transform_train=None, data_set_override=None, data_path_override=None):
+    if data_path_override is not None:
+        data_path = data_path_override
+    else:
+        data_path = args.data_path
+
+    if data_set_override is not None:
+        data_set = data_set_override
+    else:
+        data_set = args.data_set
+
     if not transform_train:
         transform_train = is_train
     transform = build_transform(transform_train, args)
@@ -24,60 +37,77 @@ def build_dataset(is_train, args, transform_train=None):
             print(t)
     print("---------------------------")
 
-    if args.data_set == 'CIFAR10':
-        dataset = datasets.CIFAR10(args.data_path, train=is_train, download=True, transform=transform)
+    if data_set == 'CIFAR10':
+        dataset = datasets.CIFAR10(data_path, train=is_train, download=True, transform=transform)
         nb_classes = 10
-    elif args.data_set == 'CIFAR100':
-        dataset = datasets.CIFAR100(args.data_path, train=is_train, download=True, transform=transform)
+    elif data_set == 'CIFAR100':
+        dataset = datasets.CIFAR100(data_path, train=is_train, download=True, transform=transform)
         nb_classes = 100
-    elif args.data_set == 'IMNET':
-        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+    elif data_set == 'IMNET':
+        root = os.path.join(data_path, 'train' if is_train else 'val')
         dataset = datasets.ImageFolder(root, transform=transform)
         nb_classes = 1000
-    elif args.data_set == 'IMNET100':
-        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+    elif data_set == 'IMNET100':
+        root = os.path.join(data_path, 'train' if is_train else 'val')
         dataset = datasets.ImageFolder(root, transform=transform)
         nb_classes = 100
-    elif args.data_set == 'IMNET100_test':
-        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+    elif data_set == 'IMNET100_test':
+        root = os.path.join(data_path, 'train' if is_train else 'val')
         dataset = ImageFolderWithPaths(root, transform=transform)
         nb_classes = 100
-    elif args.data_set == 'IMNET_EVAL':
-        root = os.path.join(args.data_path, 'train' if is_train else 'val')
+    elif data_set == 'IMNET_EVAL':
+        root = os.path.join(data_path, 'train' if is_train else 'val')
         dataset = datasets.ImageFolder(root, transform=transform)
         nb_classes = 100
-    elif args.data_set == "flowers":
-        dataset = oxford_flowers_dataset.Flowers(root=args.data_path, 
+    # elif data_set == 'RANDOM_LABEL':
+    #     root = os.path.join(data_path, 'train' if is_train else 'val')
+    #     dataset = ImageFolderWithFixedRandomLabel(root, transform=transform, seed=args.seed)
+    #     nb_classes = 100
+    # elif data_set == 'GAUSSIAN_IMNET100':
+    #     root = os.path.join(data_path, 'train' if is_train else 'val')
+    #     dataset = datasets.ImageFolder(root, transform=transform)
+    #     nb_classes = 100
+    # elif data_set.startswith("spawrious_"):
+    #     spawrious = get_spawrious_dataset(dataset_name=data_set.replace("spawrious_", ""), root_dir=data_path)
+    #     if is_train:
+    #         dataset = spawrious.get_train_dataset()
+    #         # dataset = TransformDataset(dataset, transform=transform)
+    #     else:
+    #         dataset = spawrious.get_test_dataset()
+    #         # dataset = TransformDataset(dataset, transform=transform)
+    #     nb_classes = 4
+    elif data_set == "flowers":
+        dataset = oxford_flowers_dataset.Flowers(root=data_path, 
                                      train=is_train,
                                      download=False,
                                      transform=transform)
         nb_classes = 102
-    elif args.data_set == "pets":
-        dataset = oxford_pets_dataset.Pets(root=args.data_path,
+    elif data_set == "pets":
+        dataset = oxford_pets_dataset.Pets(root=data_path,
                                      train=is_train,
                                      download=True,
                                      transform=transform)
         nb_classes = 37
-    elif args.data_set == "stl10":
+    elif data_set == "stl10":
         if is_train:
-            dataset = datasets.STL10(root=args.data_path,
+            dataset = datasets.STL10(root=data_path,
                                          split='train',
                                          download=True,
                                          transform=transform)
         else:
-            dataset = datasets.STL10(root=args.data_path,
+            dataset = datasets.STL10(root=data_path,
                                      split='test',
                                      download=True,
                                      transform=transform)
         nb_classes = 10
-    elif args.data_set == "food101":
+    elif data_set == "food101":
         if is_train:
-            dataset = datasets.Food101(root=args.data_path,
+            dataset = datasets.Food101(root=data_path,
                                          split='train',
                                          download=True,
                                          transform=transform)
         else:
-            dataset = datasets.Food101(root=args.data_path,
+            dataset = datasets.Food101(root=data_path,
                                      split='test',
                                      download=True,
                                      transform=transform)
@@ -168,3 +198,41 @@ class ImageFolderWithPaths(datasets.ImageFolder):
         mask_patch = F.max_pool2d(mask_original.float(), kernel_size=16, stride=16)
         
         return img, label, mask_original, mask_patch, name
+
+class ImageFolderWithFixedRandomLabel(datasets.ImageFolder):
+    def __init__(self, root, transform=None, target_transform=None, seed=42):
+        super().__init__(root=root, transform=transform, target_transform=target_transform)
+        rng = np.random.default_rng(seed)
+        self.random_labels = rng.integers(
+            low=len(self.classes),
+            high=None,
+            size=len(self.samples),
+            dtype=np.int64
+        )
+        print(f"[INFO] Sample random label - first 20 labels: {self.random_labels[:20]}")
+
+    def __getitem__(self, index):
+        sample, _ = super().__getitem__(index)
+        target = int(self.random_labels[index])
+
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+
+        return sample, target
+
+class TransformDataset(Dataset):
+    def __init__(self, dataset, transform=None):
+        self.dataset = dataset
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        batch = self.dataset[idx]
+        x, y = batch[0], batch[1]
+        if self.transform is not None:
+            if not isinstance(x, Image.Image):
+                x = transforms.ToPILImage()(x)
+            x = self.transform(x)
+        return x, y

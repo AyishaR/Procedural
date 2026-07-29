@@ -10,6 +10,7 @@ import os
 import pickle
 import torch.distributed as dist
 import random
+import types
 from pathlib import Path
 
 from timm.data.mixup import Mixup
@@ -167,6 +168,7 @@ def get_args_parser():
     # * Finetuning params
     parser.add_argument('--initialize', default='',
                         help='initialize from a model file')
+    parser.add_argument('--initialize_as_pr', type=str2bool, default=True)
     parser.add_argument('--head_init_scale', default=1.0, type=float,
                         help='classifier head initial scale, typically adjusted in fine-tuning')
     parser.add_argument('--model_key', default='model|module|model_state_dict|state|model_state', type=str,
@@ -329,8 +331,24 @@ def get_args_parser():
     parser.add_argument('--layer_11_scale_attn_qk', type=float, default=1.0)
     parser.add_argument('--layer_11_scale_attn_v', type=float, default=1.0)
     parser.add_argument('--layer_11_scale_attn_proj', type=float, default=1.0)
+    parser.add_argument('--layer_11_target_qkvp_ln1_norm_ratio', type=float, default=-1.0)
     parser.add_argument('--layer_11_scale_method', type=str, default="")
     parser.add_argument('--init_method', type=str, default="default", help='Initialization method for the model weights. Options: "default", "match_L11_activations"')
+    parser.add_argument('--init_method_scaled_blocks', type=str, default="", help='Comma separated list of layer indices to apply scaled initialization, e.g. "0,1,2" to apply scaled initialization to the first 3 layers; supports "all" to apply scaled initialization to all layers and "" to not apply scaled initialization to any layers (default: "")')
+    parser.add_argument('--init_method_copied_blocks', type=str, default="", help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
+    parser.add_argument('--simultaneous_init_scaling', type=bool, default=False, help='Scale all blocks simultaneously during initialization, instead of scaling each block individually')
+    parser.add_argument('--post_hoc_act_norm_track', type=bool, default=False, help='Rerun old models to track act norms before training starts')
+
+    parser.add_argument('--weight_shuffle', type=str, default="",
+                        help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
+    parser.add_argument('--target_model_weight_shuffle', type=str, default="",
+                        help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
+
+    parser.add_argument('--attention_residual_scaling', type=str, default="",
+                        help='format - <layer_number>[<scale_ratio>];, e.g. "0[0.5];2[0.5]" to scale residuals in the specified layers by the specified ratios')
+
+    parser.add_argument('--attention_out_scaling', type=str, default="",
+                        help='format - <layer_number>[<scale_ratio>];, e.g. "0[0.5];2[0.5]" to scale residuals in the specified layers by the specified ratios')
 
     return parser
 
@@ -380,7 +398,8 @@ def main(args):
     else:
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
-    if global_rank == 0 and args.log_dir is not None:
+    # if global_rank == 0 and args.log_dir is not None:
+    if args.log_dir is not None:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = utils.TensorboardLogger(log_dir=args.log_dir)
     else:
@@ -470,6 +489,61 @@ def main(args):
             segment_names = segment.split("[")[1].split("]")[0].split(",")
             args.skip_attn_segments[layer_num] = segment_names
 
+    if args.weight_shuffle == "":
+        args.weight_shuffle = {}
+    else:
+        segments = args.weight_shuffle.split(";")
+        args.weight_shuffle = {}
+        for segment in segments:
+            layer_num = int(segment.split("[")[0])
+            segment_names = segment.split("[")[1].split("]")[0].split(",")
+            args.weight_shuffle[layer_num] = segment_names
+
+    if args.target_model_weight_shuffle == "":
+        args.target_model_weight_shuffle = {}
+    else:
+        segments = args.target_model_weight_shuffle.split(";")
+        args.target_model_weight_shuffle = {}
+        for segment in segments:
+            layer_num = int(segment.split("[")[0])
+            segment_names = segment.split("[")[1].split("]")[0].split(",")
+            args.target_model_weight_shuffle[layer_num] = segment_names
+
+    if args.init_method_copied_blocks == "":
+        args.init_method_copied_blocks = {}
+    else:
+        segments = args.init_method_copied_blocks.split(";")
+        args.init_method_copied_blocks = {}
+        for segment in segments:
+            layer_num = int(segment.split("[")[0])
+            segment_names = segment.split("[")[1].split("]")[0].split(",")
+            args.init_method_copied_blocks[layer_num] = segment_names
+
+    if args.attention_residual_scaling == "":
+        args.attention_residual_scaling = {}
+    else:
+        segments = args.attention_residual_scaling.split(";")
+        args.attention_residual_scaling = {}
+        for segment in segments:
+            layer_num = int(segment.split("[")[0])
+            scale_ratio = float(segment.split("[")[1].split("]")[0])
+            args.attention_residual_scaling[layer_num] = scale_ratio
+
+    if args.attention_out_scaling == "":
+        args.attention_out_scaling = {}
+    else:
+        segments = args.attention_out_scaling.split(";")
+        args.attention_out_scaling = {}
+        for segment in segments:
+            layer_num = int(segment.split("[")[0])
+            scale_ratio = float(segment.split("[")[1].split("]")[0])
+            args.attention_out_scaling[layer_num] = scale_ratio
+
+    if args.init_method_scaled_blocks == "":
+        args.init_method_scaled_blocks = []
+    else:
+        args.init_method_scaled_blocks = [int(x) for x in args.init_method_scaled_blocks.split(",")]
+
     for block in model.blocks:
         block.attn.fused_attn = False
 
@@ -482,7 +556,8 @@ def main(args):
             device = device,
             model = model
         )
-    elif args.init_method == "upscale_random_match_L11_attn_norms":
+    # elif args.init_method in ["upscale_random_match_L11_attn_norms", "upscale_random_match_L11_attn_delta_norms"]:
+    elif "upscale_random" in args.init_method:
         model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
             path = "",
             args = args,
@@ -497,7 +572,8 @@ def main(args):
             device = device,
             model = model_temp
         )
-    elif args.init_method == "downscale_pr_match_L11_attn_norms":
+    # elif args.init_method in ["downscale_pr_match_L11_attn_norms", "downscale_pr_match_L11_attn_delta_norms", "downscale_pr_match_attn_norms", "downscale_pr_match_attn_delta_norms"]:
+    elif "downscale_pr" in args.init_method:
         target_model_without_ddp = utils.build_model(args)
         target_model_without_ddp.load_state_dict(model.state_dict())
         _, target_model_without_ddp, _ = utils.pr_load_model(
@@ -506,6 +582,31 @@ def main(args):
             device = device,
             model = target_model_without_ddp
         )
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model
+        )
+    # elif args.init_method in ["upscale_pr_match_L11_attn_norms", "upscale_pr_match_L11_attn_delta_norms", "upscale_pr_match_attn_norms", "upscale_pr_match_attn_delta_norms"]:
+    elif "upscale_pr" in args.init_method:
+        target_model_without_ddp = utils.build_model(args)
+        target_model_without_ddp.load_state_dict(model.state_dict())
+        _, target_model_without_ddp, _ = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = target_model_without_ddp
+        )
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model
+        )
+    elif args.init_method == "match_target_qkvp_ln1_norm_ratio":
+        if args.layer_11_target_qkvp_ln1_norm_ratio < 0:
+            raise ValueError("layer_11_target_qkvp_ln1_norm_ratio must be set to a positive float value when using match_target_qkvp_ln1_norm_ratio init method")
         model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
             path = args.initialize,
             args = args,
@@ -653,9 +754,12 @@ def main(args):
         stats = attention_analyse_final(data_loader_val, device, args=args, classes=classes)
         return stats
 
-    utils.auto_load_model(
-        args=args, model=model, model_without_ddp=model_without_ddp,
-        optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
+    if not args.post_hoc_act_norm_track:
+        utils.auto_load_model(
+            args=args, model=model, model_without_ddp=model_without_ddp,
+            optimizer=optimizer, loss_scaler=loss_scaler, model_ema=model_ema)
+    else:
+        print(f"Post-hoc act norm tracking mode, start_epoch={args.start_epoch}")
 
     if args.eval:
         print(f"Eval only mode")
@@ -676,7 +780,20 @@ def main(args):
         for npname, nplrs in custom_non_block_targets.items():
             wandb_logger.update_config(f"{npname}_scale", nplrs)
 
+    if len(args.attention_residual_scaling)>0 or len(args.attention_out_scaling)>0:
+        for layer_num in range(len(model_without_ddp.blocks)):
+            block_item = model_without_ddp.blocks[layer_num]
+            block_item.attn_res_scale = args.attention_residual_scaling.get(layer_num, 1.0)
+            block_item.attn_out_scale = args.attention_out_scaling.get(layer_num, 1.0)
+            block_item.forward = types.MethodType(utils.patched_last_block_forward, block_item)
+
     if args.start_epoch==0:
+        if len(args.weight_shuffle) > 0:
+            utils.shuffle_weights(model_without_ddp, args.weight_shuffle)
+
+        if len(args.target_model_weight_shuffle) > 0:
+            utils.shuffle_weights(target_model_without_ddp, args.target_model_weight_shuffle)
+
         if args.layer_11_scale_method != "":
             scale_weights = {
                 "norm1": args.layer_11_scale_ln,
@@ -684,55 +801,350 @@ def main(args):
                 "v": args.layer_11_scale_attn_v,
                 "proj": args.layer_11_scale_attn_proj
             }
-            utils.scale_layer_11_weights(model_without_ddp, args.layer_11_scale_method, scale_weights)
-            if args.model != "vit_base":
-                attention_residual_analysis(
-                    data_loader = data_loader_val,
-                    model = model_without_ddp,
+            utils.scale_layer_weights(model_without_ddp, [11], scale_weights)
+
+        n = len(dataset_train)
+        k = 5000
+        print(f"Using {k} samples from the training dataset for attention residual analysis", flush=True)
+
+        indices = list(range(n))
+        random.shuffle(indices)
+        subset_indices = indices[:k]
+
+        dataset_ref_loader = torch.utils.data.DataLoader(
+            dataset_train, sampler=torch.utils.data.SubsetRandomSampler(subset_indices),
+            batch_size=int(1.5 * args.batch_size),
+            num_workers=args.num_workers,
+            pin_memory=args.pin_mem,
+            drop_last=False
+        )
+
+        # loop through init_method_copied_blocks and copy the weights from the target model to the current model for the specified segments
+        if args.init_method_copied_blocks:
+            edited_weights = {}
+            target_model_weights = target_model_without_ddp.state_dict()
+            for block_idx, segments in args.init_method_copied_blocks.items():
+                for segment in segments:
+                    print(f"Copying weights for layer {block_idx} segment {segment} from target model to current model", flush=True)
+                    edited_weights[f"blocks.{block_idx}.{segment}"] = target_model_weights[f"blocks.{block_idx}.{segment}"]
+            utils.load_state_dict(model_without_ddp, edited_weights)
+            
+        if args.init_method in ["downscale_pr_match_attn_delta_norms", "upscale_random_match_attn_delta_norms", "upscale_pr_match_attn_delta_norms"]:
+            if utils.is_main_process():
+                target_stats = attention_residual_analysis(
+                    data_loader = dataset_ref_loader,
+                    model = target_model_without_ddp,
                     device = device,
-                    args = args
+                    args = args,
+                    save=True,
+                    filename="target_res_stats",
+                    layers_to_analyse = args.init_method_scaled_blocks,
+                    detailed=False
                 )
-        if args.init_method in ["downscale_pr_match_L11_attn_norms", "upscale_random_match_L11_attn_norms"]:
-            current_stats = attention_residual_analysis(
-                data_loader = data_loader_val,
+            else:
+                target_stats = {}
+            if args.simultaneous_init_scaling:
+                target_stats = broadcast_dict([target_stats], src=0)[0]
+
+                if utils.is_main_process():
+                    current_stats = attention_residual_analysis(
+                        data_loader = dataset_ref_loader,
+                        model = model_without_ddp,
+                        device = device,
+                        args = args,
+                        save=False,
+                        layers_to_analyse = args.init_method_scaled_blocks,
+                        detailed=False
+                    )
+                else:
+                    current_stats = {}
+                current_stats = broadcast_dict([current_stats], src=0)[0]
+
+                for block_idx in args.init_method_scaled_blocks:
+                    scale_sq = target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]/current_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
+                    print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
+                    scale = math.sqrt(scale_sq)
+                    print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
+                    scale_weights = {
+                        "norm1": 1.0,
+                        "qk": 1.0,
+                        "v": scale,
+                        "proj": scale
+                    }
+                    for s, sw in scale_weights.items():
+                        wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                    wandb_logger.update_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                    wandb_logger.update_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights)
+
+            else:    
+                for block_idx in args.init_method_scaled_blocks:
+                    if utils.is_main_process():
+                        current_stats = attention_residual_analysis(
+                            data_loader = dataset_ref_loader,
+                            model = model_without_ddp,
+                            device = device,
+                            args = args,
+                            save=False,
+                            layers_to_analyse = [block_idx],
+                            detailed=False
+                        )
+                        # current_stats = {}
+                        scale_sq = target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]/current_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
+                        print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
+                        scale = math.sqrt(scale_sq)
+                        print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
+                        scale_weights = {
+                            "norm1": 1.0,
+                            "qk": 1.0,
+                            "v": scale,
+                            "proj": scale
+                        }
+                        for s, sw in scale_weights.items():
+                            wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                        wandb_logger.update_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                        wandb_logger.update_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+
+                    else:
+                        scale_weights = {}
+                    torch.distributed.barrier()
+                    print(utils.get_rank(), f"Torch barrier: Scale weights for layer {block_idx}: {scale_weights}", flush=True)
+
+                    scale_weights = broadcast_dict([scale_weights], src=0)[0]
+                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights) 
+        
+        if args.init_method in ["downscale_pr_match_mlp_delta_norms", "upscale_random_match_mlp_delta_norms", "upscale_pr_match_mlp_delta_norms"]:
+            if utils.is_main_process():
+                target_stats = attention_residual_analysis(
+                    data_loader = dataset_ref_loader,
+                    model = target_model_without_ddp,
+                    device = device,
+                    args = args,
+                    save=True,
+                    filename="target_res_stats",
+                    layers_to_analyse = args.init_method_scaled_blocks,
+                    detailed=False
+
+                )
+            else:
+                target_stats = {}
+            if args.simultaneous_init_scaling:
+                target_stats = broadcast_dict([target_stats], src=0)[0]
+
+                if utils.is_main_process():
+                    current_stats = attention_residual_analysis(
+                        data_loader = dataset_ref_loader,
+                        model = model_without_ddp,
+                        device = device,
+                        args = args,
+                        save=False,
+                        layers_to_analyse = args.init_method_scaled_blocks,
+                        detailed=False
+                    )
+                else:
+                    current_stats = {}
+                current_stats = broadcast_dict([current_stats], src=0)[0]
+
+                for block_idx in args.init_method_scaled_blocks:
+                    scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
+                    print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
+                    scale = math.sqrt(scale_sq)
+                    print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
+                    scale_weights = {
+                        "norm2": 1.0,
+                        "fc1": 1.0,
+                        "fc2": scale_sq
+                    }
+
+                    for s, sw in scale_weights.items():
+                        wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                    wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                    wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights)
+
+            else:    
+                for block_idx in args.init_method_scaled_blocks:
+                    if utils.is_main_process():
+                        current_stats = attention_residual_analysis(
+                            data_loader = dataset_ref_loader,
+                            model = model_without_ddp,
+                            device = device,
+                            args = args,
+                            save=False,
+                            layers_to_analyse = [block_idx],
+                            detailed=False
+                        )
+                        # current_stats = {}
+                        scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
+                        print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
+                        scale = math.sqrt(scale_sq)
+                        print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
+                        scale_weights = {
+                            "norm2": 1.0,
+                            "fc1": 1.0,
+                            "fc2": scale_sq
+                        }
+
+                        for s, sw in scale_weights.items():
+                            wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                        wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                        wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+
+                    else:
+                        scale_weights = {}
+                    torch.distributed.barrier()
+                    print(utils.get_rank(), f"Torch barrier: Scale weights for layer {block_idx}: {scale_weights}", flush=True)
+
+                    scale_weights = broadcast_dict([scale_weights], src=0)[0]
+                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights) 
+    
+        if args.init_method in ["downscale_pr_match_delta_norms", "upscale_random_match_delta_norms", "upscale_pr_match_delta_norms"]:
+            if utils.is_main_process():
+                target_stats = attention_residual_analysis(
+                    data_loader = dataset_ref_loader,
+                    model = target_model_without_ddp,
+                    device = device,
+                    args = args,
+                    save=True,
+                    filename="target_res_stats",
+                    layers_to_analyse = args.init_method_scaled_blocks,
+                    detailed=False
+                )
+            else:
+                target_stats = {}
+            if args.simultaneous_init_scaling:
+                target_stats = broadcast_dict([target_stats], src=0)[0]
+
+                if utils.is_main_process():
+                    current_stats = attention_residual_analysis(
+                        data_loader = dataset_ref_loader,
+                        model = model_without_ddp,
+                        device = device,
+                        args = args,
+                        save=False,
+                        layers_to_analyse = args.init_method_scaled_blocks,
+                        detailed=False
+                    )
+                else:
+                    current_stats = {}
+                current_stats = broadcast_dict([current_stats], src=0)[0]
+
+                for block_idx in args.init_method_scaled_blocks:
+                    for sub_idx in ["attn", "mlp"]:
+                        if sub_idx== "attn": # attention
+                            scale_sq = target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]/current_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
+                            print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
+                            scale = math.sqrt(scale_sq)
+                            print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
+                            scale_weights = {
+                                "norm1": 1.0,
+                                "qk": 1.0,
+                                "v": scale,
+                                "proj": scale
+                            }
+                            for s, sw in scale_weights.items():
+                                wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                            wandb_logger.update_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                            wandb_logger.update_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+
+                        elif sub_idx == "mlp": # mlp
+                            scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
+                            print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
+                            scale = math.sqrt(scale_sq)
+                            print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
+                            scale_weights = {
+                                "norm2": 1.0,
+                                "fc1": 1.0,
+                                "fc2": scale_sq
+                            }
+                            for s, sw in scale_weights.items():
+                                wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                            wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                            wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+
+                        utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights)
+
+            else:    
+                for block_idx in args.init_method_scaled_blocks:
+                    for sub_idx in ["attn", "mlp"]:
+                        if utils.is_main_process():
+                            current_stats = attention_residual_analysis(
+                                data_loader = dataset_ref_loader,
+                                model = model_without_ddp,
+                                device = device,
+                                args = args,
+                                save=False,
+                                layers_to_analyse = [block_idx],
+                                detailed=False
+                            )
+                            # current_stats = {}
+                            if sub_idx== "attn": # attention
+                                scale_sq = target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]/current_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
+                                print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
+                                scale = math.sqrt(scale_sq)
+                                print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
+                                scale_weights = {
+                                    "norm1": 1.0,
+                                    "qk": 1.0,
+                                    "v": scale,
+                                    "proj": scale
+                                }
+                                for s, sw in scale_weights.items():
+                                    wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                                wandb_logger.update_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                                wandb_logger.update_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                            elif sub_idx == "mlp": # mlp
+                                scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
+                                print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
+                                scale = math.sqrt(scale_sq)
+                                print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
+
+                                scale_weights = {
+                                    "norm2": 1.0,
+                                    "fc1": 1.0,
+                                    "fc2": scale_sq
+                                }
+                                for s, sw in scale_weights.items():
+                                    wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                                wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                                wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+
+                        else:
+                            scale_weights = {}
+
+                        torch.distributed.barrier()
+                        print(utils.get_rank(), f"Torch barrier: Scale weights for layer {block_idx}: {scale_weights}", flush=True)
+
+                        scale_weights = broadcast_dict([scale_weights], src=0)[0]
+                        utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights) 
+
+        print("Completed initialization and scaling of weights based on attention residual analysis")
+        if args.model != "vit_base":
+            updated_stats = attention_residual_analysis(
+                data_loader = dataset_ref_loader,
                 model = model_without_ddp,
                 device = device,
                 args = args,
-                save=False
+                layers_to_analyse = None,
+                filename="final_res_stats",
+                detailed=False
             )
-            # current_stats = {}
-            target_stats = attention_residual_analysis(
-                data_loader = data_loader_val,
-                model = target_model_without_ddp,
-                device = device,
-                args = args,
-                save=False
-            )
-            scale_sq = target_stats[11]["norm_ratio_qkvp1_ln1_mean"]/current_stats[11]["norm_ratio_qkvp1_ln1_mean"]
-            print(f"Scale squared for layer 11 qkvp1 norm ratio: {scale_sq}", flush=True)
-            scale = math.sqrt(scale_sq)
-            print(f"Scale for layer 11 qkvp1 norm ratio: {scale}", flush=True)
-            scale_weights = {
-                "norm1": 1.0,
-                "qk": 1.0,
-                "v": scale,
-                "proj": scale
-            }
-            for s, sw in scale_weights.items():
-                wandb_logger.update_config(f"calculated_layer_11_scale_{s}", sw)
-            wandb_logger.update_config(f"current_qkvp_ln1_norm_ratio", current_stats[11]["norm_ratio_qkvp1_ln1_mean"])
-            wandb_logger.update_config(f"target_qkvp_ln1_norm_ratio", target_stats[11]["norm_ratio_qkvp1_ln1_mean"])
+            for block_idx in range(len(model_without_ddp.blocks)):
+                wandb_logger.update_config(f"final_layer_{block_idx}_attn_delta_in_norm_ratio", updated_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                wandb_logger.update_config(f"final_layer_{block_idx}_mlp_delta_in_norm_ratio", updated_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                # wandb_logger.update_config(f"final_attn_delta_in_norm_ratio", updated_stats[11]["norm_ratio_attn_delta_in_mean"])
+        print("Custom model analysis before training")
+        model_analyse(
+            model=model_without_ddp,
+            data_loader=data_loader_val,
+            device=device,
+            epoch=None,
+            args=args,
+            prefix="custom_",
+            wandb_logger=wandb_logger,
+        )
 
-            utils.scale_layer_11_weights(model_without_ddp, "scale_weights_attn_blk_only", scale_weights)
-            if args.model != "vit_base":
-                updated_stats = attention_residual_analysis(
-                    data_loader = data_loader_val,
-                    model = model_without_ddp,
-                    device = device,
-                    args = args
-                )
-                wandb_logger.update_config(f"updated_qkvp_ln1_norm_ratio", updated_stats[11]["norm_ratio_qkvp1_ln1_mean"])
-
+    if args.post_hoc_act_norm_track: return
     # return
     
     print("Start training for %d epochs" % args.epochs)
