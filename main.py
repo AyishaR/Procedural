@@ -149,6 +149,7 @@ def get_args_parser():
                         help='Do not random erase first (clean) augmentation split')
 
     parser.add_argument('--accuracy_json', type=str, default='accuracy.json')
+    parser.add_argument('--grad_norms_json', type=str, default='grad_norms.json')
 
     # * Mixup params
     
@@ -350,6 +351,11 @@ def get_args_parser():
     parser.add_argument('--attention_out_scaling', type=str, default="",
                         help='format - <layer_number>[<scale_ratio>];, e.g. "0[0.5];2[0.5]" to scale residuals in the specified layers by the specified ratios')
 
+    parser.add_argument('--learning_rate_scaling', type=bool, default=False)
+    parser.add_argument('--learning_rate_scaling_params', type=str, default="",
+                        help='format = <param_name>[<scale_ratio>];, e.g. "blocks.11.attn.qkv.weight[0.5];blocks.11.attn.qkv.bias[0.5]" to scale learning rates for the specified parameters by the specified ratios')
+    
+
     return parser
 
 def main(args):
@@ -515,9 +521,26 @@ def main(args):
         segments = args.init_method_copied_blocks.split(";")
         args.init_method_copied_blocks = {}
         for segment in segments:
-            layer_num = int(segment.split("[")[0])
-            segment_names = segment.split("[")[1].split("]")[0].split(",")
-            args.init_method_copied_blocks[layer_num] = segment_names
+            if "[" in segment and "]" in segment:
+                layer_num = int(segment.split("[")[0])
+                segment_names = segment.split("[")[1].split("]")[0].split(",")
+                args.init_method_copied_blocks[layer_num] = segment_names
+            else:
+                layer_num = int(segment)
+                args.init_method_copied_blocks[layer_num] = [
+                    'norm1.weight',
+                    'norm1.bias',
+                    'attn.qkv.weight',
+                    'attn.qkv.bias',
+                    'attn.proj.weight',
+                    'attn.proj.bias',
+                    'norm2.weight',
+                    'norm2.bias',
+                    'mlp.fc1.weight',
+                    'mlp.fc2.weight',
+                    'mlp.fc1.bias',
+                    'mlp.fc2.bias'
+            ]
 
     if args.attention_residual_scaling == "":
         args.attention_residual_scaling = {}
@@ -543,6 +566,16 @@ def main(args):
         args.init_method_scaled_blocks = []
     else:
         args.init_method_scaled_blocks = [int(x) for x in args.init_method_scaled_blocks.split(",")]
+
+    if args.learning_rate_scaling_params == "":
+        args.learning_rate_scaling_params = {}
+    else:
+        segments = args.learning_rate_scaling_params.split(";")
+        args.learning_rate_scaling_params = {}
+        for segment in segments:
+            param_name = segment.split("[")[0]
+            scale_ratio = float(segment.split("[")[1].split("]")[0])
+            args.learning_rate_scaling_params[param_name] = scale_ratio
 
     for block in model.blocks:
         block.attn.fused_attn = False
@@ -898,7 +931,7 @@ def main(args):
                             "norm1": 1.0,
                             "qk": 1.0,
                             "v": scale,
-                            "proj": scale
+                            "proj": scale_sq
                         }
                         for s, sw in scale_weights.items():
                             wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
@@ -1170,6 +1203,17 @@ def main(args):
             custom_block_targets=custom_block_targets,
             custom_non_block_targets=custom_non_block_targets, args=args
         )
+        if utils.is_main_process():
+            parameter_norm["epoch"] = epoch
+            if args.grad_norms_json != "":
+                current_grad_norms_list = []
+                if os.path.exists(args.grad_norms_json):
+                    with open(args.grad_norms_json, 'r') as f:
+                        current_grad_norms_list = json.load(f)
+                current_grad_norms_list.append(parameter_norm)
+                with open(args.grad_norms_json, 'w') as f:
+                    json.dump(current_grad_norms_list, f, indent=4)
+
         if args.output_dir and args.save_ckpt:
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
                 utils.save_model(
@@ -1256,6 +1300,7 @@ def main(args):
 
         # if args.model == "vit_base" and (epoch+1)!=args.epochs and (epoch+1)%2 == 0:
         #     return
+        # if args.learning_rate_scaling: return 
 
     if wandb_logger and args.wandb_ckpt and args.save_ckpt and args.output_dir:
         wandb_logger.log_checkpoints()
