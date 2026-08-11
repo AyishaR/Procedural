@@ -56,6 +56,21 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
 
     optimizer.zero_grad()
 
+    if args.learning_rate_scaling:
+        print("Learning Rate Scaling: Logging target parameters for LR scaling analysis at step {} of epoch {}".format(0, epoch))
+        lr_target_params = {
+            11: {
+                # "v": model_without_ddp.blocks[11].attn.qkv.weight[(2*model_without_ddp.blocks[11].attn.qkv.weight.shape[0])//3:, :],
+                "proj": model_without_ddp.blocks[11].attn.proj.weight
+            }
+        }
+        print("LR Scaling: Target parameters logged for LR scaling analysis at step {} of epoch {}: {}".format(0, epoch, lr_target_params))
+        lr_final_stats = {}
+    else:
+        lr_target_params = None
+        lr_final_stats = None
+    update_steps_done = 0
+
     # for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
     for data_iter_step, batch_inputs in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         step = data_iter_step // update_freq
@@ -78,10 +93,13 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                     )
                 else:
                     for i, param_group in enumerate(optimizer.param_groups):
+                        print(f"Step {it}: Before update, param group {i} has lr: {param_group['lr']}, weight_decay: {param_group['weight_decay']}")
                         if lr_schedule_values is not None:
                             param_group["lr"] = lr_schedule_values[it] * param_group.get("lr_scale", 1)
+                            print(f"Step {it}: Updated lr for param group {i} to {param_group['lr']:.6f} with original {lr_schedule_values[it]:.6f} and scale {param_group.get('lr_scale', 1)}")
                         if wd_schedule_values is not None and param_group["weight_decay"] > 0:
-                            param_group["weight_decay"] = wd_schedule_values[it]
+                            param_group["weight_decay"] = wd_schedule_values[it] * param_group.get("wd_scale", 1)
+                            print(f"Step {it}: Updated weight decay for param group {i} to {param_group['weight_decay']:.6f} with original {wd_schedule_values[it]:.6f} and scale {param_group.get('wd_scale', 1)}")
 
         # samples = samples.to(device, non_blocking=True)
         # targets = targets.to(device, non_blocking=True)
@@ -106,16 +124,99 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
             assert math.isfinite(loss_value)
 
         if use_amp:
+            is_update_step = (data_iter_step + 1) % update_freq == 0
+            is_first_update = (update_steps_done == 10)
+            is_last_update = (update_steps_done == num_training_steps_per_epoch - 1)
+            log_lr_scaling_targets = is_update_step and (is_first_update or is_last_update)
+
+            if log_lr_scaling_targets and lr_target_params is not None:
+                print("LR Scaling: Logging target parameters for LR scaling analysis at step {} of epoch {}".format(data_iter_step, epoch))
+                tracking_data = {}
+                for layer, layer_param_dict in lr_target_params.items():
+                    tracking_data[layer] = {}
+                    for param_name, param in layer_param_dict.items():
+                        weight_t_minus_1 = param.detach().data.clone()
+                        lr_x, wd_x = 0, 0
+                        for group in optimizer.param_groups:
+                            if any(p is param for p in group['params']):
+                                print(f"Layer {layer} param {param_name} has lr: {group['lr']}, wd: {group['weight_decay']}")
+                                lr_x = group['lr']
+                                wd_x = group['weight_decay']
+                                break
+                        wd_delta = -lr_x * wd_x * weight_t_minus_1
+                        tracking_data[layer][param_name] = {
+                            "weight_t_minus_1": weight_t_minus_1,
+                            "lr": lr_x,
+                            "wd": wd_x,
+                            "wd_delta": wd_delta
+                        }
+                        print(f"LR Scaling: Tracking data collected for layer {layer} param {param_name}: lr={lr_x}, wd={wd_x}")
+                        if wandb_logger:
+                            wandb_logger._wandb.log({
+                                "LR Scaling/epoch": epoch,
+                                f"LR Scaling/layer{layer}_{param_name}_lr": lr_x,
+                                f"LR Scaling/layer{layer}_{param_name}_wd": wd_x
+                            }, commit=True)
+
             # this attribute is added by timm on one optimizer (adahessian)
             is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
             loss /= update_freq
             grad_norm, parameter_norm = loss_scaler(loss, optimizer, clip_grad=max_norm,
                                     parameters=model.named_parameters(), create_graph=is_second_order,
                                     update_grad=(data_iter_step + 1) % update_freq == 0)
+
+            if log_lr_scaling_targets and lr_target_params is not None:
+                for layer, layer_param_dict in lr_target_params.items():
+                    lr_final_stats[layer] = {}
+                    for param_name, param in layer_param_dict.items():
+                        if param_name not in tracking_data[layer]:
+                            continue
+                        data = tracking_data[layer][param_name]
+                        weight_t = param.detach().data.clone()
+
+                        # deltas
+                        total_delta = weight_t - data["weight_t_minus_1"]
+                        adam_delta = total_delta - data["wd_delta"]
+
+                        # l2 norms
+                        weight_norm = torch.linalg.norm(data["weight_t_minus_1"]).item()
+                        wd_delta_norm = torch.linalg.norm(data["wd_delta"]).item()
+                        adam_delta_norm = torch.linalg.norm(adam_delta).item()
+                        total_delta_norm = torch.linalg.norm(total_delta).item()
+
+                        # ratios
+                        wd_to_weight_ratio = wd_delta_norm / (weight_norm + 1e-8)
+                        adam_to_weight_ratio = adam_delta_norm / (weight_norm + 1e-8)
+                        total_to_weight_ratio = total_delta_norm / (weight_norm + 1e-8)
+
+                        print(f"Layer {layer} param {param_name}: weight_norm={weight_norm:.6f}, wd_delta_norm={wd_delta_norm:.6f}, adam_delta_norm={adam_delta_norm:.6f}, total_delta_norm={total_delta_norm:.6f}, wd_to_weight_ratio={wd_to_weight_ratio:.6f}, adam_to_weight_ratio={adam_to_weight_ratio:.6f}, total_to_weight_ratio={total_to_weight_ratio:.6f}")
+
+                        lr_final_stats[layer][param_name] = {
+                            "weight_norm": weight_norm,
+                            "wd_delta_norm": wd_delta_norm,
+                            "adam_delta_norm": adam_delta_norm,
+                            "total_delta_norm": total_delta_norm,
+                            "wd_to_weight_ratio": wd_to_weight_ratio,
+                            "adam_to_weight_ratio": adam_to_weight_ratio,
+                            "total_to_weight_ratio": total_to_weight_ratio
+                        }
+                        if wandb_logger:
+                            wandb_logger._wandb.log({
+                                "LR Scaling/epoch": epoch,
+                                f"LR Scaling/layer{layer}_{param_name}_weight_norm": weight_norm,
+                                f"LR Scaling/layer{layer}_{param_name}_wd_delta_norm": wd_delta_norm,
+                                f"LR Scaling/layer{layer}_{param_name}_adam_delta_norm": adam_delta_norm,
+                                f"LR Scaling/layer{layer}_{param_name}_total_delta_norm": total_delta_norm,
+                                f"LR Scaling/layer{layer}_{param_name}_wd_to_weight_ratio": wd_to_weight_ratio,
+                                f"LR Scaling/layer{layer}_{param_name}_adam_to_weight_ratio": adam_to_weight_ratio,
+                                f"LR Scaling/layer{layer}_{param_name}_total_to_weight_ratio": total_to_weight_ratio,
+                            }, commit=True)
             if (data_iter_step + 1) % update_freq == 0:
                 optimizer.zero_grad()
+                update_steps_done += 1
                 if model_ema is not None:
                     model_ema.update(model)
+
         else: # full precision
             loss /= update_freq
             loss.backward()
@@ -577,7 +678,7 @@ def attention_analyse_final(data_loader, device, args, classes=None, wandb_logge
             model=model_without_ddp,
             data_loader=data_loader,
             device=device,
-            epoch=None,
+            epoch=args.epochs-1,
             args=args,
             prefix="",
             shuffled_block_order=shuffled_block_order,

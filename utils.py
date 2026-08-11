@@ -397,7 +397,7 @@ class NativeScalerWithGradNormCount:
         self._scaler = torch.cuda.amp.GradScaler()
 
     @staticmethod
-    def get_layer_grad_norms(parameters, norm_type=2.0, group_levels=[None, 3]):
+    def get_layer_grad_norms(parameters, norm_type=2.0, group_levels=[None, 6]):
         group_fn = []
         for group_level in group_levels:
             if group_level is None:
@@ -405,25 +405,53 @@ class NativeScalerWithGradNormCount:
             else:
                 group_fn.append(lambda name: ".".join(name.split(".")[:group_level]))
 
-        total_grads = []
-        # device = parameters[0][1].grad.device
+        group_fn = list(set(group_fn))  # remove duplicates
+
+        # total_grads = []
+        # # device = parameters[0][1].grad.device
 
 
-        buckets = defaultdict(list)
-        for name, p in parameters:
-            if p.grad is not None:
-                grad_norm = p.grad.detach()
-                for fn in group_fn:
-                    buckets[fn(name)].append(grad_norm)
-                total_grads.append(grad_norm)
+        # buckets = defaultdict(list)
+        # for name, p in parameters:
+        #     if p.grad is not None:
+        #         grad_norm = p.grad.detach()
+        #         for fn in group_fn:
+        #             buckets[fn(name)].append(grad_norm)
+        #         total_grads.append(grad_norm)
                 
         # device = parameters[0][1].grad.device
+        expanded_grads = []
+        for name, p in parameters:
+            if p.grad is not None:
+                grad = p.grad.detach()
+                
+                # if 'qkv.weight' in name or 'qkv.bias' in name:
+                if 'qkv' in name:
+                    # Split the gradient into 3 equal chunks along the out_features dimension
+                    expanded_grads.append((name, grad))
+                    q_grad, k_grad, v_grad = torch.chunk(grad, 3, dim=0)
+                    
+                    # Rename and store them separately
+                    base_name = name.replace('qkv', '{}')
+                    expanded_grads.append((base_name.format('q'), q_grad))
+                    expanded_grads.append((base_name.format('k'), k_grad))
+                    expanded_grads.append((base_name.format('v'), v_grad))
+                else:
+                    expanded_grads.append((name, grad))
+        # 2. CHANGED: Loop over our new `expanded_grads` list instead of `parameters`
+        buckets = defaultdict(list)
+        total_grads = []
+      
+        for name, grad_norm in expanded_grads:
+            for fn in group_fn:
+                buckets[fn(name)].append(grad_norm)
+            total_grads.append(grad_norm)
 
         layer_norms = {}
         if norm_type == inf:
             for layer, grads in buckets.items():
                 layer_norms[layer] = max([g.abs().max() for g in grads])
-            total_grad = max([g.abs().max() for g in grads])
+            total_grad = max([g.abs().max() for g in total_grads])
         else:
             for layer, grads in buckets.items():
                 layer_norms[layer] = torch.norm(torch.stack([torch.norm(g, norm_type) for g in grads]), norm_type)
