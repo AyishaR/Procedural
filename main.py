@@ -148,8 +148,8 @@ def get_args_parser():
     parser.add_argument('--resplit', type=str2bool, default=False,
                         help='Do not random erase first (clean) augmentation split')
 
-    parser.add_argument('--accuracy_json', type=str, default='accuracy.json')
-    parser.add_argument('--grad_norms_json', type=str, default='grad_norms.json')
+    parser.add_argument('--accuracy_json', type=str, default='')
+    parser.add_argument('--grad_norms_json', type=str, default='')
 
     # * Mixup params
     
@@ -336,6 +336,7 @@ def get_args_parser():
     parser.add_argument('--layer_11_scale_method', type=str, default="")
     parser.add_argument('--init_method', type=str, default="default", help='Initialization method for the model weights. Options: "default", "match_L11_activations"')
     parser.add_argument('--init_method_scaled_blocks', type=str, default="", help='Comma separated list of layer indices to apply scaled initialization, e.g. "0,1,2" to apply scaled initialization to the first 3 layers; supports "all" to apply scaled initialization to all layers and "" to not apply scaled initialization to any layers (default: "")')
+    parser.add_argument('--init_method_scaled_attributes', type=str, default="", help='Comma separated list of layer indices to apply scaled initialization, e.g. "0,1,2" to apply scaled initialization to the first 3 layers; supports "all" to apply scaled initialization to all layers and "" to not apply scaled initialization to any layers (default: "")')
     parser.add_argument('--init_method_copied_blocks', type=str, default="", help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
     parser.add_argument('--simultaneous_init_scaling', type=bool, default=False, help='Scale all blocks simultaneously during initialization, instead of scaling each block individually')
     parser.add_argument('--post_hoc_act_norm_track', type=bool, default=False, help='Rerun old models to track act norms before training starts')
@@ -562,10 +563,24 @@ def main(args):
             scale_ratio = float(segment.split("[")[1].split("]")[0])
             args.attention_out_scaling[layer_num] = scale_ratio
 
+    attn_scaling_elements_count, mlp_scaling_elements_count = 0, 0
     if args.init_method_scaled_blocks == "":
         args.init_method_scaled_blocks = []
     else:
         args.init_method_scaled_blocks = [int(x) for x in args.init_method_scaled_blocks.split(",")]
+        if args.init_method_scaled_attributes == "":
+            args.init_method_scaled_attributes = ["v", "proj","fc2"]
+        else:
+            args.init_method_scaled_attributes =args.init_method_scaled_attributes.split(",")
+        attn_scaling_elements = set(["norm1", "qk", "v", "proj"]).intersection(set(args.init_method_scaled_attributes))
+        attn_scaling_elements = set(["qkv" if x in ["qk", "v"] else x for x in attn_scaling_elements])
+        attn_scaling_elements_count = len(attn_scaling_elements)
+
+        mlp_scaling_elements = set(["norm2", "fc1", "fc2"]).intersection(set(args.init_method_scaled_attributes))
+        mlp_scaling_elements_count = len(mlp_scaling_elements)
+
+        print(f"Attention scaling elements: {attn_scaling_elements} (count: {attn_scaling_elements_count})")
+        print(f"MLP scaling elements: {mlp_scaling_elements} (count: {mlp_scaling_elements_count})")
 
     if args.learning_rate_scaling_params == "":
         args.learning_rate_scaling_params = {}
@@ -896,13 +911,14 @@ def main(args):
                 for block_idx in args.init_method_scaled_blocks:
                     scale_sq = target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]/current_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
                     print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
-                    scale = math.sqrt(scale_sq)
+                    # scale = math.sqrt(scale_sq)
+                    scale = scale_sq ** (1/attn_scaling_elements_count) if attn_scaling_elements_count > 0 else 1.0
                     print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
                     scale_weights = {
-                        "norm1": 1.0,
-                        "qk": 1.0,
-                        "v": scale,
-                        "proj": scale
+                        "norm1": scale if "norm1" in args.init_method_scaled_attributes else 1.0,
+                        "qk": scale if "qk" in args.init_method_scaled_attributes else 1.0,
+                        "v": scale if "v" in args.init_method_scaled_attributes else 1.0,
+                        "proj": scale if "proj" in args.init_method_scaled_attributes else 1.0
                     }
                     for s, sw in scale_weights.items():
                         wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
@@ -925,13 +941,14 @@ def main(args):
                         # current_stats = {}
                         scale_sq = target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]/current_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
                         print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
-                        scale = math.sqrt(scale_sq)
+                        # scale = math.sqrt(scale_sq)
+                        scale = scale_sq ** (1/attn_scaling_elements_count) if attn_scaling_elements_count > 0 else 1.0
                         print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
                         scale_weights = {
-                            "norm1": 1.0,
-                            "qk": 1.0,
-                            "v": scale,
-                            "proj": scale_sq
+                            "norm1": scale if "norm1" in args.init_method_scaled_attributes else 1.0,
+                            "qk": scale if "qk" in args.init_method_scaled_attributes else 1.0,
+                            "v": scale if "v" in args.init_method_scaled_attributes else 1.0,
+                            "proj": scale if "proj" in args.init_method_scaled_attributes else 1.0
                         }
                         for s, sw in scale_weights.items():
                             wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
@@ -981,12 +998,13 @@ def main(args):
                 for block_idx in args.init_method_scaled_blocks:
                     scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
                     print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
-                    scale = math.sqrt(scale_sq)
+                    # scale = math.sqrt(scale_sq)
+                    scale = scale_sq ** (1/mlp_scaling_elements_count) if mlp_scaling_elements_count > 0 else 1.0
                     print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
                     scale_weights = {
-                        "norm2": 1.0,
-                        "fc1": 1.0,
-                        "fc2": scale_sq
+                        "norm2": scale if "norm2" in args.init_method_scaled_attributes else 1.0,
+                        "fc1": scale if "fc1" in args.init_method_scaled_attributes else 1.0,
+                        "fc2": scale if "fc2" in args.init_method_scaled_attributes else 1.0
                     }
 
                     for s, sw in scale_weights.items():
@@ -1010,12 +1028,13 @@ def main(args):
                         # current_stats = {}
                         scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
                         print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
-                        scale = math.sqrt(scale_sq)
+                        # scale = math.sqrt(scale_sq)
+                        scale = scale_sq ** (1/mlp_scaling_elements_count) if mlp_scaling_elements_count > 0 else 1.0
                         print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
                         scale_weights = {
-                            "norm2": 1.0,
-                            "fc1": 1.0,
-                            "fc2": scale_sq
+                            "norm2": scale if "norm2" in args.init_method_scaled_attributes else 1.0,
+                            "fc1": scale if "fc1" in args.init_method_scaled_attributes else 1.0,
+                            "fc2": scale if "fc2" in args.init_method_scaled_attributes else 1.0
                         }
 
                         for s, sw in scale_weights.items():
@@ -1067,13 +1086,14 @@ def main(args):
                         if sub_idx== "attn": # attention
                             scale_sq = target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]/current_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
                             print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
-                            scale = math.sqrt(scale_sq)
+                            # scale = math.sqrt(scale_sq)
+                            scale = scale_sq ** (1/attn_scaling_elements_count) if attn_scaling_elements_count > 0 else 1.0
                             print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
                             scale_weights = {
-                                "norm1": 1.0,
-                                "qk": 1.0,
-                                "v": scale,
-                                "proj": scale
+                                "norm1": scale if "norm1" in args.init_method_scaled_attributes else 1.0,
+                                "qk": scale if "qk" in args.init_method_scaled_attributes else 1.0,
+                                "v": scale if "v" in args.init_method_scaled_attributes else 1.0,
+                                "proj": scale if "proj" in args.init_method_scaled_attributes else 1.0
                             }
                             for s, sw in scale_weights.items():
                                 wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
@@ -1083,12 +1103,13 @@ def main(args):
                         elif sub_idx == "mlp": # mlp
                             scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
                             print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
-                            scale = math.sqrt(scale_sq)
+                            # scale = math.sqrt(scale_sq)
+                            scale = scale_sq ** (1/mlp_scaling_elements_count) if mlp_scaling_elements_count > 0 else 1.0
                             print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
                             scale_weights = {
-                                "norm2": 1.0,
-                                "fc1": 1.0,
-                                "fc2": scale_sq
+                                "norm2": scale if "norm2" in args.init_method_scaled_attributes else 1.0,
+                                "fc1": scale if "fc1" in args.init_method_scaled_attributes else 1.0,
+                                "fc2": scale if "fc2" in args.init_method_scaled_attributes else 1.0
                             }
                             for s, sw in scale_weights.items():
                                 wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
@@ -1114,13 +1135,14 @@ def main(args):
                             if sub_idx== "attn": # attention
                                 scale_sq = target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]/current_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
                                 print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
-                                scale = math.sqrt(scale_sq)
+                                # scale = math.sqrt(scale_sq)
+                                scale = scale_sq ** (1/attn_scaling_elements_count) if attn_scaling_elements_count > 0 else 1.0
                                 print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
                                 scale_weights = {
-                                    "norm1": 1.0,
-                                    "qk": 1.0,
-                                    "v": scale,
-                                    "proj": scale
+                                    "norm1": scale if "norm1" in args.init_method_scaled_attributes else 1.0,
+                                    "qk": scale if "qk" in args.init_method_scaled_attributes else 1.0,
+                                    "v": scale if "v" in args.init_method_scaled_attributes else 1.0,
+                                    "proj": scale if "proj" in args.init_method_scaled_attributes else 1.0
                                 }
                                 for s, sw in scale_weights.items():
                                     wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
@@ -1129,13 +1151,14 @@ def main(args):
                             elif sub_idx == "mlp": # mlp
                                 scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
                                 print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
-                                scale = math.sqrt(scale_sq)
+                                # scale = math.sqrt(scale_sq)
+                                scale = scale_sq ** (1/mlp_scaling_elements_count) if mlp_scaling_elements_count > 0 else 1.0
                                 print(f"Scale for layer {block_idx} delta norm ratio: {scale}", flush=True)
 
                                 scale_weights = {
-                                    "norm2": 1.0,
-                                    "fc1": 1.0,
-                                    "fc2": scale_sq
+                                    "norm2": scale if "norm2" in args.init_method_scaled_attributes else 1.0,
+                                    "fc1": scale if "fc1" in args.init_method_scaled_attributes else 1.0,
+                                    "fc2": scale if "fc2" in args.init_method_scaled_attributes else 1.0
                                 }
                                 for s, sw in scale_weights.items():
                                     wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
