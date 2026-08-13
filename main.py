@@ -605,6 +605,67 @@ def main(args):
             device = device,
             model = model_temp
         )
+    elif args.init_method == "match_target_block_norms":
+        # Random model in which every tensor of args.init_method_scaled_blocks is rescaled
+        # to the norm of the corresponding tensor in the checkpoint. Directions stay random,
+        # so this isolates the per-block weight-norm profile from the learned structure.
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = "",
+            args = args,
+            device = device,
+            model = model
+        )
+        model_temp = utils.build_model(args)
+        model_temp.load_state_dict(model_without_ddp.state_dict())
+        _, target_model_without_ddp, _ = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model_temp
+        )
+        with torch.no_grad():
+            target_params = dict(target_model_without_ddp.named_parameters())
+            for name, p in model_without_ddp.named_parameters():
+                block_idx = None
+                if name.startswith("blocks."):
+                    try:
+                        block_idx = int(name.split(".")[1])
+                    except (IndexError, ValueError):
+                        block_idx = None
+                if block_idx is None or block_idx not in args.init_method_scaled_blocks:
+                    continue
+                target_p = target_params.get(name)
+                if target_p is None:
+                    continue
+                cur_norm = p.data.norm().item()
+                target_norm = target_p.data.norm().item()
+                # zero-init tensors (timm inits all Linear biases to 0) cannot be rescaled
+                if cur_norm <= 0 or target_norm <= 0:
+                    print(f"Skipping norm match for {name} (|W|={cur_norm:.4f}, target={target_norm:.4f})", flush=True)
+                    continue
+                p.data.mul_(target_norm / cur_norm)
+                print(f"Norm match {name}: {cur_norm:.4f} -> {target_norm:.4f} (x{target_norm/cur_norm:.4f})", flush=True)
+    elif "downscale_mixed" in args.init_method:
+        # target: random init, then the checkpoint loaded into every block except
+        # args.random_blocks, so target and model differ only in those blocks
+        target_model_without_ddp = utils.build_model(args)
+        target_model_without_ddp.load_state_dict(model.state_dict())
+        _, target_model_without_ddp, _ = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = target_model_without_ddp
+        )
+        # model: the checkpoint in all blocks
+        random_blocks = args.random_blocks
+        args.random_blocks = []
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model
+        )
+        args.random_blocks = random_blocks
     # elif args.init_method in ["downscale_pr_match_L11_attn_norms", "downscale_pr_match_L11_attn_delta_norms", "downscale_pr_match_attn_norms", "downscale_pr_match_attn_delta_norms"]:
     elif "downscale_pr" in args.init_method:
         target_model_without_ddp = utils.build_model(args)
@@ -862,7 +923,7 @@ def main(args):
                     edited_weights[f"blocks.{block_idx}.{segment}"] = target_model_weights[f"blocks.{block_idx}.{segment}"]
             utils.load_state_dict(model_without_ddp, edited_weights)
             
-        if args.init_method in ["downscale_pr_match_attn_delta_norms", "upscale_random_match_attn_delta_norms", "upscale_pr_match_attn_delta_norms"]:
+        if args.init_method in ["downscale_pr_match_attn_delta_norms", "upscale_random_match_attn_delta_norms", "upscale_pr_match_attn_delta_norms", "downscale_mixed_match_attn_delta_norms"]:
             if utils.is_main_process():
                 target_stats = attention_residual_analysis(
                     data_loader = dataset_ref_loader,
@@ -946,7 +1007,7 @@ def main(args):
                     scale_weights = broadcast_dict([scale_weights], src=0)[0]
                     utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights) 
         
-        if args.init_method in ["downscale_pr_match_mlp_delta_norms", "upscale_random_match_mlp_delta_norms", "upscale_pr_match_mlp_delta_norms"]:
+        if args.init_method in ["downscale_pr_match_mlp_delta_norms", "upscale_random_match_mlp_delta_norms", "upscale_pr_match_mlp_delta_norms", "downscale_mixed_match_mlp_delta_norms"]:
             if utils.is_main_process():
                 target_stats = attention_residual_analysis(
                     data_loader = dataset_ref_loader,
@@ -1031,7 +1092,7 @@ def main(args):
                     scale_weights = broadcast_dict([scale_weights], src=0)[0]
                     utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights) 
     
-        if args.init_method in ["downscale_pr_match_delta_norms", "upscale_random_match_delta_norms", "upscale_pr_match_delta_norms"]:
+        if args.init_method in ["downscale_pr_match_delta_norms", "upscale_random_match_delta_norms", "upscale_pr_match_delta_norms", "downscale_mixed_match_delta_norms"]:
             if utils.is_main_process():
                 target_stats = attention_residual_analysis(
                     data_loader = dataset_ref_loader,
@@ -1152,7 +1213,8 @@ def main(args):
                         utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights) 
 
         print("Completed initialization and scaling of weights based on attention residual analysis")
-        if args.model != "vit_base":
+        # vit_base skips this during training for speed; post-hoc analysis jobs still need it
+        if args.model != "vit_base" or args.post_hoc_act_norm_track:
             updated_stats = attention_residual_analysis(
                 data_loader = dataset_ref_loader,
                 model = model_without_ddp,
