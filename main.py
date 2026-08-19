@@ -601,13 +601,23 @@ def main(args):
         segments = args.skip_attn_segments.split(";")
         args.skip_attn_segments = {}
         for segment in segments:
+            layer_num = int(segment.split("[")[0])
+            segment_names = segment.split("[")[1].split("]")[0].split(",")
+            args.skip_attn_segments[layer_num] = segment_names
+
+    if args.weight_shuffle == "":
+        args.weight_shuffle = {}
+    else:
+        segments = args.weight_shuffle.split(";")
+        args.weight_shuffle = {}
+        for segment in segments:
             if "[" in segment and "]" in segment:
                 layer_num = int(segment.split("[")[0])
                 segment_names = segment.split("[")[1].split("]")[0].split(",")
-                args.init_method_copied_blocks[layer_num] = segment_names
+                args.weight_shuffle[layer_num] = segment_names
             else:
                 layer_num = int(segment)
-                args.init_method_copied_blocks[layer_num] = [
+                args.weight_shuffle[layer_num] = [
                     'norm1.weight',
                     # 'norm1.bias',
                     'attn.qkv.weight',
@@ -622,25 +632,32 @@ def main(args):
                     # 'mlp.fc2.bias'
             ]
 
-    if args.weight_shuffle == "":
-        args.weight_shuffle = {}
-    else:
-        segments = args.weight_shuffle.split(";")
-        args.weight_shuffle = {}
-        for segment in segments:
-            layer_num = int(segment.split("[")[0])
-            segment_names = segment.split("[")[1].split("]")[0].split(",")
-            args.weight_shuffle[layer_num] = segment_names
-
     if args.target_model_weight_shuffle == "":
         args.target_model_weight_shuffle = {}
     else:
         segments = args.target_model_weight_shuffle.split(";")
         args.target_model_weight_shuffle = {}
         for segment in segments:
-            layer_num = int(segment.split("[")[0])
-            segment_names = segment.split("[")[1].split("]")[0].split(",")
-            args.target_model_weight_shuffle[layer_num] = segment_names
+            if "[" in segment and "]" in segment:
+                layer_num = int(segment.split("[")[0])
+                segment_names = segment.split("[")[1].split("]")[0].split(",")
+                args.target_model_weight_shuffle[layer_num] = segment_names
+            else:
+                layer_num = int(segment)
+                args.target_model_weight_shuffle[layer_num] = [
+                    'norm1.weight',
+                    # 'norm1.bias',
+                    'attn.qkv.weight',
+                    # 'attn.qkv.bias',
+                    'attn.proj.weight',
+                    # 'attn.proj.bias',
+                    'norm2.weight',
+                    # 'norm2.bias',
+                    'mlp.fc1.weight',
+                    'mlp.fc2.weight',
+                    # 'mlp.fc1.bias',
+                    # 'mlp.fc2.bias'
+            ]
 
     if args.init_method_copied_blocks == "":
         args.init_method_copied_blocks = {}
