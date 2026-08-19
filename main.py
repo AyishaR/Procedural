@@ -339,6 +339,7 @@ def get_args_parser():
     parser.add_argument('--init_method_scaled_attributes', type=str, default="", help='Comma separated list of layer indices to apply scaled initialization, e.g. "0,1,2" to apply scaled initialization to the first 3 layers; supports "all" to apply scaled initialization to all layers and "" to not apply scaled initialization to any layers (default: "")')
     parser.add_argument('--init_method_copied_blocks', type=str, default="", help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
     parser.add_argument('--simultaneous_init_scaling', type=bool, default=False, help='Scale all blocks simultaneously during initialization, instead of scaling each block individually')
+    parser.add_argument('--init_method_bias_scaling', type=bool, default=False, help='Scale bias too')
     parser.add_argument('--post_hoc_act_norm_track', type=bool, default=False, help='Rerun old models to track act norms before training starts')
 
     parser.add_argument('--weight_shuffle', type=str, default="",
@@ -492,9 +493,26 @@ def main(args):
         segments = args.skip_attn_segments.split(";")
         args.skip_attn_segments = {}
         for segment in segments:
-            layer_num = int(segment.split("[")[0])
-            segment_names = segment.split("[")[1].split("]")[0].split(",")
-            args.skip_attn_segments[layer_num] = segment_names
+            if "[" in segment and "]" in segment:
+                layer_num = int(segment.split("[")[0])
+                segment_names = segment.split("[")[1].split("]")[0].split(",")
+                args.init_method_copied_blocks[layer_num] = segment_names
+            else:
+                layer_num = int(segment)
+                args.init_method_copied_blocks[layer_num] = [
+                    'norm1.weight',
+                    # 'norm1.bias',
+                    'attn.qkv.weight',
+                    # 'attn.qkv.bias',
+                    'attn.proj.weight',
+                    # 'attn.proj.bias',
+                    'norm2.weight',
+                    # 'norm2.bias',
+                    'mlp.fc1.weight',
+                    'mlp.fc2.weight',
+                    # 'mlp.fc1.bias',
+                    # 'mlp.fc2.bias'
+            ]
 
     if args.weight_shuffle == "":
         args.weight_shuffle = {}
@@ -910,7 +928,7 @@ def main(args):
                 "v": args.layer_11_scale_attn_v,
                 "proj": args.layer_11_scale_attn_proj
             }
-            utils.scale_layer_weights(model_without_ddp, [11], scale_weights)
+            utils.scale_layer_weights(model_without_ddp, [11], scale_weights, args.init_method_bias_scaling)
 
         n = len(dataset_train)
         k = 5000
@@ -985,7 +1003,7 @@ def main(args):
                         wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
                     wandb_logger.update_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
                     wandb_logger.update_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
-                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights)
+                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
 
             else:    
                 for block_idx in args.init_method_scaled_blocks:
@@ -1022,7 +1040,7 @@ def main(args):
                     print(utils.get_rank(), f"Torch barrier: Scale weights for layer {block_idx}: {scale_weights}", flush=True)
 
                     scale_weights = broadcast_dict([scale_weights], src=0)[0]
-                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights) 
+                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling) 
         
         if args.init_method in ["downscale_pr_match_mlp_delta_norms", "upscale_random_match_mlp_delta_norms", "upscale_pr_match_mlp_delta_norms", "downscale_mixed_match_mlp_delta_norms"]:
             if utils.is_main_process():
@@ -1072,7 +1090,7 @@ def main(args):
                         wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
                     wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
                     wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
-                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights)
+                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
 
             else:    
                 for block_idx in args.init_method_scaled_blocks:
@@ -1109,7 +1127,7 @@ def main(args):
                     print(utils.get_rank(), f"Torch barrier: Scale weights for layer {block_idx}: {scale_weights}", flush=True)
 
                     scale_weights = broadcast_dict([scale_weights], src=0)[0]
-                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights) 
+                    utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling) 
     
         if args.init_method in ["downscale_pr_match_delta_norms", "upscale_random_match_delta_norms", "upscale_pr_match_delta_norms", "downscale_mixed_match_delta_norms"]:
             if utils.is_main_process():
@@ -1177,7 +1195,7 @@ def main(args):
                             wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
                             wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
 
-                        utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights)
+                        utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
 
             else:    
                 for block_idx in args.init_method_scaled_blocks:
@@ -1233,7 +1251,7 @@ def main(args):
                         print(utils.get_rank(), f"Torch barrier: Scale weights for layer {block_idx}: {scale_weights}", flush=True)
 
                         scale_weights = broadcast_dict([scale_weights], src=0)[0]
-                        utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights) 
+                        utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling) 
 
         print("Completed initialization and scaling of weights based on attention residual analysis")
         # vit_base skips this during training for speed; post-hoc analysis jobs still need it
@@ -1290,6 +1308,7 @@ def main(args):
         )
         if utils.is_main_process():
             parameter_norm["epoch"] = epoch
+            parameter_norm["seed"] = args.seed
             if args.grad_norms_json != "":
                 current_grad_norms_list = []
                 if os.path.exists(args.grad_norms_json):
@@ -1422,6 +1441,9 @@ if __name__ == '__main__':
         Path(args.accuracy_json).parent.mkdir(parents=True, exist_ok=True)
     elif args.accuracy_json and args.accuracy_json.endswith(".json"):
         Path(args.accuracy_json).parent.mkdir(parents=True, exist_ok=True)
+    if args.grad_norms_json == "":
+        existing_filename = args.accuracy_json.split("/")[-1]
+        args.grad_norms_json = args.accuracy_json.replace(existing_filename, "gn_"+existing_filename)
     main(args)
 
     if dist.is_initialized():

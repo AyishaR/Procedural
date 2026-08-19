@@ -1146,7 +1146,7 @@ def apply_layer_11_scale(model, init_value):
     model.blocks[11].ls1.gamma.data.fill_(init_value)
     model.blocks[11].ls2.gamma.data.fill_(init_value)
 
-def scale_layer_weights(model, layers, scale_factor):
+def scale_layer_weights(model, layers, scale_factor, init_method_bias_scaling=False):
     depth = len(model.blocks)
     for block_idx in layers:
         block = model.blocks[block_idx]
@@ -1167,6 +1167,24 @@ def scale_layer_weights(model, layers, scale_factor):
         block.norm2.weight.data *= scale_factor.get("norm2", 1.0)
         block.mlp.fc1.weight.data *= scale_factor.get("fc1", 1.0)
         block.mlp.fc2.weight.data *= scale_factor.get("fc2", 1.0)
+
+        if init_method_bias_scaling:
+            block.norm1.bias.data *= scale_factor.get("norm1", 1.0)
+            scale_qk = scale_factor.get("qk", 1.0)
+            scale_v = scale_factor.get("v", 1.0)
+            if scale_qk==scale_v:
+                block.attn.qkv.bias.data *= scale_qk
+            else:
+                total_dim = block.attn.qkv.bias.data.shape[0]
+                embed_dim = total_dim // 3
+                block.attn.qkv.bias.data[:embed_dim] *= scale_qk
+                block.attn.qkv.bias.data[embed_dim:2*embed_dim] *= scale_qk
+                block.attn.qkv.bias.data[2*embed_dim:3*embed_dim] *= scale_v
+            block.attn.proj.bias.data *= scale_factor.get("proj", 1.0)
+            
+            block.norm2.bias.data *= scale_factor.get("norm2", 1.0)
+            block.mlp.fc1.bias.data *= scale_factor.get("fc1", 1.0)
+            block.mlp.fc2.bias.data *= scale_factor.get("fc2", 1.0)
 
 def shuffle_weights(model, weight_shuffle_dict):
     for block_idx, shuffle_info in weight_shuffle_dict.items():

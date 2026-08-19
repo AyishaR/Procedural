@@ -93,13 +93,13 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                     )
                 else:
                     for i, param_group in enumerate(optimizer.param_groups):
-                        print(f"Step {it}: Before update, param group {i} has lr: {param_group['lr']}, weight_decay: {param_group['weight_decay']}")
+                        # print(f"Step {it}: Before update, param group {i} has lr: {param_group['lr']}, weight_decay: {param_group['weight_decay']}")
                         if lr_schedule_values is not None:
                             param_group["lr"] = lr_schedule_values[it] * param_group.get("lr_scale", 1)
-                            print(f"Step {it}: Updated lr for param group {i} to {param_group['lr']:.6f} with original {lr_schedule_values[it]:.6f} and scale {param_group.get('lr_scale', 1)}")
+                            # print(f"Step {it}: Updated lr for param group {i} to {param_group['lr']:.6f} with original {lr_schedule_values[it]:.6f} and scale {param_group.get('lr_scale', 1)}")
                         if wd_schedule_values is not None and param_group["weight_decay"] > 0:
                             param_group["weight_decay"] = wd_schedule_values[it] * param_group.get("wd_scale", 1)
-                            print(f"Step {it}: Updated weight decay for param group {i} to {param_group['weight_decay']:.6f} with original {wd_schedule_values[it]:.6f} and scale {param_group.get('wd_scale', 1)}")
+                            # print(f"Step {it}: Updated weight decay for param group {i} to {param_group['weight_decay']:.6f} with original {wd_schedule_values[it]:.6f} and scale {param_group.get('wd_scale', 1)}")
 
         # samples = samples.to(device, non_blocking=True)
         # targets = targets.to(device, non_blocking=True)
