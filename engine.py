@@ -1520,13 +1520,16 @@ def attention_residual_analysis(data_loader, model, device, layers_to_analyse = 
             norm_ratio_attn_delta_in_mean, norm_ratio_attn_delta_in_std = norm_ratio_attn_delta_in.mean().item(), norm_ratio_attn_delta_in.std().item()
             norm_ratio_mlp_delta_in_mean, norm_ratio_mlp_delta_in_std = norm_ratio_mlp_delta_in.mean().item(), norm_ratio_mlp_delta_in.std().item()
 
+            # Absolute stream norms: the ratios alone cannot show whether the stream is
+            # inflating across blocks, which is what the depth sweep needs (see
+            # docs/i100_late_block_scaling.md 3.10). Cheap - these are already computed.
             # if utils.is_main_process():
             stats_aggregated[i] = {
-                # "rin_norm_mean": rin_norm_mean,
+                "rin_norm_mean": rin_norm.mean().item(),
+                "rout_norm_mean": rout_norm.mean().item(),
+                "attn_delta_norm_mean": delta_norm.mean().item(),
                 # "rin_norm_std": rin_norm_std,
-                # "rout_norm_mean": rout_norm_mean,
                 # "rout_norm_std": rout_norm_std,
-                # "attn_delta_norm_mean": delta_norm_mean,
                 # "attn_delta_norm_std": delta_norm_std,
                 "norm_ratio_attn_delta_in_mean": norm_ratio_attn_delta_in_mean,
                 "norm_ratio_attn_delta_in_std": norm_ratio_attn_delta_in_std,

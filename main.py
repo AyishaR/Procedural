@@ -335,6 +335,18 @@ def get_args_parser():
     parser.add_argument('--layer_11_target_qkvp_ln1_norm_ratio', type=float, default=-1.0)
     parser.add_argument('--layer_11_scale_method', type=str, default="")
     parser.add_argument('--init_method', type=str, default="default", help='Initialization method for the model weights. Options: "default", "match_L11_activations"')
+    parser.add_argument('--weight_init', type=str, default="",
+                        help='Re-initialise all 2-D weights with an alternative scheme before any other init step. Currently: "xavier". Empty = use the model default (timm).')
+    parser.add_argument('--target_ratio_absolute', type=float, default=-1.0,
+                        help='Set the target delta-norm ratio to this constant for every scaled block, ignoring the target model values (checkpoint-free calibration). <=0 = off.')
+    parser.add_argument('--target_ratio_scale', type=float, default=1.0,
+                        help='Multiply the target per-block delta-norm ratios by this factor before matching (profile control). 1.0 = off.')
+    parser.add_argument('--target_ratio_flatten', type=str2bool, default=False,
+                        help='Replace each target delta-norm ratio with the mean across the scaled blocks, removing the profile shape while keeping its average.')
+    parser.add_argument('--clip_outlier_blocks', type=str, default="",
+                        help='Comma separated block indices whose largest weights are winsorised (norm restored) after init, composing with any --init_method. Empty = off.')
+    parser.add_argument('--outlier_clip_frac', type=float, default=0.001,
+                        help='Fraction of largest-magnitude weights winsorised per tensor by the "clip_outlier_weights" init method (default: 0.001)')
     parser.add_argument('--init_method_scaled_blocks', type=str, default="", help='Comma separated list of layer indices to apply scaled initialization, e.g. "0,1,2" to apply scaled initialization to the first 3 layers; supports "all" to apply scaled initialization to all layers and "" to not apply scaled initialization to any layers (default: "")')
     parser.add_argument('--init_method_scaled_attributes', type=str, default="", help='Comma separated list of layer indices to apply scaled initialization, e.g. "0,1,2" to apply scaled initialization to the first 3 layers; supports "all" to apply scaled initialization to all layers and "" to not apply scaled initialization to any layers (default: "")')
     parser.add_argument('--init_method_copied_blocks', type=str, default="", help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
@@ -358,6 +370,95 @@ def get_args_parser():
     
 
     return parser
+
+def apply_weight_init(model, scheme):
+    """Re-initialise all 2-D weights with an alternative scheme, for testing whether the
+    late-block calibration effect depends on the baseline init. §3.12.5 measured rho at init
+    across schemes: timm 0.051, xavier 0.295 in blocks 9-11 — so xavier starts ~6x closer to
+    the useful band and the effect should be correspondingly weaker."""
+    if not scheme:
+        return model
+    with torch.no_grad():
+        n = 0
+        for name, p in model.named_parameters():
+            if p.dim() < 2:
+                continue
+            if scheme == "xavier":
+                torch.nn.init.xavier_uniform_(p)
+            else:
+                raise ValueError(f"unknown weight_init scheme: {scheme}")
+            n += 1
+    print(f"Re-initialised {n} weight tensors with scheme '{scheme}'", flush=True)
+    return model
+
+
+def transform_target_ratios(target_stats, args):
+    """Profile control for the delta-norm matching. By default the trained model is scaled
+    to reproduce the target's per-block rho exactly. This lets the target profile be
+    rescaled (--target_ratio_scale) or flattened to its own mean across the scaled blocks
+    (--target_ratio_flatten), so we can ask whether the *specific* proc magnitude profile
+    matters or merely that the late blocks are calibrated to the stream at all."""
+    if not target_stats:
+        return target_stats
+    keys = ["norm_ratio_attn_delta_in_mean", "norm_ratio_mlp_delta_in_mean"]
+    # Absolute mode: ignore the target model entirely and set rho to a constant. This is the
+    # checkpoint-free form of the recipe - the target model is still built and measured, but
+    # only its structure is used, not its values.
+    if args.target_ratio_absolute > 0:
+        for b in target_stats:
+            for k in keys:
+                if k in target_stats[b]:
+                    print(f"Absolute target {k} block {b}: {target_stats[b][k]:.5f} -> {args.target_ratio_absolute:.5f}", flush=True)
+                    target_stats[b][k] = args.target_ratio_absolute
+        return target_stats
+    if args.target_ratio_flatten:
+        for k in keys:
+            vals = [target_stats[b][k] for b in target_stats if k in target_stats[b]]
+            if not vals:
+                continue
+            mean = sum(vals) / len(vals)
+            for b in target_stats:
+                if k in target_stats[b]:
+                    print(f"Flatten target {k} block {b}: {target_stats[b][k]:.5f} -> {mean:.5f}", flush=True)
+                    target_stats[b][k] = mean
+    if args.target_ratio_scale != 1.0:
+        for b in target_stats:
+            for k in keys:
+                if k in target_stats[b]:
+                    old = target_stats[b][k]
+                    target_stats[b][k] = old * args.target_ratio_scale
+                    print(f"Scale target {k} block {b}: {old:.5f} -> {target_stats[b][k]:.5f} (x{args.target_ratio_scale})", flush=True)
+    return target_stats
+
+
+def clip_block_outliers(model, blocks, frac, tag=""):
+    """Winsorise the top `frac` of weights by magnitude in each 2-D weight matrix of
+    `blocks`, then rescale each tensor back to its ORIGINAL norm. Biases and LayerNorm
+    gains are left alone. Used both by the "clip_outlier_weights" init method and by
+    --clip_outlier_blocks, which composes with any other init method."""
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if not name.startswith("blocks."):
+                continue
+            try:
+                block_idx = int(name.split(".")[1])
+            except (IndexError, ValueError):
+                continue
+            if block_idx not in blocks or p.dim() < 2:
+                continue
+            w = p.data
+            orig_norm = w.norm().item()
+            n = w.numel()
+            k = max(1, int(frac * n))
+            thresh = w.abs().flatten().kthvalue(n - k + 1).values.item()
+            n_clipped = int((w.abs() > thresh).sum().item())
+            w.clamp_(-thresh, thresh)
+            new_norm = w.norm().item()
+            if new_norm > 0:
+                w.mul_(orig_norm / new_norm)
+            print(f"Clipped{tag} {name}: {n_clipped}/{n} above |{thresh:.4f}|, "
+                  f"norm {orig_norm:.4f} -> {w.norm().item():.4f}", flush=True)
+
 
 def main(args):
     utils.init_distributed_mode(args)
@@ -478,6 +579,13 @@ def main(args):
     else:
         args.random_blocks = [int(x) for x in args.random_blocks.split(",")]
 
+    if args.clip_outlier_blocks == "":
+        args.clip_outlier_blocks = []
+    elif args.clip_outlier_blocks == "all":
+        args.clip_outlier_blocks = list(range(len(model.blocks)))
+    else:
+        args.clip_outlier_blocks = [int(x) for x in args.clip_outlier_blocks.split(",")]
+
     if args.delete_blocks == "":
         args.delete_blocks = []
     elif args.delete_blocks == "all":
@@ -592,6 +700,9 @@ def main(args):
             scale_ratio = float(segment.split("[")[1].split("]")[0])
             args.learning_rate_scaling_params[param_name] = scale_ratio
 
+    if args.weight_init:
+        model = apply_weight_init(model, args.weight_init)
+
     for block in model.blocks:
         block.attn.fused_attn = False
 
@@ -620,6 +731,48 @@ def main(args):
             device = device,
             model = model_temp
         )
+    elif args.init_method == "clip_outlier_weights":
+        # Checkpoint init with the largest-magnitude weights of
+        # args.init_method_scaled_blocks winsorised to the (1 - outlier_clip_frac)
+        # quantile, then the tensor rescaled back to its ORIGINAL norm. The rescale
+        # matters: changing ||W|| is itself harmful (see e2), so without it this would
+        # confound "removed the outliers" with "changed the norm".
+        # Only 2-D weight matrices are touched; biases and LayerNorm gains are left alone.
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model
+        )
+        with torch.no_grad():
+            for name, p in model_without_ddp.named_parameters():
+                if not name.startswith("blocks."):
+                    continue
+                try:
+                    block_idx = int(name.split(".")[1])
+                except (IndexError, ValueError):
+                    continue
+                if block_idx not in args.init_method_scaled_blocks:
+                    continue
+                if p.dim() < 2:
+                    continue
+                w = p.data
+                orig_norm = w.norm().item()
+                n = w.numel()
+                k = max(1, int(args.outlier_clip_frac * n))
+                thresh = w.abs().flatten().kthvalue(n - k + 1).values.item()
+                n_clipped = int((w.abs() > thresh).sum().item())
+                flat = w.flatten().float()
+                kurt_before = (((flat - flat.mean()) / flat.std()) ** 4).mean().item()
+                w.clamp_(-thresh, thresh)
+                new_norm = w.norm().item()
+                if new_norm > 0:
+                    w.mul_(orig_norm / new_norm)
+                flat = w.flatten().float()
+                kurt_after = (((flat - flat.mean()) / flat.std()) ** 4).mean().item()
+                print(f"Clipped {name}: {n_clipped}/{n} weights above |{thresh:.4f}|, "
+                      f"kurtosis {kurt_before:.2f} -> {kurt_after:.2f}, "
+                      f"norm {orig_norm:.4f} -> {w.norm().item():.4f}", flush=True)
     elif args.init_method == "match_target_block_norms":
         # Random model in which every tensor of args.init_method_scaled_blocks is rescaled
         # to the norm of the corresponding tensor in the checkpoint. Directions stay random,
@@ -897,6 +1050,17 @@ def main(args):
             block_item.forward = types.MethodType(utils.patched_last_block_forward, block_item)
 
     if args.start_epoch==0:
+        # Orthogonal outlier clipping: composes with any init method, unlike the
+        # "clip_outlier_weights" init method. Applied to the target as well, so the two
+        # models still differ only in the blocks under study, and applied BEFORE the
+        # delta-norm scaling below so the measured ratios reflect the clipped model.
+        if len(args.clip_outlier_blocks) > 0:
+            clip_block_outliers(model_without_ddp, args.clip_outlier_blocks,
+                                args.outlier_clip_frac, tag="[model]")
+            if 'target_model_without_ddp' in locals():
+                clip_block_outliers(target_model_without_ddp, args.clip_outlier_blocks,
+                                    args.outlier_clip_frac, tag="[target]")
+
         if len(args.weight_shuffle) > 0:
             utils.shuffle_weights(model_without_ddp, args.weight_shuffle)
 
@@ -950,6 +1114,7 @@ def main(args):
                     layers_to_analyse = args.init_method_scaled_blocks,
                     detailed=False
                 )
+                target_stats = transform_target_ratios(target_stats, args)
             else:
                 target_stats = {}
             if args.simultaneous_init_scaling:
@@ -1037,6 +1202,7 @@ def main(args):
                     detailed=False
 
                 )
+                target_stats = transform_target_ratios(target_stats, args)
             else:
                 target_stats = {}
             if args.simultaneous_init_scaling:
@@ -1123,6 +1289,7 @@ def main(args):
                     layers_to_analyse = args.init_method_scaled_blocks,
                     detailed=False
                 )
+                target_stats = transform_target_ratios(target_stats, args)
             else:
                 target_stats = {}
             if args.simultaneous_init_scaling:
@@ -1293,11 +1460,25 @@ def main(args):
             if args.grad_norms_json != "":
                 current_grad_norms_list = []
                 if os.path.exists(args.grad_norms_json):
-                    with open(args.grad_norms_json, 'r') as f:
-                        current_grad_norms_list = json.load(f)
+                    # A job killed between the open('w') truncate and the dump below leaves a
+                    # 0-byte file. json.load then raises on every subsequent attempt, so the
+                    # in-job retry loop cannot recover and the run dies for good (this cost
+                    # m1 seed 2 a rerun). Grad norms are diagnostic only - drop the history
+                    # rather than take the run down with it.
+                    try:
+                        with open(args.grad_norms_json, 'r') as f:
+                            current_grad_norms_list = json.load(f)
+                    except (json.JSONDecodeError, ValueError):
+                        print(f"WARNING: {args.grad_norms_json} is empty or corrupt; starting a "
+                              f"fresh grad-norm history", flush=True)
+                        current_grad_norms_list = []
                 current_grad_norms_list.append(parameter_norm)
-                with open(args.grad_norms_json, 'w') as f:
+                # write to a temp file and rename, so an interrupted write cannot truncate the
+                # existing history (rename is atomic within a filesystem)
+                tmp_path = args.grad_norms_json + ".tmp"
+                with open(tmp_path, 'w') as f:
                     json.dump(current_grad_norms_list, f, indent=4)
+                os.replace(tmp_path, args.grad_norms_json)
 
         if args.output_dir and args.save_ckpt:
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
