@@ -299,7 +299,20 @@ def get_args_parser():
     parser.add_argument('--custom_init_vp_scale', default=0.05, type=float,
                         help="Parameters to control custom init")
     parser.add_argument('--custom_init_type', default="", type=str,
-                        help="Parameters to control custom init")
+                        help='Set to "slice_scale" to enable the per-slice attention rescaling '
+                             'below; "" (default) leaves the model untouched, which is what every '
+                             'run before 2026-08-29 did -- the three flags above were parsed but '
+                             'never read by any code path.')
+    parser.add_argument('--slice_scale_qk', default=1.0, type=float,
+                        help='For --custom_init_type "slice_scale": multiply rows [0:2e] of the '
+                             'fused attn.qkv.weight (the q and k slices) by this factor, in the '
+                             'blocks named by --custom_init_blocks. Bias rows are scaled with '
+                             'them so the pre-softmax logit shift stays consistent.')
+    parser.add_argument('--slice_scale_v', default=1.0, type=float,
+                        help='Same for rows [2e:3e] (the v slice).')
+    parser.add_argument('--slice_scale_proj', default=1.0, type=float,
+                        help='Same for attn.proj.weight. v and proj together set the attention '
+                             'write magnitude; qk sets the logit scale.')
     parser.add_argument('--custom_init_blocks', default="", type=str,
                         help='Comma separated list of layer indices to apply custom init, e.g. "0,1,2" to apply custom init to the first 3 layers; supports "all" to apply custom init to all layers and "" to not apply custom init to any layers (default: "")')
     parser.add_argument('--save_for_analysis', default=True, type=bool,
@@ -343,6 +356,47 @@ def get_args_parser():
                         help='Multiply the target per-block delta-norm ratios by this factor before matching (profile control). 1.0 = off.')
     parser.add_argument('--target_ratio_flatten', type=str2bool, default=False,
                         help='Replace each target delta-norm ratio with the mean across the scaled blocks, removing the profile shape while keeping its average.')
+    parser.add_argument('--quantile_source', type=str, default="empirical",
+                        help='For init_method "quantile_match_target_blocks": "empirical" uses the checkpoint\'s own sorted values; "parametric" substitutes a Student-t fitted to the checkpoint\'s kurtosis and norm (tests whether a parameterised distribution suffices).')
+    parser.add_argument('--quantile_1d_mode', type=str, default="skip",
+                        choices=["skip", "shuffle", "bias", "layernorm"],
+                        help='For init_method "quantile_match_target_blocks": how to treat the 1-D parameters '
+                             'of the scaled blocks. "skip" (default, the original behaviour) leaves them all at '
+                             'random init. "shuffle" takes ALL of them from the target. "bias" takes only the '
+                             'non-LayerNorm biases (attn.qkv.bias, attn.proj.bias, mlp.fc1.bias, mlp.fc2.bias). '
+                             '"layernorm" takes only the LayerNorm tensors (norm1/norm2 .weight and .bias). '
+                             'bias and layernorm partition what "shuffle" does, so the two arms decompose it. '
+                             'In every non-skip mode the target values are written in a uniform random '
+                             'permutation: quantile matching is NOT usable on 1-D params here, because random '
+                             'init makes LayerNorm weights all 1.0 and biases all 0.0, so the rank order is '
+                             'degenerate and rank-mapping would write the donor in SORTED order, inventing '
+                             'structure present in neither model. See docs/i100_late_block_scaling.md 3.10.9.1.')
+    parser.add_argument('--quantile_qkv_mode', type=str, default="pooled",
+                        choices=["pooled", "qk_v", "qk_only", "v_only"],
+                        help='For init_method "quantile_match_target_blocks": how to quantile-match the '
+                             'FUSED attn.qkv.weight. "pooled" (default, original behaviour) treats it as one '
+                             'tensor, so the v slice is drawn from the pooled q+k+v value distribution. '
+                             '"qk_v" matches rows [0:2e] and [2e:3e] as two independent pools, exactly '
+                             'mirroring how ftb4e3 shuffles attn.qk.weight and attn.v.weight separately '
+                             '(utils.shuffle_weights). This matters: in the procedural checkpoint v is up to '
+                             '2.3x narrower than q and k past block 0, so "pooled" systematically widens v — '
+                             'and v with proj is exactly what sets the attention write magnitude. See '
+                             'docs/i100_late_block_scaling.md 3.10.9.5. "qk_only" and "v_only" match ONE '
+                             'slice against its own target and leave the other pooled, which separates the two '
+                             'things "qk_v" moves at once: the attention logit scale (gain^2 |Wq||Wk|) and the '
+                             'value write (gain |Wv|). See 3.10.9.10-11.')
+    parser.add_argument('--quantile_1d_source', type=str, default="empirical",
+                        choices=["empirical", "parametric"],
+                        help='For init_method "quantile_match_target_blocks", orthogonal to '
+                             '--quantile_1d_mode (which selects WHICH 1-D tensors are touched; this selects '
+                             'WHAT is written into them). "empirical" (default) writes the target\'s own values '
+                             'in a uniform random permutation. "parametric" instead draws from a Gaussian matched '
+                             'per tensor to the target\'s MEAN and STD, so the tensor gets the target\'s first two '
+                             'moments but none of its actual values. This is the control that separates two very '
+                             'different readings of a positive 1-D result: "procedural pretraining transfers '
+                             'specific bias/gain values" versus "zero biases and unit LayerNorm gains are simply a '
+                             'bad default and roughly any non-degenerate 1-D params beat them". See '
+                             'docs/i100_late_block_scaling.md 3.10.9.3.')
     parser.add_argument('--clip_outlier_blocks', type=str, default="",
                         help='Comma separated block indices whose largest weights are winsorised (norm restored) after init, composing with any --init_method. Empty = off.')
     parser.add_argument('--outlier_clip_frac', type=float, default=0.001,
@@ -706,6 +760,13 @@ def main(args):
             scale_ratio = float(segment.split("[")[1].split("]")[0])
             args.attention_out_scaling[layer_num] = scale_ratio
 
+    if args.custom_init_blocks == "":
+        args.custom_init_blocks = []
+    elif args.custom_init_blocks == "all":
+        args.custom_init_blocks = list(range(args.num_blocks))
+    else:
+        args.custom_init_blocks = [int(x) for x in args.custom_init_blocks.split(",")]
+
     attn_scaling_elements_count, mlp_scaling_elements_count = 0, 0
     if args.init_method_scaled_blocks == "":
         args.init_method_scaled_blocks = []
@@ -848,6 +909,139 @@ def main(args):
                     continue
                 p.data.mul_(target_norm / cur_norm)
                 print(f"Norm match {name}: {cur_norm:.4f} -> {target_norm:.4f} (x{target_norm/cur_norm:.4f})", flush=True)
+    elif args.init_method == "quantile_match_target_blocks":
+        # Random model whose weights in args.init_method_scaled_blocks are replaced by the
+        # checkpoint's values, reassigned by RANK: sort the random tensor, sort the target
+        # tensor, and write the target's sorted values into the random tensor's rank order.
+        #
+        # The result carries the target's exact value multiset - hence its norm, variance,
+        # kurtosis and full histogram - in an arrangement inherited from the random init, so
+        # none of the target's learned structure survives. It is the positive control for
+        # docs/i100_late_block_scaling.md 3.10.5: rho-matching, norm-matching and outlier
+        # clipping all fail to reproduce the early-block benefit, while shuffled target
+        # weights reproduce it entirely, which leaves the full value distribution as the
+        # necessary and sufficient property. This arm constructs exactly that, from a random
+        # model plus the target's sorted values.
+        #
+        # With --quantile_source parametric the target's values are replaced by a sample from
+        # a Student-t fitted per tensor to the target's kurtosis and rescaled to its norm, so
+        # the same machinery answers the checkpoint-free question: is a PARAMETERISED
+        # distribution enough, or is the empirical one required?
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = "",
+            args = args,
+            device = device,
+            model = model
+        )
+        model_temp = utils.build_model(args)
+        model_temp.load_state_dict(model_without_ddp.state_dict())
+        _, target_model_without_ddp, _ = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model_temp
+        )
+        with torch.no_grad():
+            target_params = dict(target_model_without_ddp.named_parameters())
+            for name, p in model_without_ddp.named_parameters():
+                if not name.startswith("blocks."):
+                    continue
+                if p.dim() < 2 and args.quantile_1d_mode == "skip":
+                    continue
+                try:
+                    block_idx = int(name.split(".")[1])
+                except (IndexError, ValueError):
+                    continue
+                if block_idx not in args.init_method_scaled_blocks:
+                    continue
+                target_p = target_params.get(name)
+                if target_p is None or target_p.numel() != p.numel():
+                    continue
+                if p.dim() < 2:
+                    # 1-D params: uniform permutation of the target's values, NOT a rank map.
+                    # Random init makes LayerNorm weights all 1.0 and biases all 0.0, so
+                    # argsort is degenerate and a rank map would write the donor sorted.
+                    is_ln = ".norm1." in name or ".norm2." in name
+                    if args.quantile_1d_mode == "bias" and is_ln:
+                        continue
+                    if args.quantile_1d_mode == "layernorm" and not is_ln:
+                        continue
+                    donor = target_p.data.flatten().float()
+                    kind = "LN" if is_ln else "bias"
+                    if args.quantile_1d_source == "parametric":
+                        # Gaussian matched to the target's first two moments only: same mean and
+                        # std, none of the target's actual values. Separates "proc's 1-D values
+                        # are special" from "anything non-degenerate beats 0 biases / unit gains".
+                        mu, sd = donor.mean(), donor.std()
+                        draw = torch.randn(donor.numel(), device=donor.device) * sd + mu
+                        p.data.copy_(draw.view_as(p.data).to(p.data.dtype))
+                        print(f"Param-1D[{kind}] {name}: mean {draw.mean():.5f} (target {mu:.5f}), "
+                              f"std {draw.std():.5f} (target {sd:.5f}), "
+                              f"|W| {p.data.norm():.4f} (target {target_p.data.norm():.4f}), "
+                              f"n={donor.numel()}", flush=True)
+                        continue
+                    perm = torch.randperm(donor.numel(), device=donor.device)
+                    p.data.copy_(donor[perm].view_as(p.data).to(p.data.dtype))
+                    print(f"Shuffle-1D[{kind}] {name}: |W| {p.data.norm():.4f} "
+                          f"(target {target_p.data.norm():.4f}), n={donor.numel()}", flush=True)
+                    continue
+                donor = target_p.data.flatten().float()
+                if args.quantile_qkv_mode != "pooled" and name.endswith("attn.qkv.weight"):
+                    # Match [0:2e] and [2e:3e] as separate pools, mirroring ftb4e3's
+                    # attn.qk.weight / attn.v.weight split. Prevents v inheriting the wider
+                    # pooled q+k spread. See docs 3.10.9.5.
+                    e = p.data.shape[0] // 3
+                    # which slices get their OWN target; the rest fall through to the pooled path
+                    want = {"qk_v": ["qk", "v"], "qk_only": ["qk"], "v_only": ["v"]}[args.quantile_qkv_mode]
+                    spans = [(0, 2 * e, "qk"), (2 * e, 3 * e, "v")]
+                    if len(want) == 1:
+                        # pooled donor for the slice we are NOT matching, so it keeps the
+                        # q+k+v mixed width exactly as `pooled` would give it
+                        pooled = target_p.data.flatten().float()
+                        ps, _ = torch.sort(pooled)
+                        order_all = torch.argsort(p.data.flatten().float())
+                        tmp = torch.empty_like(ps); tmp[order_all] = ps
+                        tmp = tmp.view_as(p.data)
+                        for lo, hi, tag in spans:
+                            if tag not in want:
+                                p.data[lo:hi].copy_(tmp[lo:hi].to(p.data.dtype))
+                                print(f"Quantile match[{tag}:pooled] {name}: "
+                                      f"std {p.data[lo:hi].float().std():.5f}", flush=True)
+                    for lo, hi, tag in [x for x in spans if x[2] in want]:
+                        d = target_p.data[lo:hi].flatten().float()
+                        ds, _ = torch.sort(d)
+                        cur = p.data[lo:hi].flatten().float()
+                        o = torch.argsort(cur)
+                        o_out = torch.empty_like(ds)
+                        o_out[o] = ds
+                        p.data[lo:hi].copy_(o_out.view_as(p.data[lo:hi]).to(p.data.dtype))
+                        print(f"Quantile match[{tag}] {name}: |W| {p.data[lo:hi].norm():.4f} "
+                              f"(target {target_p.data[lo:hi].norm():.4f}), "
+                              f"std {p.data[lo:hi].float().std():.5f} "
+                              f"(target {target_p.data[lo:hi].float().std():.5f})", flush=True)
+                    continue
+
+                if args.quantile_source == "parametric":
+                    # Student-t with df matched to the target's excess kurtosis
+                    # (kurt = 3 + 6/(df-4) for df > 4), then rescaled to the target's norm.
+                    z = (donor - donor.mean()) / donor.std()
+                    kurt = (z ** 4).mean().item()
+                    df = 4.0 + 6.0 / max(kurt - 3.0, 1e-3)
+                    df = float(min(max(df, 4.5), 100.0))
+                    samp = torch.distributions.StudentT(df).sample((donor.numel(),)).to(donor.device)
+                    donor = samp / samp.norm() * target_p.data.norm()   # match the target's norm
+                    print(f"Parametric donor {name}: target kurt {kurt:.2f} -> StudentT df {df:.2f}", flush=True)
+                donor_sorted, _ = torch.sort(donor)
+                order = torch.argsort(p.data.flatten().float())
+                out = torch.empty_like(donor_sorted)
+                out[order] = donor_sorted
+                f = p.data.flatten().float()
+                before_k = (((f - f.mean()) / f.std()) ** 4).mean().item()
+                p.data.copy_(out.view_as(p.data).to(p.data.dtype))
+                f = p.data.flatten().float()
+                after_k = (((f - f.mean()) / f.std()) ** 4).mean().item()
+                print(f"Quantile match {name}: |W| {p.data.norm():.4f} "
+                      f"(target {target_p.data.norm():.4f}), kurtosis {before_k:.2f} -> {after_k:.2f}", flush=True)
     elif "downscale_mixed" in args.init_method:
         # target: random init, then the checkpoint loaded into every block except
         # args.random_blocks, so target and model differ only in those blocks
@@ -1101,6 +1295,44 @@ def main(args):
 
         if len(args.target_model_weight_shuffle) > 0:
             utils.shuffle_weights(target_model_without_ddp, args.target_model_weight_shuffle)
+
+        # Per-slice rescaling of the attention weights. Orthogonal to every init_method: it
+        # multiplies whatever weights are already in place, so it composes with a random init
+        # (the intended use) or with a loaded checkpoint.
+        #
+        # Why (docs 3.10.9.12): the fused attn.qkv is one tensor, and the transferable content
+        # of the procedural checkpoint's early blocks turned out to live in the RELATIVE scale
+        # of its slices -- proc's ||W_qk||/||W_v|| is 2.18 against random init's 1.00. Every arm
+        # that reproduced that ratio had to read it off the checkpoint. These flags reproduce it
+        # with no checkpoint at all, which is what separates "proc's v VALUES transfer" from
+        # "the v SCALE transfers". They also dissociate the ratio from the write MAGNITUDE,
+        # which the checkpoint-derived arms move together and therefore cannot tell apart.
+        if args.custom_init_type == "slice_scale":
+            if not args.custom_init_blocks:
+                raise ValueError('--custom_init_type "slice_scale" needs --custom_init_blocks')
+            with torch.no_grad():
+                for block_idx in args.custom_init_blocks:
+                    blk = model_without_ddp.blocks[block_idx]
+                    e = blk.attn.qkv.weight.shape[0] // 3
+                    for lo, hi, sc, tag in [(0, 2 * e, args.slice_scale_qk, "qk"),
+                                            (2 * e, 3 * e, args.slice_scale_v, "v")]:
+                        if sc == 1.0:
+                            continue
+                        before = blk.attn.qkv.weight.data[lo:hi].norm().item()
+                        blk.attn.qkv.weight.data[lo:hi] *= sc
+                        if blk.attn.qkv.bias is not None:
+                            blk.attn.qkv.bias.data[lo:hi] *= sc
+                        print(f"Slice scale[{tag}] block {block_idx}: |W| {before:.4f} -> "
+                              f"{blk.attn.qkv.weight.data[lo:hi].norm().item():.4f} (x{sc})",
+                              flush=True)
+                    if args.slice_scale_proj != 1.0:
+                        before = blk.attn.proj.weight.data.norm().item()
+                        blk.attn.proj.weight.data *= args.slice_scale_proj
+                        if blk.attn.proj.bias is not None:
+                            blk.attn.proj.bias.data *= args.slice_scale_proj
+                        print(f"Slice scale[proj] block {block_idx}: |W| {before:.4f} -> "
+                              f"{blk.attn.proj.weight.data.norm().item():.4f} "
+                              f"(x{args.slice_scale_proj})", flush=True)
 
         if args.layer_11_scale_method != "":
             scale_weights = {
