@@ -1699,6 +1699,21 @@ def main(args):
     if args.post_hoc_act_norm_track: return
     # return
     
+    # pr_load_model wraps the model in DDP and returns model.module, so every init edit above
+    # runs on each rank's own replica -- and DDP re-syncs gradients, never weights. Combined
+    # with `seed = args.seed + get_rank()`, any edit drawing from the torch RNG (weight_shuffle,
+    # the 1-D quantile permutation) leaves the ranks training different models. Broadcasting
+    # here fixes every such site at once and is a no-op when the ranks already agree.
+    if args.distributed:
+        n_sync = 0
+        for _, t in sorted(model_without_ddp.state_dict().items()):
+            if torch.is_tensor(t) and t.is_floating_point():
+                torch.distributed.broadcast(t.data, src=0)
+                n_sync += 1
+        torch.distributed.barrier()
+        if utils.is_main_process():
+            print(f"[init-sync] broadcast {n_sync} tensors from rank 0", flush=True)
+
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
