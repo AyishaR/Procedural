@@ -1064,15 +1064,22 @@ class HookCollector:
                 attn = (q @ k.transpose(-2, -1)) * mod.scale
                 attn = attn.softmax(dim=-1)
                 self.acts[idx]['attn_map'] = attn  # [B, heads, N, N]
-                
 
-            return hook_block, hook_attn_map
+            def hook_mlp_fc1_act(mod, inp, out):
+                self.acts[idx]['mlp_fc1_act'] = out.detach()  # GELU(fc1(x)), before fc2
+
+            def hook_mlp_fc2(mod, inp, out):
+                self.acts[idx]['mlp_fc2'] = out.detach()  # fc2(...), before ls2/drop_path2/residual
+
+            return hook_block, hook_attn_map, hook_mlp_fc1_act, hook_mlp_fc2
 
         for i, block in enumerate(self.model_without_ddp.blocks):
-            block_hook, attn_map_hook = make_block_hook(i)
+            block_hook, attn_map_hook, mlp_fc1_act_hook, mlp_fc2_hook = make_block_hook(i)
             h1 = block.register_forward_hook(block_hook)
             h2 = block.attn.register_forward_hook(attn_map_hook)
-            self.handles.extend([h1, h2])
+            h3 = block.mlp.act.register_forward_hook(mlp_fc1_act_hook)
+            h4 = block.mlp.fc2.register_forward_hook(mlp_fc2_hook)
+            self.handles.extend([h1, h2, h3, h4])
 
         return self.acts
 

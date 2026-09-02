@@ -259,6 +259,17 @@ def get_args_parser():
 
     parser.add_argument('--analyse_only', type=str2bool, default=False,
                         help='Perform attention_analyse only on test set data')
+    parser.add_argument('--calculate_rank', type=str2bool, default=False,
+                        help='Compute stable rank and effective rank of the forward-pass activations per block '
+                             '(attention output before residual, attention residual out, MLP after fc1+GELU, '
+                             'MLP after fc2 before residual, block output), using a subset of the training set and '
+                             'the model loaded from --initialize. No training is performed; results are written to '
+                             'a rank_*.json file next to --accuracy_json.')
+    parser.add_argument('--calculate_cka', type=str2bool, default=False,
+                        help='Compute pairwise CKA between every pair of transformer block output tensors, using a '
+                             'subset of the training set and the model loaded from --initialize (empty --initialize '
+                             '= random "epoch 0" model). No training is performed; results are written to a '
+                             'cka_*.json file next to --accuracy_json, plus a cka_*.png heatmap.')
     parser.add_argument('--cka_only', type=str2bool, default=False,
                         help='Perform cka only on test set data')
     parser.add_argument('--cka_compare', type=str2bool, default=False,
@@ -403,9 +414,11 @@ def get_args_parser():
                         help='Fraction of largest-magnitude weights winsorised per tensor by the "clip_outlier_weights" init method (default: 0.001)')
     parser.add_argument('--init_method_scaled_blocks', type=str, default="", help='Comma separated list of layer indices to apply scaled initialization, e.g. "0,1,2" to apply scaled initialization to the first 3 layers; supports "all" to apply scaled initialization to all layers and "" to not apply scaled initialization to any layers (default: "")')
     parser.add_argument('--init_method_scaled_attributes', type=str, default="", help='Comma separated list of layer indices to apply scaled initialization, e.g. "0,1,2" to apply scaled initialization to the first 3 layers; supports "all" to apply scaled initialization to all layers and "" to not apply scaled initialization to any layers (default: "")')
+    parser.add_argument('--init_method_fixed_scale_attributes', type=str, default="", help='format - <attribute>[<scale_ratio>];, e.g. "fc2[0.5];v[0.5]" to scale residuals in the specified layers by the specified ratios')
     parser.add_argument('--init_method_copied_blocks', type=str, default="", help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
     parser.add_argument('--simultaneous_init_scaling', type=bool, default=False, help='Scale all blocks simultaneously during initialization, instead of scaling each block individually')
     parser.add_argument('--init_method_bias_scaling', type=bool, default=False, help='Scale bias too')
+    parser.add_argument('--mute_mlp', type=str, default="", help='Init mlp to zero')
     parser.add_argument('--post_hoc_act_norm_track', type=bool, default=False, help='Rerun old models to track act norms before training starts')
 
     parser.add_argument('--weight_shuffle', type=str, default="",
@@ -786,6 +799,16 @@ def main(args):
         print(f"Attention scaling elements: {attn_scaling_elements} (count: {attn_scaling_elements_count})")
         print(f"MLP scaling elements: {mlp_scaling_elements} (count: {mlp_scaling_elements_count})")
 
+        if args.init_method_fixed_scale_attributes == "":
+            args.init_method_fixed_scale_attributes = {}
+        else:
+            segments = args.init_method_fixed_scale_attributes.split(";")
+            args.init_method_fixed_scale_attributes = {}
+            for segment in segments:
+                attr_name = segment.split("[")[0]
+                scale_ratio = float(segment.split("[")[1].split("]")[0])
+                args.init_method_fixed_scale_attributes[attr_name] = scale_ratio
+
     if args.learning_rate_scaling_params == "":
         args.learning_rate_scaling_params = {}
     else:
@@ -796,6 +819,11 @@ def main(args):
             scale_ratio = float(segment.split("[")[1].split("]")[0])
             args.learning_rate_scaling_params[param_name] = scale_ratio
 
+    if args.mute_mlp == "":
+        args.mute_mlp = []
+    else:
+        args.mute_mlp = [int(x) for x in args.mute_mlp.split(",")]
+
     if args.weight_init:
         model = apply_weight_init(model, args.weight_init)
 
@@ -804,7 +832,7 @@ def main(args):
 
     shuffled_block_order = None
 
-    if args.init_method == "default":
+    if args.init_method in ["default", "ortho", "fixed_scale", "zero_mlp"]:
         model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
             path = args.initialize,
             args = args,
@@ -1240,6 +1268,16 @@ def main(args):
                     json.dump(layer_hessian_values, f, indent=4)
         return
 
+    if args.calculate_rank:
+        print(f"Calculate rank mode")
+        calculate_rank_final(dataset_train, device, args=args)
+        # return
+
+        if args.calculate_cka:
+            print(f"Calculate CKA mode")
+            calculate_cka_final(dataset_train, device, args=args)
+        # return
+
     if args.analyse_only:
         print(f"Attention analyse only mode")
         stats = attention_analyse_final(data_loader_val, device, args=args, classes=classes)
@@ -1669,6 +1707,32 @@ def main(args):
                         scale_weights = broadcast_dict([scale_weights], src=0)[0]
                         utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling) 
 
+        if args.init_method == "ortho":
+            
+            for block_id in range(len(args.init_method_scaled_blocks)):
+                torch.nn.init.orthogonal_(model_without_ddp.blocks[block_id].attn.qkv.weight)
+                torch.nn.init.orthogonal_(model_without_ddp.blocks[block_id].attn.proj.weight)
+
+        if args.init_method == "fixed_scale":
+            for block_idx in args.init_method_scaled_blocks:
+                scale_weights = {
+                    "norm1": args.init_method_fixed_scale_attributes.get("norm1", 1.0),
+                    "qk": args.init_method_fixed_scale_attributes.get("qk", 1.0),
+                    "v": args.init_method_fixed_scale_attributes.get("v", 1.0),
+                    "proj": args.init_method_fixed_scale_attributes.get("proj", 1.0),
+                    "norm2": args.init_method_fixed_scale_attributes.get("norm2", 1.0),
+                    "fc1": args.init_method_fixed_scale_attributes.get("fc1", 1.0),
+                    "fc2": args.init_method_fixed_scale_attributes.get("fc2", 1.0)
+                }
+                utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
+
+
+        for block_id in range(len(args.mute_mlp)):
+            torch.nn.init.zeros_(model_without_ddp.blocks[block_id].mlp.fc1.weight)
+            torch.nn.init.zeros_(model_without_ddp.blocks[block_id].mlp.fc2.weight)
+
+
+
         print("Completed initialization and scaling of weights based on attention residual analysis")
         # vit_base skips this during training for speed; post-hoc analysis jobs still need it
         if args.model != "vit_base" or args.post_hoc_act_norm_track:
@@ -1695,6 +1759,15 @@ def main(args):
             prefix="custom_",
             wandb_logger=wandb_logger,
         )
+
+        # if args.calculate_rank:
+        print(f"Calculate rank mode")
+        calculate_rank_final(dataset_train, device, args=args)
+        # return
+
+        # if args.calculate_cka:
+        print(f"Calculate CKA mode")
+        calculate_cka_final(dataset_train, device, args=args)
 
     if args.post_hoc_act_norm_track: return
     # return
