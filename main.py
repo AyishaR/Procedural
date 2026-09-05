@@ -1196,14 +1196,11 @@ def main(args):
         )
         # DDP already syncs replicas at construction time only, so with model_without_ddp
         # already DDP-wrapped by pr_load_model, the (RNG-dependent) intervention is computed
-        # once on rank 0 and its result broadcast to the other ranks.
+        # once on rank 0; the [init-sync] broadcast below re-syncs every rank before training.
         if utils.get_rank() == 0:
             utils.apply_spectral_intervention(
                 model_without_ddp, "truncate_random", target_k=args.target_k,
                 matrices=args.spectral_matrices, blocks=args.spectral_blocks)
-        if args.distributed:
-            for p in model_without_ddp.parameters():
-                dist.broadcast(p.data, src=0)
     elif args.init_method == "spectral_swap_spectrum":
         # Necessity test (Experiment 2): load the PR checkpoint, then for each per-block
         # weight matrix keep its own singular vectors but swap in the singular values of a
@@ -1220,9 +1217,6 @@ def main(args):
             utils.apply_spectral_intervention(
                 model_without_ddp, "swap_spectrum", args=args,
                 matrices=args.spectral_matrices, blocks=args.spectral_blocks)
-        if args.distributed:
-            for p in model_without_ddp.parameters():
-                dist.broadcast(p.data, src=0)
 
     total_params = sum(p.numel() for p in model_without_ddp.parameters())
     trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
