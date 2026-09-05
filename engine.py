@@ -296,7 +296,7 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     grad_metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
+    # print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()},{k: meter.global_avg for k, meter in grad_metric_logger.meters.items()}
 
 @torch.no_grad()
@@ -607,7 +607,7 @@ def model_analyse(
     
     # stats = {k: meter.global_avg for k, meter in detailed_metrics_logger.meters.items()}
     if args.gpu == 0:
-        print("Averaged stats:", detailed_metrics_logger)
+        # print("Averaged stats:", detailed_metrics_logger)
         # print("Layer-wise attention and block prediction accuracies:", stats)
 
         if args.accuracy_json:
@@ -758,12 +758,20 @@ def update_accuracy_json(args, stats, model_stats, epoch, shuffled_block_order, 
         print(f"Updated {args.accuracy_json} with new layer accuracies.")
 
 @torch.no_grad()
-def calculate_rank_final(dataset_train, device, args):
+def calculate_rank_final(dataset_train, device, args, model=None):
     """Compute stable rank and effective rank of the forward-pass activations at 5 points
     per block (attention output before residual, attention residual out, MLP after fc1+GELU,
     MLP after fc2 before residual, block output), using a fixed-size subset of the training
-    set. No training is performed; the model is loaded fresh from args.initialize, mirroring
-    attention_analyse_final.
+    set. No training is performed.
+
+    If model is None (the default), the model is loaded fresh from args.initialize, mirroring
+    attention_analyse_final. If model is given, it is used as-is instead - pass the actual
+    in-memory model (e.g. model_without_ddp) so this reflects any in-memory weight edits made
+    after loading, such as apply_spectral_intervention, rather than silently reloading an
+    unedited copy from args.initialize. Pass the unwrapped module, not a DDP-wrapped one;
+    under @torch.no_grad() there is no functional difference for forward-only activation
+    capture, and DDP's forward-time synchronization is unnecessary here since the per-rank
+    Gram matrices are already explicitly all-reduced below.
 
     Every rank processes its own shard of the subset (via DistributedSampler, matching the
     distributed-evaluation pattern used by model_analyse/evaluate elsewhere in this file) and
@@ -776,10 +784,15 @@ def calculate_rank_final(dataset_train, device, args):
     """
     assert args.accuracy_json, "--accuracy_json must be set (its folder/basename determine the rank json output path) when using --calculate_rank"
 
-    model = utils.build_model(args)
-    model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
-        path=args.initialize, args=args, device=device, model=model
-    )
+    if model is None:
+        model = utils.build_model(args)
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path=args.initialize, args=args, device=device, model=model
+        )
+    else:
+        model_without_ddp = model
+
+    was_training = model.training
     model.eval()
 
     k = min(5000, len(dataset_train))
@@ -873,28 +886,42 @@ def calculate_rank_final(dataset_train, device, args):
     if args.distributed:
         dist.barrier()
 
+    model.train(was_training)
+
 
 @torch.no_grad()
-def calculate_cka_final(dataset_train, device, args):
+def calculate_cka_final(dataset_train, device, args, model=None):
     """Compute pairwise linear-kernel CKA (gram_cka, cka_utils.py) between the block-output
-    tensors of every pair of transformer blocks, using a subset of the training set and the
-    model loaded from args.initialize (an empty --initialize leaves the model at its random
-    "epoch 0" init, e.g. for comparing how CKA decays with depth in an untrained network across
-    model sizes). Each "sample" fed to gram_cka is one image's full block-output tensor
-    (CLS + patches, flattened) - unlike calculate_rank_final, gram_cka needs the actual
-    [n_samples, dim] feature matrices (it centers and takes the Frobenius norm of an
-    n_samples x n_samples Gram matrix) rather than a streamable summary statistic, and every
-    layer's features must be held in memory at once, so the sample count here is kept far
-    smaller than the rank computation's 5000 to stay memory-bounded. As with the existing
-    cka_calculate_self, each rank computes CKA over only its own local shard of the subset
-    under DDP (there is no cross-rank feature gather); only the main process writes output.
+    tensors of every pair of transformer blocks, using a subset of the training set.
+
+    If model is None (the default), the model is loaded fresh from args.initialize (an empty
+    --initialize leaves the model at its random "epoch 0" init, e.g. for comparing how CKA
+    decays with depth in an untrained network across model sizes). If model is given, it is
+    used as-is instead - pass the actual in-memory model (e.g. model_without_ddp) so this
+    reflects any in-memory weight edits made after loading, such as apply_spectral_intervention,
+    rather than silently reloading an unedited copy from args.initialize. Pass the unwrapped
+    module, not a DDP-wrapped one; see calculate_rank_final's docstring for why that's safe here.
+
+    Each "sample" fed to gram_cka is one image's full block-output tensor (CLS + patches,
+    flattened) - unlike calculate_rank_final, gram_cka needs the actual [n_samples, dim]
+    feature matrices (it centers and takes the Frobenius norm of an n_samples x n_samples
+    Gram matrix) rather than a streamable summary statistic, and every layer's features must
+    be held in memory at once, so the sample count here is kept far smaller than the rank
+    computation's 5000 to stay memory-bounded. As with the existing cka_calculate_self, each
+    rank computes CKA over only its own local shard of the subset under DDP (there is no
+    cross-rank feature gather); only the main process writes output.
     """
     assert args.accuracy_json, "--accuracy_json must be set (its folder/basename determine the cka json/png output paths) when using --calculate_cka"
 
-    model = utils.build_model(args)
-    model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
-        path=args.initialize, args=args, device=device, model=model
-    )
+    if model is None:
+        model = utils.build_model(args)
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path=args.initialize, args=args, device=device, model=model
+        )
+    else:
+        model_without_ddp = model
+
+    was_training = model.training
     model.eval()
 
     k = min(500, len(dataset_train))
@@ -983,6 +1010,8 @@ def calculate_cka_final(dataset_train, device, args):
 
     if args.distributed:
         dist.barrier()
+
+    model.train(was_training)
 
 
 @torch.no_grad()

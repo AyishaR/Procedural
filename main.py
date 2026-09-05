@@ -274,9 +274,9 @@ def get_args_parser():
                         help='Perform cka only on test set data')
     parser.add_argument('--cka_compare', type=str2bool, default=False,
                         help='Perform cka only on test set data')
-    parser.add_argument('--detailed_metrics', type=str2bool, default=False,
+    parser.add_argument('--detailed_metrics', type=str2bool, default=True,
                         help='Perform visualisation only on test set data')
-    parser.add_argument('--stage_wise_metrics', type=str2bool, default=False,
+    parser.add_argument('--stage_wise_metrics', type=str2bool, default=True,
                         help='Perform visualisation only on test set data')
     parser.add_argument('--pr_visualise', type=str2bool, default=False,
                         help='Perform visualisation only on test set data')
@@ -358,7 +358,7 @@ def get_args_parser():
     parser.add_argument('--layer_11_scale_attn_proj', type=float, default=1.0)
     parser.add_argument('--layer_11_target_qkvp_ln1_norm_ratio', type=float, default=-1.0)
     parser.add_argument('--layer_11_scale_method', type=str, default="")
-    parser.add_argument('--init_method', type=str, default="default", help='Initialization method for the model weights. Options: "default", "match_L11_activations"')
+    parser.add_argument('--init_method', type=str, default="default", help='Initialization method for the model weights. Options: "default", "match_L11_activations", "spectral_truncate_random", "spectral_swap_spectrum"')
     parser.add_argument('--weight_init', type=str, default="",
                         help='Re-initialise all 2-D weights with an alternative scheme before any other init step. Currently: "xavier". Empty = use the model default (timm).')
     parser.add_argument('--target_ratio_absolute', type=float, default=-1.0,
@@ -416,6 +416,15 @@ def get_args_parser():
     parser.add_argument('--init_method_scaled_attributes', type=str, default="", help='Comma separated list of layer indices to apply scaled initialization, e.g. "0,1,2" to apply scaled initialization to the first 3 layers; supports "all" to apply scaled initialization to all layers and "" to not apply scaled initialization to any layers (default: "")')
     parser.add_argument('--init_method_fixed_scale_attributes', type=str, default="", help='format - <attribute>[<scale_ratio>];, e.g. "fc2[0.5];v[0.5]" to scale residuals in the specified layers by the specified ratios')
     parser.add_argument('--init_method_copied_blocks', type=str, default="", help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
+    parser.add_argument('--init_method_copied_blocks_to_target', type=str, default="", help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
+    parser.add_argument('--target_k', type=int, default=-1,
+                        help='Target effective rank (number of top singular values kept). Required (must be > 0) when --init_method is "spectral_truncate_random"; unused otherwise.')
+    parser.add_argument('--spectral_matrices', type=str, default="",
+                        help='Comma separated list of per-block weight matrix names that --init_method "spectral_truncate_random"/"spectral_swap_spectrum" apply their SVD intervention to, e.g. "attn.qkv.weight,attn.proj.weight". '
+                             '"" (default) applies it to all of utils.SPECTRAL_INTERVENTION_MATRICES (attn.qkv.weight, attn.proj.weight, mlp.fc1.weight, mlp.fc2.weight).')
+    parser.add_argument('--spectral_blocks', type=str, default="",
+                        help='Comma separated list of layer indices that --init_method "spectral_truncate_random"/"spectral_swap_spectrum" apply their SVD intervention to, e.g. "0,1,2" for the first 3 layers; '
+                             'supports "all" for every layer and "" (default) to also apply to every layer.')
     parser.add_argument('--simultaneous_init_scaling', type=bool, default=False, help='Scale all blocks simultaneously during initialization, instead of scaling each block individually')
     parser.add_argument('--init_method_bias_scaling', type=bool, default=False, help='Scale bias too')
     parser.add_argument('--mute_mlp', type=str, default="", help='Init mlp to zero')
@@ -753,6 +762,33 @@ def main(args):
                     'mlp.fc2.bias'
             ]
 
+    if args.init_method_copied_blocks_to_target == "":
+        args.init_method_copied_blocks_to_target = {}
+    else:
+        segments = args.init_method_copied_blocks_to_target.split(";")
+        args.init_method_copied_blocks_to_target = {}
+        for segment in segments:
+            if "[" in segment and "]" in segment:
+                layer_num = int(segment.split("[")[0])
+                segment_names = segment.split("[")[1].split("]")[0].split(",")
+                args.init_method_copied_blocks_to_target[layer_num] = segment_names
+            else:
+                layer_num = int(segment)
+                args.init_method_copied_blocks_to_target[layer_num] = [
+                    'norm1.weight',
+                    'norm1.bias',
+                    'attn.qkv.weight',
+                    'attn.qkv.bias',
+                    'attn.proj.weight',
+                    'attn.proj.bias',
+                    'norm2.weight',
+                    'norm2.bias',
+                    'mlp.fc1.weight',
+                    'mlp.fc2.weight',
+                    'mlp.fc1.bias',
+                    'mlp.fc2.bias'
+            ]
+
     if args.attention_residual_scaling == "":
         args.attention_residual_scaling = {}
     else:
@@ -823,6 +859,18 @@ def main(args):
         args.mute_mlp = []
     else:
         args.mute_mlp = [int(x) for x in args.mute_mlp.split(",")]
+
+    if args.spectral_matrices == "":
+        args.spectral_matrices = []
+    else:
+        args.spectral_matrices = [x.strip() for x in args.spectral_matrices.split(",")]
+
+    if args.spectral_blocks == "":
+        args.spectral_blocks = []
+    elif args.spectral_blocks == "all":
+        args.spectral_blocks = list(range(len(model.blocks)))
+    else:
+        args.spectral_blocks = [int(x) for x in args.spectral_blocks.split(",")]
 
     if args.weight_init:
         model = apply_weight_init(model, args.weight_init)
@@ -1132,7 +1180,50 @@ def main(args):
             device = device,
             model = model
         )
-    
+    elif args.init_method == "spectral_truncate_random":
+        # Sufficiency test (Experiment 1): SVD-truncate a randomly-initialized model's
+        # per-block weight matrices to the top target_k singular values, then rescale
+        # each back to its original Frobenius norm. Tests whether artificially forcing
+        # a random model to have low effective rank alone cures the tunnel effect,
+        # without giving it any procedural knowledge.
+        if args.target_k <= 0:
+            raise ValueError('--target_k must be set to a positive int when using init_method "spectral_truncate_random"')
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = "",
+            args = args,
+            device = device,
+            model = model
+        )
+        # DDP already syncs replicas at construction time only, so with model_without_ddp
+        # already DDP-wrapped by pr_load_model, the (RNG-dependent) intervention is computed
+        # once on rank 0 and its result broadcast to the other ranks.
+        if utils.get_rank() == 0:
+            utils.apply_spectral_intervention(
+                model_without_ddp, "truncate_random", target_k=args.target_k,
+                matrices=args.spectral_matrices, blocks=args.spectral_blocks)
+        if args.distributed:
+            for p in model_without_ddp.parameters():
+                dist.broadcast(p.data, src=0)
+    elif args.init_method == "spectral_swap_spectrum":
+        # Necessity test (Experiment 2): load the PR checkpoint, then for each per-block
+        # weight matrix keep its own singular vectors but swap in the singular values of a
+        # freshly-built random reference model of the same architecture, rescaling back to
+        # the original Frobenius norm. Tests whether destroying the PR model's low-rank
+        # spectrum while keeping its learned directions reinstates the tunnel effect.
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model
+        )
+        if utils.get_rank() == 0:
+            utils.apply_spectral_intervention(
+                model_without_ddp, "swap_spectrum", args=args,
+                matrices=args.spectral_matrices, blocks=args.spectral_blocks)
+        if args.distributed:
+            for p in model_without_ddp.parameters():
+                dist.broadcast(p.data, src=0)
+
     total_params = sum(p.numel() for p in model_without_ddp.parameters())
     trainable = sum(p.numel() for p in model_without_ddp.parameters() if p.requires_grad)
     non_trainable = sum(p.numel() for p in model_without_ddp.parameters() if not p.requires_grad)
@@ -1270,12 +1361,12 @@ def main(args):
 
     if args.calculate_rank:
         print(f"Calculate rank mode")
-        calculate_rank_final(dataset_train, device, args=args)
+        calculate_rank_final(dataset_train, device, args=args, model=model_without_ddp)
         # return
 
         if args.calculate_cka:
             print(f"Calculate CKA mode")
-            calculate_cka_final(dataset_train, device, args=args)
+            calculate_cka_final(dataset_train, device, args=args, model=model_without_ddp)
         # return
 
     if args.analyse_only:
@@ -1406,6 +1497,16 @@ def main(args):
                     print(f"Copying weights for layer {block_idx} segment {segment} from target model to current model", flush=True)
                     edited_weights[f"blocks.{block_idx}.{segment}"] = target_model_weights[f"blocks.{block_idx}.{segment}"]
             utils.load_state_dict(model_without_ddp, edited_weights)
+
+        # loop through init_method_copied_blocks_to_target and copy the weights from the current model to the target model for the specified segments
+        if args.init_method_copied_blocks_to_target:
+            edited_weights = {}
+            current_model_weights = model_without_ddp.state_dict()
+            for block_idx, segments in args.init_method_copied_blocks_to_target.items():
+                for segment in segments:
+                    print(f"Copying weights for layer {block_idx} segment {segment} from current model to target model", flush=True)
+                    edited_weights[f"blocks.{block_idx}.{segment}"] = current_model_weights[f"blocks.{block_idx}.{segment}"]
+            utils.load_state_dict(target_model_without_ddp, edited_weights)
             
         if args.init_method in ["downscale_pr_match_attn_delta_norms", "upscale_random_match_attn_delta_norms", "upscale_pr_match_attn_delta_norms", "downscale_mixed_match_attn_delta_norms"]:
             if utils.is_main_process():
@@ -1762,12 +1863,12 @@ def main(args):
 
         # if args.calculate_rank:
         print(f"Calculate rank mode")
-        calculate_rank_final(dataset_train, device, args=args)
+        calculate_rank_final(dataset_train, device, args=args, model=model_without_ddp)
         # return
 
         # if args.calculate_cka:
         print(f"Calculate CKA mode")
-        calculate_cka_final(dataset_train, device, args=args)
+        calculate_cka_final(dataset_train, device, args=args, model=model_without_ddp)
 
     if args.post_hoc_act_norm_track: return
     # return

@@ -677,6 +677,76 @@ def build_model(args):
             )
     return model
 
+SPECTRAL_INTERVENTION_MATRICES = ["attn.qkv.weight", "attn.proj.weight", "mlp.fc1.weight", "mlp.fc2.weight"]
+
+def _get_nested_attr(root, dotted_path):
+    obj = root
+    for part in dotted_path.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+def apply_spectral_intervention(model, intervention_type, target_k=None, args=None, matrices=SPECTRAL_INTERVENTION_MATRICES, blocks=None):
+    """Apply a one-time SVD-based spectral intervention, in place, to a set of
+    per-block linear weight matrices (e.g. attn.qkv.weight, attn.proj.weight,
+    mlp.fc1.weight, mlp.fc2.weight) in model.blocks. If matrices is empty/falsy,
+    falls back to SPECTRAL_INTERVENTION_MATRICES (all four per-block linears). If
+    blocks is empty/falsy, applies to every block; otherwise only to the block
+    indices listed in blocks.
+
+    intervention_type == 'truncate_random': truncates each matrix's spectrum to the
+    top target_k singular values (Experiment 1, the sufficiency test - run this on a
+    randomly-initialized model, i.e. one built without loading a PR checkpoint).
+
+    intervention_type == 'swap_spectrum': replaces each matrix's singular values with
+    those of a freshly-built random reference model of the same architecture (built via
+    build_model(args)), while keeping the matrix's own singular vectors (Experiment 2,
+    the necessity test - run this on a PR-pretrained model).
+
+    Both branches rescale the reconstructed matrix so its Frobenius norm matches the
+    original matrix's Frobenius norm before writing it back.
+    """
+    assert intervention_type in ("truncate_random", "swap_spectrum"), \
+        f"Unknown intervention_type: {intervention_type!r}, expected 'truncate_random' or 'swap_spectrum'"
+
+    if not matrices:
+        matrices = SPECTRAL_INTERVENTION_MATRICES
+
+    block_indices = set(blocks) if blocks else set(range(len(model.blocks)))
+
+    if intervention_type == "truncate_random":
+        assert isinstance(target_k, int) and target_k > 0, \
+            f"target_k must be a positive int for truncate_random, got {target_k!r}"
+        random_model = None
+    else:
+        assert args is not None, "args is required for swap_spectrum, to build the random reference model"
+        random_model = build_model(args)
+
+    for i, block in enumerate(model.blocks):
+        if i not in block_indices:
+            continue
+        for name in matrices:
+            W = _get_nested_attr(block, name)
+            assert W.dim() == 2, f"Expected a 2D weight matrix for blocks.{i}.{name}, got shape {tuple(W.shape)}"
+
+            with torch.no_grad():
+                if intervention_type == "truncate_random":
+                    assert target_k <= min(W.shape), \
+                        f"target_k={target_k} exceeds min(shape)={min(W.shape)} for blocks.{i}.{name} with shape {tuple(W.shape)}"
+                    U, S, Vt = torch.linalg.svd(W.data, full_matrices=False)
+                    S_trunc = S.clone()
+                    S_trunc[target_k:] = 0
+                    W_new = (U * S_trunc) @ Vt
+                else:
+                    W_rand = _get_nested_attr(random_model.blocks[i], name).data.to(device=W.device, dtype=W.dtype)
+                    U_pr, _, Vt_pr = torch.linalg.svd(W.data, full_matrices=False)
+                    _, S_rand, _ = torch.linalg.svd(W_rand, full_matrices=False)
+                    W_new = (U_pr * S_rand) @ Vt_pr
+
+                scale = torch.linalg.norm(W.data) / torch.linalg.norm(W_new)
+                W.data.copy_(W_new * scale)
+
+    return model
+
 def ft_load_model(path, args, device, delete_blocks=None, model=None):
     if model is None:
         model = build_model(args)
