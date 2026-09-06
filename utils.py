@@ -1192,21 +1192,28 @@ def shuffle_weights(model, weight_shuffle_dict):
         block = model.blocks[block_idx]
         for weight_name in shuffle_info:
             print(f"Shuffling weights for block {block_idx}, weight {weight_name}")
-            if weight_name in ["attn.qk.weight", "attn.qk.bias", "attn.v.weight", "attn.v.bias"]:
+            # Slice names for the fused attn.qkv. "attn.qk.weight" shuffles rows [0:2e] as ONE
+            # pool, which does NOT preserve ||W_q|| and ||W_k|| separately -- proc has 55.11 and
+            # 61.90 and the pooled shuffle returns 58.64/58.62, 6.4% off (docs 0c.1). That is the
+            # only known difference between ftb4e3fix (79.49) and ftbqmlnvo (79.93), so
+            # "attn.q.weight" / "attn.k.weight" shuffle the q and k slices as SEPARATE pools and
+            # keep both norms exact. Added 2026-09-04 for arm ftbqks.
+            if weight_name in ["attn.qk.weight", "attn.qk.bias", "attn.v.weight", "attn.v.bias",
+                               "attn.q.weight", "attn.k.weight"]:
                 weight_tensor = resolve_param_path(block, "attn.qkv.weight")
                 if weight_tensor is not None:
                     total_dim = weight_tensor.data.shape[0]
                     embed_dim = total_dim // 3
-                    if weight_name == "attn.qk.weight":
-                        qk_weights = weight_tensor.data[:2*embed_dim, :]
-                        flat_weights = qk_weights.view(-1)
+                    spans = {"attn.qk.weight": (0, 2 * embed_dim),
+                             "attn.q.weight": (0, embed_dim),
+                             "attn.k.weight": (embed_dim, 2 * embed_dim),
+                             "attn.v.weight": (2 * embed_dim, 3 * embed_dim)}
+                    if weight_name in spans:
+                        lo, hi = spans[weight_name]
+                        sl = weight_tensor.data[lo:hi, :]
+                        flat_weights = sl.reshape(-1)
                         shuffled_weights = flat_weights[torch.randperm(flat_weights.size(0))]
-                        weight_tensor.data[:2*embed_dim, :].copy_(shuffled_weights.view(qk_weights.shape))
-                    elif weight_name == "attn.v.weight":
-                        v_weights = weight_tensor.data[2*embed_dim:3*embed_dim, :]
-                        flat_weights = v_weights.view(-1)
-                        shuffled_weights = flat_weights[torch.randperm(flat_weights.size(0))]
-                        weight_tensor.data[2*embed_dim:3*embed_dim, :].copy_(shuffled_weights.view(v_weights.shape))
+                        weight_tensor.data[lo:hi, :].copy_(shuffled_weights.view(sl.shape))
             else:
                 weight_tensor = resolve_param_path(block, weight_name)
                 if weight_tensor is not None:

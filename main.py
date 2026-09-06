@@ -313,6 +313,16 @@ def get_args_parser():
     parser.add_argument('--slice_scale_proj', default=1.0, type=float,
                         help='Same for attn.proj.weight. v and proj together set the attention '
                              'write magnitude; qk sets the logit scale.')
+    parser.add_argument('--spectral_values', default="keep", type=str,
+                        help='For --custom_init_type "spectral": where the SINGULAR VALUES of each '
+                             '2-D matrix in --custom_init_blocks come from. "keep" = the matrix\'s '
+                             'own (i.e. unchanged); "mp" = the singular values of a fresh Gaussian '
+                             'matrix of the same shape (Marchenko-Pastur, what a random init has); '
+                             '"flat" = all equal. Every option preserves ||W||_F exactly.')
+    parser.add_argument('--spectral_basis', default="keep", type=str,
+                        help='For --custom_init_type "spectral": where the SINGULAR VECTORS come '
+                             'from. "keep" = the matrix\'s own; "random" = fresh Haar-random '
+                             'orthonormal U and V (QR of a Gaussian). Also preserves ||W||_F.')
     parser.add_argument('--custom_init_blocks', default="", type=str,
                         help='Comma separated list of layer indices to apply custom init, e.g. "0,1,2" to apply custom init to the first 3 layers; supports "all" to apply custom init to all layers and "" to not apply custom init to any layers (default: "")')
     parser.add_argument('--save_for_analysis', default=True, type=bool,
@@ -357,7 +367,16 @@ def get_args_parser():
     parser.add_argument('--target_ratio_flatten', type=str2bool, default=False,
                         help='Replace each target delta-norm ratio with the mean across the scaled blocks, removing the profile shape while keeping its average.')
     parser.add_argument('--quantile_source', type=str, default="empirical",
-                        help='For init_method "quantile_match_target_blocks": "empirical" uses the checkpoint\'s own sorted values; "parametric" substitutes a Student-t fitted to the checkpoint\'s kurtosis and norm (tests whether a parameterised distribution suffices).')
+                        choices=["empirical", "parametric", "gaussian"],
+                        help='For init_method "quantile_match_target_blocks": what is written into the 2-D '
+                             'weights. "empirical" uses the checkpoint\'s own sorted values (the value '
+                             'multiset). "parametric" substitutes a Student-t fitted per tensor/slice to the '
+                             'checkpoint\'s kurtosis, rescaled to its norm (a 4-moment donor). "gaussian" '
+                             'substitutes a Gaussian with the tensor/slice\'s mean and norm (a 2-moment donor): '
+                             'together with --quantile_qkv_mode / --quantile_1d_mode it builds the exact '
+                             'scale-profile twin of an empirical arm with the marginal shape removed '
+                             '(docs 0d.8, arm 1). Since 2026-09-05 the substitution is applied inside the qkv '
+                             'slice branch too; before that the slice branch silently kept the empirical donor.')
     parser.add_argument('--quantile_1d_mode', type=str, default="skip",
                         choices=["skip", "shuffle", "bias", "layernorm"],
                         help='For init_method "quantile_match_target_blocks": how to treat the 1-D parameters '
@@ -513,6 +532,85 @@ def clip_block_outliers(model, blocks, frac, tag=""):
                 w.mul_(orig_norm / new_norm)
             print(f"Clipped{tag} {name}: {n_clipped}/{n} above |{thresh:.4f}|, "
                   f"norm {orig_norm:.4f} -> {w.norm().item():.4f}", flush=True)
+
+
+def spectral_reinit(model, blocks, values="keep", basis="keep", seed=0, tag=""):
+    """Rebuild each 2-D weight matrix of `blocks` as U @ diag(s) @ V^T with the singular
+    VALUES and the singular VECTORS chosen independently. Every combination preserves
+    ||W||_F exactly, so it is invisible to every norm-based quantity in this study --
+    including `value_write` (docs 0) and the per-slice scales of "slice_scale".
+
+    Why (docs 0, 2026-09-02): proc's early blocks sit at stable rank 5-22 out of 768 while a
+    random init and an entrywise shuffle both sit at 194-343. Everything ever transplanted in
+    this document was either entrywise (quantile match, clipping, shuffle) or a scalar
+    multiplier (norm/rho match, slice_scale), so the SPECTRUM has never been an independent
+    variable. `spectral_values="mp"` keeps proc's singular directions and gives it a random
+    matrix's spectrum; `spectral_basis="random"` keeps proc's spectrum and randomises the
+    directions. With ftb3i (both proc) and ftb4e3fix (neither) they close a 2x2.
+
+    The fused attn.qkv is decomposed PER SLICE (q, k, v separately) -- proc's slices have very
+    different spectra (stable rank 5.0 / 9.7 / 20.0) and a fused SVD would mix them, which is
+    the same mistake pooling made in 3.10.9.5.
+
+    RNG: a private CPU generator seeded from args.seed only, never the per-rank seed, so the
+    ranks agree before the init-sync broadcast rather than relying on it.
+    """
+    if values == "keep" and basis == "keep":
+        print(f"Spectral{tag}: values=keep basis=keep -- no-op", flush=True)
+        return
+    gen = torch.Generator(device="cpu").manual_seed(int(seed) * 100003 + 7)
+
+    def stable_rank(sv):
+        return (sv.pow(2).sum() / sv[0].pow(2)).item()
+
+    def haar(n, k):
+        q, r = torch.linalg.qr(torch.randn(n, k, generator=gen, dtype=torch.float64))
+        return q * torch.sign(torch.diagonal(r)).unsqueeze(0)   # fix QR's sign ambiguity
+
+    def rebuild(w):
+        """w: a 2-D float tensor on any device. Returns the rebuilt tensor, same dtype/device."""
+        dev, dt = w.device, w.dtype
+        W = w.detach().to("cpu", torch.float64)
+        U, sv, Vh = torch.linalg.svd(W, full_matrices=False)
+        k = sv.numel()
+        if values == "mp":
+            s_new = torch.linalg.svdvals(torch.randn(*W.shape, generator=gen, dtype=torch.float64))
+        elif values == "flat":
+            s_new = torch.ones(k, dtype=torch.float64)
+        elif values == "keep":
+            s_new = sv.clone()
+        else:
+            raise ValueError(f"unknown --spectral_values {values!r}")
+        s_new = s_new * (sv.norm() / s_new.norm())              # preserve ||W||_F exactly
+        if basis == "random":
+            U, Vh = haar(W.shape[0], k), haar(W.shape[1], k).T
+        elif basis != "keep":
+            raise ValueError(f"unknown --spectral_basis {basis!r}")
+        out = (U * s_new.unsqueeze(0)) @ Vh
+        return out.to(dev, dt), stable_rank(sv), stable_rank(s_new.sort(descending=True).values)
+
+    with torch.no_grad():
+        for block_idx in blocks:
+            blk = model.blocks[block_idx]
+            e = blk.attn.qkv.weight.shape[0] // 3
+            targets = [("qkv[q]", blk.attn.qkv.weight, slice(0, e)),
+                       ("qkv[k]", blk.attn.qkv.weight, slice(e, 2 * e)),
+                       ("qkv[v]", blk.attn.qkv.weight, slice(2 * e, 3 * e)),
+                       ("proj", blk.attn.proj.weight, None),
+                       ("fc1", blk.mlp.fc1.weight, None),
+                       ("fc2", blk.mlp.fc2.weight, None)]
+            for name, param, rows in targets:
+                w = param.data if rows is None else param.data[rows]
+                before = w.norm().item()
+                new, sr_old, sr_new = rebuild(w)
+                if rows is None:
+                    param.data.copy_(new)
+                else:
+                    param.data[rows] = new
+                after = (param.data if rows is None else param.data[rows]).norm().item()
+                print(f"Spectral{tag} block {block_idx} {name}: stable rank "
+                      f"{sr_old:.1f} -> {sr_new:.1f}, |W| {before:.4f} -> {after:.4f}",
+                      flush=True)
 
 
 def main(args):
@@ -941,6 +1039,31 @@ def main(args):
             device = device,
             model = model_temp
         )
+        def make_donor(target_flat, label):
+            """The values written (by rank map) into one 2-D tensor or qkv slice, per
+            --quantile_source. `target_flat` is the checkpoint's flattened tensor/slice."""
+            if args.quantile_source == "empirical":
+                return target_flat
+            z = (target_flat - target_flat.mean()) / target_flat.std()
+            kurt = (z ** 4).mean().item()
+            if args.quantile_source == "parametric":
+                # Student-t with df matched to the target's excess kurtosis
+                # (kurt = 3 + 6/(df-4) for df > 4), then rescaled to the target's norm.
+                df = 4.0 + 6.0 / max(kurt - 3.0, 1e-3)
+                df = float(min(max(df, 4.5), 100.0))
+                samp = torch.distributions.StudentT(df).sample((target_flat.numel(),)).to(target_flat.device)
+                donor = samp / samp.norm() * target_flat.norm()
+                print(f"Parametric donor {label}: target kurt {kurt:.2f} -> StudentT df {df:.2f}, "
+                      f"|W| {donor.norm():.4f} (target {target_flat.norm():.4f})", flush=True)
+                return donor
+            if args.quantile_source == "gaussian":
+                samp = torch.randn(target_flat.numel(), device=target_flat.device) * target_flat.std() + target_flat.mean()
+                donor = samp / samp.norm() * target_flat.norm()
+                print(f"Gaussian donor {label}: target kurt {kurt:.2f} -> 3.00, std {donor.std():.5f} "
+                      f"(target {target_flat.std():.5f}), |W| {donor.norm():.4f} (target {target_flat.norm():.4f})", flush=True)
+                return donor
+            raise ValueError(f"unknown --quantile_source {args.quantile_source}")
+
         with torch.no_grad():
             target_params = dict(target_model_without_ddp.named_parameters())
             for name, p in model_without_ddp.named_parameters():
@@ -997,7 +1120,7 @@ def main(args):
                     if len(want) == 1:
                         # pooled donor for the slice we are NOT matching, so it keeps the
                         # q+k+v mixed width exactly as `pooled` would give it
-                        pooled = target_p.data.flatten().float()
+                        pooled = make_donor(target_p.data.flatten().float(), f"{name}[pooled]")
                         ps, _ = torch.sort(pooled)
                         order_all = torch.argsort(p.data.flatten().float())
                         tmp = torch.empty_like(ps); tmp[order_all] = ps
@@ -1008,7 +1131,7 @@ def main(args):
                                 print(f"Quantile match[{tag}:pooled] {name}: "
                                       f"std {p.data[lo:hi].float().std():.5f}", flush=True)
                     for lo, hi, tag in [x for x in spans if x[2] in want]:
-                        d = target_p.data[lo:hi].flatten().float()
+                        d = make_donor(target_p.data[lo:hi].flatten().float(), f"{name}[{tag}]")
                         ds, _ = torch.sort(d)
                         cur = p.data[lo:hi].flatten().float()
                         o = torch.argsort(cur)
@@ -1021,16 +1144,7 @@ def main(args):
                               f"(target {target_p.data[lo:hi].float().std():.5f})", flush=True)
                     continue
 
-                if args.quantile_source == "parametric":
-                    # Student-t with df matched to the target's excess kurtosis
-                    # (kurt = 3 + 6/(df-4) for df > 4), then rescaled to the target's norm.
-                    z = (donor - donor.mean()) / donor.std()
-                    kurt = (z ** 4).mean().item()
-                    df = 4.0 + 6.0 / max(kurt - 3.0, 1e-3)
-                    df = float(min(max(df, 4.5), 100.0))
-                    samp = torch.distributions.StudentT(df).sample((donor.numel(),)).to(donor.device)
-                    donor = samp / samp.norm() * target_p.data.norm()   # match the target's norm
-                    print(f"Parametric donor {name}: target kurt {kurt:.2f} -> StudentT df {df:.2f}", flush=True)
+                donor = make_donor(donor, name)
                 donor_sorted, _ = torch.sort(donor)
                 order = torch.argsort(p.data.flatten().float())
                 out = torch.empty_like(donor_sorted)
@@ -1333,6 +1447,17 @@ def main(args):
                         print(f"Slice scale[proj] block {block_idx}: |W| {before:.4f} -> "
                               f"{blk.attn.proj.weight.data.norm().item():.4f} "
                               f"(x{args.slice_scale_proj})", flush=True)
+
+        # Spectral surgery: sets the singular values and the singular vectors of the 2-D
+        # matrices independently, both norm-preserving. This is the only init in the file that
+        # is NOT entrywise and NOT a scalar multiplier, i.e. the only one that can move the
+        # rank without moving anything else. See spectral_reinit's docstring and docs 0.
+        if args.custom_init_type == "spectral":
+            if not args.custom_init_blocks:
+                raise ValueError('--custom_init_type "spectral" needs --custom_init_blocks')
+            spectral_reinit(model_without_ddp, args.custom_init_blocks,
+                            values=args.spectral_values, basis=args.spectral_basis,
+                            seed=args.seed, tag="[model]")
 
         if args.layer_11_scale_method != "":
             scale_weights = {

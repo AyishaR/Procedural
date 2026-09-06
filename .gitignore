@@ -16,3 +16,11 @@ logs/
 wandb/
 *.sh
 .venv
+# analysis caches too large for git (rebuild with plots/dump_init.py / plots/verify)
+plots/cache/*.pth
+plots/cache/*.npz
+# sweep runtime state and stray run artefacts at the repo root
+.sweep_state.json
+/grad_norms.json
+/o
+/pid,*

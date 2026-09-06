@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name ftb4e
-#SBATCH --partition lmbdlc2_gpu-h200
+#SBATCH --partition lmbdlc2_gpu-l40s
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:4
 #SBATCH --time 23:29:59
@@ -8,6 +8,7 @@
 #SBATCH -e /home/schrodi/Procedural/logs/ft_%j_%x.err # STDERR
 #SBATCH --mail-type END,FAIL
 #SBATCH --mail-user schrodi@cs.uni-freiburg.de 
+#SBATCH --exclude=dlc2gpu02,dlc2gpu01,dlc2gpu10,dlc2gpu16,dlc2gpu17,dlc2gpu32
 
 SECONDS=0
 
@@ -40,13 +41,18 @@ BATCH_SIZE=128
 UPDATE_FREQ=$((($TOTAL_BATCH_SIZE / $SLURM_GPUS_ON_NODE) / $BATCH_SIZE))
 
 # for i in 0 1 2; do
-torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
+# --standalone pins rendezvous to localhost:29400, which collides with any other
+# torchrun on the same node (ours or another user's) and deadlocks at the first
+# collective. Derive a unique port from the job id instead (docs 5.12).
+MASTER_PORT=$(( 20000 + (SLURM_JOB_ID % 20000) ))
+echo "rendezvous port: $MASTER_PORT"
+torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --model vit_base  --warmup_epochs 50 --epochs 300 \
     --total_batch_size $TOTAL_BATCH_SIZE \
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
-    --initialize "results/pr_vitb/pr_6066174_final.pth" \
+    --initialize "results/pr_vitb_n/pr_6066174_final.pth" \
     --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
     --enable_wandb true \
     --project "vit base kdyck" \

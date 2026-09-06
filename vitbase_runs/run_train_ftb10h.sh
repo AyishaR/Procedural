@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name ftb10h
-#SBATCH --partition lmbdlc2_gpu-h200
+#SBATCH --partition alldlc2_gpu-h200
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:4
 #SBATCH --time 23:29:59
@@ -40,13 +40,31 @@ BATCH_SIZE=128
 UPDATE_FREQ=$((($TOTAL_BATCH_SIZE / $SLURM_GPUS_ON_NODE) / $BATCH_SIZE))
 
 # for i in 0 1 2; do
-torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
+CPUS_PER_RANK=$(( ${SLURM_CPUS_ON_NODE:-8} / $SLURM_GPUS_ON_NODE ))
+if [[ $CPUS_PER_RANK -lt 1 ]]; then CPUS_PER_RANK=1; fi
+NUM_WORKERS=${NUM_WORKERS:-$CPUS_PER_RANK}
+echo "CPUs on node: ${SLURM_CPUS_ON_NODE:-?}, gpus: $SLURM_GPUS_ON_NODE -> num_workers=$NUM_WORKERS"
+
+# Transient /dev/shm exhaustion kills DataLoader workers; the chain reads the short runtime
+# as "completed too quickly" and stops (docs 5.7). Retry in-job instead.
+MAX_RETRIES=${MAX_RETRIES:-6}
+attempt=0
+while true; do
+attempt=$((attempt+1))
+echo "=== attempt $attempt/$MAX_RETRIES at $(date) ==="
+
+# --standalone pins rendezvous to localhost:29400, which collides with any other
+# torchrun on the same node (ours or another user's) and deadlocks at the first
+# collective. Derive a unique port from the job id instead (docs 5.12).
+MASTER_PORT=$(( 20000 + (SLURM_JOB_ID % 20000) ))
+echo "rendezvous port: $MASTER_PORT"
+torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --model vit_base  --warmup_epochs 50 --epochs 300 \
     --total_batch_size $TOTAL_BATCH_SIZE \
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
-    --initialize "results/pr_vitb/pr_6066174_final.pth" \
+    --initialize "results/pr_vitb_n/pr_6066174_final.pth" \
     --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
     --enable_wandb true \
     --project "vit base kdyck" \
@@ -61,6 +79,7 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --stage_wise_metrics true \
     --detailed_metrics true \
     --slurm_id $SLURM_ID \
+    --num_workers $NUM_WORKERS \
     --seed $SEED
     # --skip_keys $SKIP_KEYS 
 
@@ -68,6 +87,11 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
 # done
 TORCH_EXIT=$?
 echo "Torchrun exited with code $TORCH_EXIT"
+if [ $TORCH_EXIT -eq 0 ]; then break; fi
+if [ $attempt -ge $MAX_RETRIES ]; then echo "giving up after $attempt attempts"; break; fi
+echo "retrying in 30s; auto_resume continues from the last epoch checkpoint"
+sleep 30
+done
 
 duration=$SECONDS
 if (( duration < 300 )); then  # 5 min = 300s

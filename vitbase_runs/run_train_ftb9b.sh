@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name ftb9b
-#SBATCH --partition lmbdlc2_gpu-h200
+#SBATCH --partition alldlc2_gpu-h200
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:4
 #SBATCH --time 23:29:59
@@ -46,7 +46,7 @@ torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
-    --initialize "results/pr_vitb/pr_6066174_final.pth" \
+    --initialize "results/pr_vitb_n/pr_6066174_final.pth" \
     --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
     --enable_wandb true \
     --project "vit base kdyck" \

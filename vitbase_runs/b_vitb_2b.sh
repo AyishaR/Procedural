@@ -1,12 +1,12 @@
 #!/bin/bash
-SLURM_ID=0
+SLURM_ID=29406780
 ASSIGNED=false
 
 cd Procedural
 
 SCRIPT="run_train_ftb2b.sh"
 
-for i in 0; do    # Add multiple values for multiple seeds
+for i in 1; do    # Add multiple values for multiple seeds
     timeout_flag=0
     echo "Starting chain for seed $i with SLURM_ID=$SLURM_ID"
     while true; do

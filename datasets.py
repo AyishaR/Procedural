@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 import oxford_flowers_dataset, oxford_pets_dataset
 import numpy as np
-from spawrious.torch import get_spawrious_dataset
+# from spawrious.torch import get_spawrious_dataset
 from torch.utils.data import Dataset
 
 def build_dataset(is_train, args, transform_train=None, data_set_override=None, data_path_override=None):

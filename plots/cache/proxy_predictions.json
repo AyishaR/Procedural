@@ -1,0 +1,208 @@
+{
+ "fit": {
+  "slope": 3.2180010532956613,
+  "intercept": 66.16295302735745,
+  "r": 0.8339841830910066,
+  "r2": 0.6955296176459737,
+  "resid_sd": 0.5316567863033881,
+  "n_arms": 24
+ },
+ "predictions": {
+  "ftbcfg": {
+   "ep49_train_loss": 3.7514,
+   "n_seeds": 3,
+   "predicted_final": 78.24,
+   "ci95": [
+    77.19,
+    79.28
+   ],
+   "epochs_at_registration": [
+    181,
+    137,
+    137
+   ]
+  },
+  "ftb4e3fix": {
+   "ep49_train_loss": 3.8577,
+   "n_seeds": 3,
+   "predicted_final": 78.58,
+   "ci95": [
+    77.53,
+    79.62
+   ],
+   "epochs_at_registration": [
+    100,
+    165,
+    159
+   ]
+  },
+  "ftb11isfix": {
+   "ep49_train_loss": 3.7899,
+   "n_seeds": 3,
+   "predicted_final": 78.36,
+   "ci95": [
+    77.32,
+    79.4
+   ],
+   "epochs_at_registration": [
+    244,
+    260,
+    258
+   ]
+  },
+  "ftbqmlnvo": {
+   "ep49_train_loss": 3.8849,
+   "n_seeds": 3,
+   "predicted_final": 78.66,
+   "ci95": [
+    77.62,
+    79.71
+   ],
+   "epochs_at_registration": [
+    242,
+    248,
+    233
+   ]
+  },
+  "ftbvu": {
+   "ep49_train_loss": 3.7128,
+   "n_seeds": 3,
+   "predicted_final": 78.11,
+   "ci95": [
+    77.07,
+    79.15
+   ],
+   "epochs_at_registration": [
+    294,
+    295,
+    294
+   ]
+  },
+  "ftbqmvo": {
+   "ep49_train_loss": 3.8982,
+   "n_seeds": 3,
+   "predicted_final": 78.71,
+   "ci95": [
+    77.67,
+    79.75
+   ],
+   "epochs_at_registration": [
+    281,
+    300,
+    300
+   ]
+  },
+  "ftb4i": {
+   "ep49_train_loss": 4.4023,
+   "n_seeds": 2,
+   "predicted_final": 80.33,
+   "ci95": [
+    79.29,
+    81.37
+   ],
+   "epochs_at_registration": [
+    300,
+    28,
+    238
+   ]
+  },
+  "ftb7e": {
+   "ep49_train_loss": 3.9231,
+   "n_seeds": 1,
+   "predicted_final": 78.79,
+   "ci95": [
+    77.75,
+    79.83
+   ],
+   "epochs_at_registration": [
+    278,
+    0,
+    0
+   ]
+  },
+  "ftb9e": {
+   "ep49_train_loss": 3.9716,
+   "n_seeds": 1,
+   "predicted_final": 78.94,
+   "ci95": [
+    77.9,
+    79.99
+   ],
+   "epochs_at_registration": [
+    298,
+    0,
+    0
+   ]
+  },
+  "ftb10e": {
+   "ep49_train_loss": 3.9633,
+   "n_seeds": 1,
+   "predicted_final": 78.92,
+   "ci95": [
+    77.87,
+    79.96
+   ],
+   "epochs_at_registration": [
+    52,
+    0,
+    0
+   ]
+  },
+  "ftb11e": {
+   "ep49_train_loss": 3.9889,
+   "n_seeds": 1,
+   "predicted_final": 79.0,
+   "ci95": [
+    77.96,
+    80.04
+   ],
+   "epochs_at_registration": [
+    100,
+    0,
+    0
+   ]
+  },
+  "ftb9b": {
+   "ep49_train_loss": 3.7902,
+   "n_seeds": 1,
+   "predicted_final": 78.36,
+   "ci95": [
+    77.32,
+    79.4
+   ],
+   "epochs_at_registration": [
+    200,
+    0,
+    0
+   ]
+  },
+  "ftb10b": {
+   "ep49_train_loss": 3.8169,
+   "n_seeds": 1,
+   "predicted_final": 78.45,
+   "ci95": [
+    77.4,
+    79.49
+   ],
+   "epochs_at_registration": [
+    198,
+    0,
+    0
+   ]
+  },
+  "ftb11b": {
+   "ep49_train_loss": 3.8704,
+   "n_seeds": 1,
+   "predicted_final": 78.62,
+   "ci95": [
+    77.58,
+    79.66
+   ],
+   "epochs_at_registration": [
+    172,
+    0,
+    0
+   ]
+  }
+ }
+}

@@ -1,5 +1,5 @@
 #!/bin/bash
-SLURM_ID=0
+SLURM_ID=29409056
 ASSIGNED=false
 
 cd Procedural
@@ -11,7 +11,7 @@ for i in 0; do
     echo "Starting chain for seed $i with SLURM_ID=$SLURM_ID"
     while true; do
         # Submit with all remaining args passed through
-        if [[ "$SLURM_ID" -eq 0 ]]; then˚w
+        if [[ "$SLURM_ID" -eq 0 ]]; then
             echo "Submitting initial job..."
             JOB_ID=$(sbatch --parsable  \
                 --export=SEED=$i \
