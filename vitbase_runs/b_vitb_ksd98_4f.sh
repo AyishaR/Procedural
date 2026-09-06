@@ -2,9 +2,10 @@
 SLURM_ID=0
 ASSIGNED=false
 
-INITIALIZE="results/pr_vitb/pr_6066174_final.pth"
-PROCEDURAL_DATA="kdyck"
-PR_NOTES=""
+# TODO: set the version-2 values for this run
+INITIALIZE="results/pr_vitb/pr_6463456_final.pth"  # TODO: replace with version-2 checkpoint path
+PROCEDURAL_DATA="kdyck_shuffled"
+PR_NOTES="d98"
 
 cd Procedural
 

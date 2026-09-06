@@ -2,13 +2,9 @@
 SLURM_ID=0
 ASSIGNED=false
 
-INITIALIZE="results/pr_vitb/pr_6066174_final.pth"
-PROCEDURAL_DATA="kdyck"
-PR_NOTES=""
-
 cd Procedural
 
-SCRIPT="run_train_ftb4f.sh"
+SCRIPT="run_train_ftb1m.sh"
 
 for i in 0; do
     timeout_flag=0
@@ -18,14 +14,14 @@ for i in 0; do
         if [[ "$SLURM_ID" -eq 0 ]]; then
             echo "Submitting initial job..."
             JOB_ID=$(sbatch --parsable  \
-                --export="SEED=$i,INITIALIZE=$INITIALIZE,PROCEDURAL_DATA=$PROCEDURAL_DATA,PR_NOTES=$PR_NOTES" \
+                --export=SEED=$i \
                 $SCRIPT | awk '{print $1}' | tr -d ':')
             ASSIGNED=true
             SLURM_ID=$JOB_ID
         else
             echo "Submitting job with SLURM_ID=$SLURM_ID..."
             JOB_ID=$(sbatch --parsable  \
-                --export="SLURM_ID=$SLURM_ID,SEED=$i,INITIALIZE=$INITIALIZE,PROCEDURAL_DATA=$PROCEDURAL_DATA,PR_NOTES=$PR_NOTES" \
+                --export=SLURM_ID=$SLURM_ID,SEED=$i \
                 $SCRIPT | awk '{print $1}' | tr -d ':')
         fi
 

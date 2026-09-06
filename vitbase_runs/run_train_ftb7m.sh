@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name ftb4f
+#SBATCH --job-name ftb7m
 #SBATCH --partition lmbdlc2_gpu-h200
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:4
@@ -26,15 +26,6 @@ if [[ -z "$SEED" ]] | [[ "$SEED" -eq "" ]]; then
     SEED=0
 fi
 echo "Running with ID $SLURM_ID";
-if [[ -z "$INITIALIZE" ]]; then
-    INITIALIZE="results/pr_vitb_n/pr_6066174_final.pth"
-fi
-if [[ -z "$PROCEDURAL_DATA" ]]; then
-    PROCEDURAL_DATA="kdyck"
-fi
-if [[ -z "$PR_NOTES" ]]; then
-    PR_NOTES=""
-fi
 
 export PATH="$HOME/.local/bin:$PATH"
 source .venv/bin/activate
@@ -49,31 +40,27 @@ BATCH_SIZE=128
 UPDATE_FREQ=$((($TOTAL_BATCH_SIZE / $SLURM_GPUS_ON_NODE) / $BATCH_SIZE))
 
 # for i in 0 1 2; do
-# --standalone pins rendezvous to localhost:29400, which collides with any other
-# torchrun on the same node (ours or another user's) and deadlocks at the first
-# collective. Derive a unique port from the job id instead (docs 5.12).
-MASTER_PORT=$(( 20000 + (SLURM_JOB_ID % 20000) ))
-echo "rendezvous port: $MASTER_PORT"
-torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
+torchrun --standalone --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
     --model vit_base  --warmup_epochs 50 --epochs 300 \
     --total_batch_size $TOTAL_BATCH_SIZE \
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
-    --initialize "$INITIALIZE" \
+    --initialize "results/pr_vitb/pr_6066174_final.pth" \
     --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
     --enable_wandb true \
     --project "vit base kdyck" \
     --wandb_entity_name "procedural_pretraining" \
     --notes "" \
     --accuracy_json "results/imnet_base/accuracy_IMNET_BASE_$SLURM_ID.json" \
-    --procedural_data "$PROCEDURAL_DATA" \
+    --grad_norms_json "results/imnet_base/grad_norms_IMNET_BASE_$SLURM_ID.json" \
+    --procedural_data "kdyck" \
     --procedural_order "standard" \
-    --pr_notes "$PR_NOTES" \
+    --pr_notes "" \
     --skip_norm true \
+    --random_blocks "5,6,7,8,9,10,11" \
     --init_method "downscale_pr_match_delta_norms" \
-    --init_method_scaled_blocks "8,9,10,11" \
-    --init_method_copied_blocks_to_target "0;1;2;3;4;5;6;7" \
+    --init_method_scaled_blocks "0,1,2,3,4" \
     --stage_wise_metrics true \
     --detailed_metrics true \
     --slurm_id $SLURM_ID \

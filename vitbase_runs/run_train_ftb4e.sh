@@ -27,6 +27,15 @@ if [[ -z "$SEED" ]] | [[ "$SEED" -eq "" ]]; then
     SEED=0
 fi
 echo "Running with ID $SLURM_ID";
+if [[ -z "$INITIALIZE" ]]; then
+    INITIALIZE="results/pr_vitb_n/pr_6066174_final.pth"
+fi
+if [[ -z "$PROCEDURAL_DATA" ]]; then
+    PROCEDURAL_DATA="kdyck"
+fi
+if [[ -z "$PR_NOTES" ]]; then
+    PR_NOTES=""
+fi
 
 export PATH="$HOME/.local/bin:$PATH"
 source .venv/bin/activate
@@ -52,16 +61,16 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
-    --initialize "results/pr_vitb_n/pr_6066174_final.pth" \
+    --initialize "$INITIALIZE" \
     --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
     --enable_wandb true \
     --project "vit base kdyck" \
     --wandb_entity_name "procedural_pretraining" \
     --notes "" \
     --accuracy_json "results/imnet_base/accuracy_IMNET_BASE_$SLURM_ID.json" \
-    --procedural_data "kdyck" \
+    --procedural_data "$PROCEDURAL_DATA" \
     --procedural_order "standard" \
-    --pr_notes "" \
+    --pr_notes "$PR_NOTES" \
     --skip_norm true \
     --random_blocks "0,1,2,3,4,5,6,7" \
     --init_method "downscale_pr_match_delta_norms" \

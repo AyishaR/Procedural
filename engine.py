@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
+import random
 from typing import Iterable, Optional
 import torch
 import torch.distributed as dist
@@ -31,6 +32,9 @@ from metrics.ddp_multiclassECE import DDPMulticlassECE
 from matplotlib import colors
 from scipy.stats import gaussian_kde, skew, kurtosis, ks_2samp, wasserstein_distance
 from custom_lr import *
+from tueplots import bundles
+plt.rcParams.update(bundles.iclr2024())
+plt.rcParams.update(bundles.iclr2024(usetex=True, rel_width=1.0, nrows=1, ncols=1, family='serif'))
 
 from optim_factory import *
 
@@ -292,7 +296,7 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     grad_metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
+    # print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()},{k: meter.global_avg for k, meter in grad_metric_logger.meters.items()}
 
 @torch.no_grad()
@@ -603,7 +607,7 @@ def model_analyse(
     
     # stats = {k: meter.global_avg for k, meter in detailed_metrics_logger.meters.items()}
     if args.gpu == 0:
-        print("Averaged stats:", detailed_metrics_logger)
+        # print("Averaged stats:", detailed_metrics_logger)
         # print("Layer-wise attention and block prediction accuracies:", stats)
 
         if args.accuracy_json:
@@ -752,6 +756,263 @@ def update_accuracy_json(args, stats, model_stats, epoch, shuffled_block_order, 
     with open(args.accuracy_json, "w") as f:
         json.dump(path_map, f, indent=4)
         print(f"Updated {args.accuracy_json} with new layer accuracies.")
+
+@torch.no_grad()
+def calculate_rank_final(dataset_train, device, args, model=None):
+    """Compute stable rank and effective rank of the forward-pass activations at 5 points
+    per block (attention output before residual, attention residual out, MLP after fc1+GELU,
+    MLP after fc2 before residual, block output), using a fixed-size subset of the training
+    set. No training is performed.
+
+    If model is None (the default), the model is loaded fresh from args.initialize, mirroring
+    attention_analyse_final. If model is given, it is used as-is instead - pass the actual
+    in-memory model (e.g. model_without_ddp) so this reflects any in-memory weight edits made
+    after loading, such as apply_spectral_intervention, rather than silently reloading an
+    unedited copy from args.initialize. Pass the unwrapped module, not a DDP-wrapped one;
+    under @torch.no_grad() there is no functional difference for forward-only activation
+    capture, and DDP's forward-time synchronization is unnecessary here since the per-rank
+    Gram matrices are already explicitly all-reduced below.
+
+    Every rank processes its own shard of the subset (via DistributedSampler, matching the
+    distributed-evaluation pattern used by model_analyse/evaluate elsewhere in this file) and
+    accumulates a local Gram matrix G = sum_i x_i x_i^T per (layer, hook) using utils.HookCollector
+    for activation capture. Gram matrices are then summed across ranks with dist.all_reduce
+    before the eigendecomposition, so the result reflects the whole sampled subset regardless
+    of world size. G's eigenvalues equal the squared singular values of the (implicit,
+    never-materialised) activation matrix; stable rank and effective rank are both scale
+    invariant, so no centering/normalisation of the accumulated sum is needed.
+    """
+    assert args.accuracy_json, "--accuracy_json must be set (its folder/basename determine the rank json output path) when using --calculate_rank"
+
+    if model is None:
+        model = utils.build_model(args)
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path=args.initialize, args=args, device=device, model=model
+        )
+    else:
+        model_without_ddp = model
+
+    was_training = model.training
+    model.eval()
+
+    k = min(5000, len(dataset_train))
+    print(f"Using {k} samples from the training dataset for rank calculation", flush=True)
+    indices = list(range(len(dataset_train)))
+    random.shuffle(indices)
+    subset_dataset = torch.utils.data.Subset(dataset_train, indices[:k])
+
+    if args.distributed:
+        sampler = DistributedSampler(
+            subset_dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=False)
+    else:
+        sampler = torch.utils.data.SequentialSampler(subset_dataset)
+
+    data_loader = DataLoader(
+        subset_dataset,
+        sampler=sampler,
+        batch_size=int(1.5 * args.batch_size),
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=False,
+    )
+
+    hook_points = ["attn_out", "attn_residual_out", "mlp_fc1_act", "mlp_fc2", "block_out"]
+    act_key_by_hook = {"attn_out": "attn_out", "attn_residual_out": "attn", "mlp_fc1_act": "mlp_fc1_act", "mlp_fc2": "mlp_fc2", "block_out": "blk"}
+    num_layers = len(model_without_ddp.blocks)
+    gram = {layer: {hook_name: None for hook_name in hook_points} for layer in range(num_layers)}
+
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = 'calculate_rank:'
+    for batch in metric_logger.log_every(data_loader, 10, header):
+        images = batch[0].to(device, non_blocking=True)
+
+        if args.use_amp:
+            with torch.cuda.amp.autocast():
+                with utils.HookCollector(model) as acts:
+                    model(images)
+        else:
+            with utils.HookCollector(model) as acts:
+                model(images)
+
+        for layer in range(num_layers):
+            for hook_name in hook_points:
+                x = acts[layer][act_key_by_hook[hook_name]]
+                flat = x.reshape(-1, x.shape[-1]).float()
+                g = flat.t() @ flat
+                if gram[layer][hook_name] is None:
+                    gram[layer][hook_name] = g
+                else:
+                    gram[layer][hook_name] += g
+
+    if args.distributed:
+        for layer in range(num_layers):
+            for hook_name in hook_points:
+                dist.all_reduce(gram[layer][hook_name], op=dist.ReduceOp.SUM)
+
+    if utils.is_main_process():
+        results = []
+        for layer in range(num_layers):
+            for hook_name in hook_points:
+                eigvals = torch.linalg.eigvalsh(gram[layer][hook_name]).clamp(min=0)
+                total = eigvals.sum()
+                max_eig = eigvals.max()
+                stable_rank = (total / max_eig).item() if max_eig > 0 else 0.0
+
+                sigma = eigvals.sqrt()
+                sigma_sum = sigma.sum()
+                if sigma_sum > 0:
+                    p = sigma / sigma_sum
+                    p = p[p > 0]
+                    entropy = -(p * p.log()).sum()
+                    effective_rank = torch.exp(entropy).item()
+                else:
+                    effective_rank = 0.0
+
+                results.append({"layer": layer, "rank_hook": hook_name, "rank": stable_rank, "metric": "stable", "seed": args.seed})
+                results.append({"layer": layer, "rank_hook": hook_name, "rank": effective_rank, "metric": "effective", "seed": args.seed})
+
+        accuracy_dir = os.path.dirname(args.accuracy_json)
+        rank_json_path = os.path.join(accuracy_dir, f"rank_{os.path.basename(args.accuracy_json)}")
+        try:
+            with open(rank_json_path, "r") as f:
+                existing_results = json.load(f)
+        except FileNotFoundError:
+            existing_results = []
+        existing_results.extend(results)
+        with open(rank_json_path, "w") as f:
+            json.dump(existing_results, f, indent=4)
+        print(f"Wrote rank results to {rank_json_path}")
+
+    if args.distributed:
+        dist.barrier()
+
+    model.train(was_training)
+
+
+@torch.no_grad()
+def calculate_cka_final(dataset_train, device, args, model=None):
+    """Compute pairwise linear-kernel CKA (gram_cka, cka_utils.py) between the block-output
+    tensors of every pair of transformer blocks, using a subset of the training set.
+
+    If model is None (the default), the model is loaded fresh from args.initialize (an empty
+    --initialize leaves the model at its random "epoch 0" init, e.g. for comparing how CKA
+    decays with depth in an untrained network across model sizes). If model is given, it is
+    used as-is instead - pass the actual in-memory model (e.g. model_without_ddp) so this
+    reflects any in-memory weight edits made after loading, such as apply_spectral_intervention,
+    rather than silently reloading an unedited copy from args.initialize. Pass the unwrapped
+    module, not a DDP-wrapped one; see calculate_rank_final's docstring for why that's safe here.
+
+    Each "sample" fed to gram_cka is one image's full block-output tensor (CLS + patches,
+    flattened) - unlike calculate_rank_final, gram_cka needs the actual [n_samples, dim]
+    feature matrices (it centers and takes the Frobenius norm of an n_samples x n_samples
+    Gram matrix) rather than a streamable summary statistic, and every layer's features must
+    be held in memory at once, so the sample count here is kept far smaller than the rank
+    computation's 5000 to stay memory-bounded. As with the existing cka_calculate_self, each
+    rank computes CKA over only its own local shard of the subset under DDP (there is no
+    cross-rank feature gather); only the main process writes output.
+    """
+    assert args.accuracy_json, "--accuracy_json must be set (its folder/basename determine the cka json/png output paths) when using --calculate_cka"
+
+    if model is None:
+        model = utils.build_model(args)
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path=args.initialize, args=args, device=device, model=model
+        )
+    else:
+        model_without_ddp = model
+
+    was_training = model.training
+    model.eval()
+
+    k = min(500, len(dataset_train))
+    print(f"Using {k} samples from the training dataset for CKA calculation", flush=True)
+    indices = list(range(len(dataset_train)))
+    random.shuffle(indices)
+    subset_dataset = torch.utils.data.Subset(dataset_train, indices[:k])
+
+    if args.distributed:
+        sampler = DistributedSampler(
+            subset_dataset, num_replicas=utils.get_world_size(), rank=utils.get_rank(), shuffle=False)
+    else:
+        sampler = torch.utils.data.SequentialSampler(subset_dataset)
+
+    data_loader = DataLoader(
+        subset_dataset,
+        sampler=sampler,
+        batch_size=int(1.5 * args.batch_size),
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=False,
+    )
+
+    num_layers = len(model_without_ddp.blocks)
+    feats = {layer: [] for layer in range(num_layers)}
+
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    header = 'calculate_cka:'
+    for batch in metric_logger.log_every(data_loader, 10, header):
+        images = batch[0].to(device, non_blocking=True)
+
+        if args.use_amp:
+            with torch.cuda.amp.autocast():
+                with utils.HookCollector(model) as acts:
+                    model(images)
+        else:
+            with utils.HookCollector(model) as acts:
+                model(images)
+
+        for layer in range(num_layers):
+            feats[layer].append(acts[layer]['blk'].detach().cpu())
+
+    n_local = sum(t.shape[0] for t in feats[0])
+    feats = {layer: torch.cat(feats[layer], dim=0).reshape(n_local, -1).double() for layer in range(num_layers)}
+
+    if utils.is_main_process():
+        cka_matrix = torch.eye(num_layers, dtype=torch.float64)
+        for i in range(num_layers):
+            for j in range(i + 1, num_layers):
+                value = gram_cka(feats[i], feats[j]).item()
+                cka_matrix[i, j] = value
+                cka_matrix[j, i] = value
+
+        results = []
+        for i in range(num_layers):
+            for j in range(i, num_layers):
+                results.append({"layer_i": i, "layer_j": j, "cka": cka_matrix[i, j].item(), "seed": args.seed})
+
+        cka_dir = os.path.dirname(args.accuracy_json)
+        cka_json_path = os.path.join(cka_dir, f"cka_{os.path.basename(args.accuracy_json)}")
+        try:
+            with open(cka_json_path, "r") as f:
+                existing_results = json.load(f)
+        except FileNotFoundError:
+            existing_results = []
+        existing_results.extend(results)
+        with open(cka_json_path, "w") as f:
+            json.dump(existing_results, f, indent=4)
+        print(f"Wrote CKA results to {cka_json_path}")
+
+        
+        cka_png_path = os.path.splitext(cka_json_path)[0] + ".png"
+        cka_pdf_path = os.path.splitext(cka_json_path)[0] + ".pdf"
+        fig, ax = plt.subplots()
+        im = ax.imshow(cka_matrix.numpy(), cmap="viridis", vmin=0, vmax=1, origin="lower")
+        ax.set_xlabel("Layer")
+        ax.set_ylabel("Layer")
+        ax.set_xticks(range(num_layers))
+        ax.set_yticks(range(num_layers))
+        ax.set_title(f"Block-output CKA")
+        fig.colorbar(im, ax=ax, label="CKA")
+        fig.savefig(cka_png_path)
+        fig.savefig(cka_pdf_path)
+        plt.close(fig)
+        print(f"Wrote CKA heatmap to {cka_png_path} and {cka_pdf_path}")
+
+    if args.distributed:
+        dist.barrier()
+
+    model.train(was_training)
+
 
 @torch.no_grad()
 def cka_final(data_loader, device, args, classes=None, wandb_logger=None):
