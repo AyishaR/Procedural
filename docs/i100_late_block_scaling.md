@@ -1120,6 +1120,20 @@ instead of the ~day-long `alldlc2` wait. `ftbrhos` (29546563), `ftbqmlnvot` (295
 4096; results dirs unchanged). `ftblrm` stays on `lmbdlc2_gpu-h200` (a fifth 8-GPU job would exceed the
 cap).
 
+*L40S first wave failed (all four, 15:31):* NCCL's shared-memory transport could not attach its
+`/dev/shm/nccl-*` segment with 8 ranks (2 ranks work); not a node fault. Fixed by exporting
+`NCCL_SHM_DISABLE=1` when `$SLURM_JOB_PARTITION` contains `l40s` (all four run scripts, commit
+`21bc314`); resubmitted as 29546613/614/615/616. *Second wave:* 29546616 (s2) landed on `dlc2gpu07`
+and died in `torch.cuda.set_device` with "uncorrectable ECC error encountered" -- a faulty GPU on
+that node; cancelled and resubmitted as 29546658 with `--exclude=dlc2gpu07`. The other three train.
+
+*Measured L40S speed (2026-09-08 15:45):* 0.457 s per micro-step, 1251 micro-steps per epoch, so
+~9.5 min of training per epoch plus eval, ~6 epochs/h per job. The 4xH200 SSD reference (ftbqks
+29539555: 25 epochs in 1h53, "Total time 0:04:20" per epoch) is ~13 epochs/h, i.e. L40S is ~2.1x
+slower in wall time, not the 1.5x assumed above. Fair-share per epoch: H200 192/13 = 15 CPU-h, L40S
+128/6 = 21 CPU-h, about 40% more per epoch, bought against zero queue wait. Remaining wall time:
+`ftbrhos` (at epoch 200) ~17 h; `ftbqmlnvot` and `ftbqmlnvog` s1 (from epoch 0/4) ~50 h each.
+
 Independent of the cell: `ftb4m` to n = 3 (the single-seed "intact proc is insensitive to the
 write" point that the scale story leans on), and `ftbqks` closes the q/k-asymmetry question when its
 resumes finish.
