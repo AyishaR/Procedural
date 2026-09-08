@@ -369,6 +369,14 @@ def get_args_parser():
     parser.add_argument('--layer_11_target_qkvp_ln1_norm_ratio', type=float, default=-1.0)
     parser.add_argument('--layer_11_scale_method', type=str, default="")
     parser.add_argument('--init_method', type=str, default="default", help='Initialization method for the model weights. Options: "default", "match_L11_activations", "spectral_truncate_random", "spectral_swap_spectrum"')
+    parser.add_argument('--lr_match_ckpt', type=str, default="",
+                        help='Path of a reference checkpoint. When set, the optimizer gives every 2-D weight of '
+                             '--lr_match_blocks a learning-rate scale rms(init)/rms(ckpt) (and the inverse '
+                             'weight-decay scale), so a RANDOM init takes the same relative AdamW steps the '
+                             'checkpoint weights would take, with the forward pass at init unchanged. Isolates the '
+                             'step-size half of a scale profile from its forward-pass half (docs 0d.9, ftblrm).')
+    parser.add_argument('--lr_match_blocks', type=str, default="0,1,2,3,4,5,6,7,8",
+                        help='Comma separated block indices for --lr_match_ckpt (default 0-8).')
     parser.add_argument('--weight_init', type=str, default="",
                         help='Re-initialise all 2-D weights with an alternative scheme before any other init step. Currently: "xavier". Empty = use the model default (timm).')
     parser.add_argument('--target_ratio_absolute', type=float, default=-1.0,

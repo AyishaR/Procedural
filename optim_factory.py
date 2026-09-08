@@ -105,6 +105,51 @@ def get_parameter_groups(model, weight_decay=1e-5, skip_list=(), get_num_layer=N
     return list(parameter_group_vars.values())
 
 
+
+def build_step_matched_param_groups(model, weight_decay, ckpt_path, blocks, skip_list=()):
+    """Parameter groups whose per-group learning-rate scale makes a RANDOM-init tensor take the
+    same RELATIVE AdamW step as the same tensor of a reference checkpoint would at the base lr.
+
+    Adam's per-element step is ~lr regardless of the weight scale, so the relative change of a
+    tensor per step is ~lr / rms(W). A tensor whose checkpoint version has k times the rms of
+    the random init therefore moves k times slower (in relative terms) when trained from the
+    checkpoint. Setting lr_scale = rms(W_random) / rms(W_ckpt) reproduces that slowdown (or
+    speedup, for proc's fc1/fc2 whose rms is below random's) WITHOUT changing the forward pass
+    at init. wd_scale = 1 / lr_scale keeps lr*wd, i.e. the relative decay per step, unchanged.
+    The fused attn.qkv.weight is one parameter, so q, k and v share the pooled multiplier.
+    Blocks outside `blocks`, all 1-D params and biases keep lr_scale 1 (docs 0d.9, arm ftblrm).
+    """
+    ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    for key in ("state", "model", "module", "model_state_dict", "state_dict"):
+        if isinstance(ck, dict) and key in ck:
+            ck = ck[key]; break
+    matched = {"attn.qkv.weight", "attn.proj.weight", "mlp.fc1.weight", "mlp.fc2.weight"}
+    groups, table = {}, []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        no_decay = len(param.shape) == 1 or name.endswith(".bias") or name in skip_list
+        lr_scale = 1.0
+        parts = name.split(".")
+        if parts[0] == "blocks" and parts[1].isdigit() and int(parts[1]) in blocks:
+            tname = ".".join(parts[2:])
+            if tname in matched and name in ck:
+                r_rms = param.data.float().pow(2).mean().sqrt().item()
+                c_rms = ck[name].float().pow(2).mean().sqrt().item()
+                lr_scale = r_rms / c_rms
+                table.append((name, r_rms, c_rms, lr_scale))
+        key = ("no_decay" if no_decay else "decay", round(lr_scale, 6))
+        if key not in groups:
+            groups[key] = {"params": [], "weight_decay": 0.0 if no_decay else weight_decay,
+                           "lr_scale": lr_scale, "wd_scale": (1.0 / lr_scale) if (not no_decay and lr_scale > 0) else 1.0}
+        groups[key]["params"].append(param)
+    print("[lr-match] per-tensor lr_scale = rms(random) / rms(ckpt):", flush=True)
+    for name, r, c, m in table:
+        print(f"[lr-match]   {name:32s} rms {r:.5f} / {c:.5f} -> lr x{m:.3f}, wd x{1/m:.3f}", flush=True)
+    print(f"[lr-match] {len(table)} tensors matched, {len(groups)} param groups", flush=True)
+    return list(groups.values())
+
+
 def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filter_bias_and_bn=True, skip_list=None, start_lr=None, custom_block_targets=None, custom_non_block_targets=None, custom_lr_transition_start=90, custom_lr_transition_end=110):
     opt_lower = args.opt.lower()
     weight_decay = args.weight_decay
@@ -119,6 +164,12 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
         weight_decay = 0.
     else:
         parameters = [p for p in model.parameters() if p.requires_grad]
+
+    if getattr(args, "lr_match_ckpt", ""):
+        blocks = [int(x) for x in str(args.lr_match_blocks).split(",") if x.strip() != ""]
+        parameters = build_step_matched_param_groups(model, args.weight_decay, args.lr_match_ckpt, blocks,
+                                                     skip_list=skip if filter_bias_and_bn else ())
+        weight_decay = 0.
 
     if args.custom_lr_layer:
         parameters = build_vit_param_groups(

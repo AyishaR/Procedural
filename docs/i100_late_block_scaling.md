@@ -1090,6 +1090,27 @@ remains is the exact per-slice marginal (skew, multimodality) or noise. `ftbrhos
 unconditionally at every fresh start (the guards at ~1983/1988 are commented out): a few minutes per
 start and rank_/cka_ files next to `--accuracy_json`; `plots/dump_init.py` skips them.
 
+**Queued 2026-09-08 (arm 4 of §0d.8 in its principled form): `ftblrm`, SLURM_ID 29545846, seed 0, `alldlc2`.**
+Random init, no checkpoint values, no init change at all; the optimizer gives every 2-D weight of blocks
+0-8 a learning-rate scale `rms(W_random) / rms(W_proc)` and the inverse weight-decay scale
+(`--lr_match_ckpt`, `optim_factory.build_step_matched_param_groups`). Under Adam the per-element
+step is ~lr, so the relative change of a tensor per step is lr / rms(W): the scaled random tensor
+takes exactly the relative step the proc tensor would take at the base lr, while its forward pass at
+init stays random. Verified on CPU with one Adam step on unit gradients: relative updates equal the
+checkpoint model's to 0.2% in blocks 0-8 (qkv, proj, fc1, fc2) and are random's own in 9-11. The
+multipliers (`plots/cache/verify/lr_match_multipliers.json`): qkv (fused, pooled) 0.27-0.34, proj
+0.28-0.64, fc1/fc2 1.0-1.4 in blocks 1-7 (proc's MLP weights are *smaller* than random's, so they move
+faster), 0.82 at block 8, all ~0.3 at block 0; LayerNorm gains and biases unscaled (proc's gains at
+0.4 would imply x2.5 steps; deliberately left out). Note the fused qkv forces one multiplier for q, k
+and v, so v moves ~2x slower here than in proc (0.31 vs 0.6).
+
+This isolates the STEP-SIZE half of the scale profile from its forward-pass half, which every
+transplant arm conflates: proc's large q/k norms mean small relative Adam steps *and* sharp logits.
+Expectation: ~79.5+ with the readout concentrated in blocks 10-11 (fig17) => the early-block effect is
+an optimisation bias ("early blocks move slowly") and layer-wise learning-rate scaling is the
+checkpoint-free recipe, with the late-block upscaling as its complement; ~78.1 => the profile acts
+through the forward pass (write budgets, logits), which is `ftbrhos`'s question.
+
 Independent of the cell: `ftb4m` to n = 3 (the single-seed "intact proc is insensitive to the
 write" point that the scale story leans on), and `ftbqks` closes the q/k-asymmetry question when its
 resumes finish.
