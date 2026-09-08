@@ -59,7 +59,7 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_
     --model vit_base  --warmup_epochs 50 --epochs 300 \
     --total_batch_size $TOTAL_BATCH_SIZE \
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
-    --data_path "/data/datasets/ILSVRC2012" \
+    --data_path "/work/dlcsmall2/schrodi-imagenet" \
     --data_set "IMNET" \
     --initialize "$INITIALIZE" \
     --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
