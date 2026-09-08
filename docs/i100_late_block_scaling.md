@@ -500,7 +500,7 @@ runs are listed separately in D and used nowhere else.
 | `ftb3i` | proc intact | 3 | 79.99 ± 0.36 | +1.91 | 2.626 |
 | `ftbqmlnvo` | proc marginals rank-mapped, v sliced, LN gains+biases (permuted); linear biases 0 | 3 | 79.93 ± 0.39 | +1.86 | 2.328 |
 | `ftb4e3fix` | proc tensors permuted within slice (qk pooled); all 1-D permuted | 3 | 79.50 ± 0.35 | +1.42 | 2.299 |
-| `ftbqks` | as ftb4e3fix, q and k permuted separately (running) | - | - | - | - |
+| `ftbqks` | as ftb4e3fix, q and k permuted separately | 3 | 79.34 ± 0.42 | +1.26 | 2.299 |
 | `ftbqm1dvo` | v sliced, ALL 1-D permuted | 3 | 79.11 ± 0.26 | +1.03 | 2.277 |
 | `ftbqmvo` | v sliced, no 1-D | 3 | 78.61 ± 0.14 | +0.53 | 2.271 |
 | `ftbqmln` | pooled qkv, LN gains+biases | 3 | 78.18 ± 0.15 | +0.10 | 2.231 |
@@ -949,7 +949,7 @@ compute 0.085; first epoch after every (re)start 20-40 min): ~9 -> ~12 epochs/h 
 the HDD server. Node-local NVMe (2.5 GB/s) adds nothing in steady state (decode-bound) and costs
 160 GB of staging per start. `run_train_{ftbqmlnvog,ftbrhos,ftbqks,ftb11e}.sh` now use
 `--data_path /work/dlcsmall2/schrodi-imagenet`; new scripts should too (identical class/file sets,
-so resuming a run from the copy is equivalent). **Resumed 2026-09-06 19:55** (`sweep_stalled.py --submit --max-submit 10`): `ftbqmlnvog` jobs 29539557-9, `ftbrhos` 29539560-2, `ftb11e` 29539556 (9.5 h), `ftbqks` 29539553-5 (4-6 h), all reading the SSD copy.
+so resuming a run from the copy is equivalent). **Resumed 2026-09-06 19:55** (`sweep_stalled.py --submit --max-submit 10`): `ftbqmlnvog` jobs 29539557-9, `ftbrhos` 29539560-2, `ftb11e` 29539556 (9.5 h), `ftbqks` 29539553-5 (4-6 h), all reading the SSD copy. **Reduced to seed 0 only on 2026-09-06 20:10** (fair-share): `ftbqmlnvog` s1/s2 and `ftbrhos` s1/s2 cancelled and blacklisted in the sweep (checkpoints at epochs 4/6 and 2/3 kept; resume later by removing the blacklist entries). Readout of the two decisive arms is therefore n = 1 until the other seeds are re-queued; resolution for n = 1 vs n = 3 is ~0.65 pp.
 
 Not worth running now: more shuffle variants (`ftbqks` will land ~79.4 and changes nothing), more
 rho-matched-to-intact-proc arms (all reproduce the block-0 explosion), LayerScale baselines
@@ -1049,6 +1049,33 @@ seed, so the factors vary slightly across seeds, as in every ρ arm before.
 |---|---|---|
 | **`ftbqmlnvog` ≈ 79.9** (shape irrelevant) | **A.** The early half is checkpoint-free: two write budgets per block. Next: (a) one checkpoint-free init for all 12 blocks — the permuted-proc ρ profile for 0-8 plus the late-block recipe for 9-11 — 3 seeds, the paper's method; (b) block-0 ablation: `ftbrhos` with block 0 left at random budgets (is the loud block 0 needed, or merely harmless?); (c) profile ablations: flatten the ramp, halve/double all budgets; (d) the LayerScale / ReZero baseline, now the natural competitor; (e) can the ρ profile be written down without a checkpoint (it is ~0.15 / 0.04 in 1-8 with a 1.6 / 2.4 block 0)? | **B.** The scale profile suffices but the input-side scales matter (sharper logits 2.4×, quiet MLP pre-activations 0.36×, gains 0.4). Next: (a) `ftbrhos` with the LayerNorm gains at proc's RMS (`norm1,norm2` added to the scaled attributes, or a gain init of 0.4) and, separately, with q/k ×1.6; (b) the γ1-only / γ2-only split of `ftbqmlnvo` to say which side; then A(a)-(e). |
 | **`ftbqmlnvog` ≈ 78.3** (values needed beyond 2nd moments) | **C.** Contradiction: budgets suffice with Gaussian weights but the Gaussian rank-map does not. First re-verify both dumps against each other (they share every measured scale except the pooled-qk logit 1.75 vs 1.0 and the MLP pre-activation 0.36 vs 1.0 — which would make the *sharper logits* or the *quieter MLP pre-activations* harmful, not helpful); then `ftbrhos` + gains as in B(a). | **D.** Proc's values matter beyond second moments given the profile. Next: (a) the Student-t twin (`--quantile_source parametric`, now applied per slice) — 4 moments; (b) if that fails, per-block marginal swaps (block b's empirical marginal written into block b′) and the fc2 skew specifically; (c) `ftbsv` / `ftbsb` (built, verified, Gaussian-shaped with proc's biases) as the rank / singular-vector controls, read against `ftbqm1dvo`. |
+
+**`ftbqks` landed 2026-09-06/07:** 79.15 / 79.06 / 79.82 = **79.34 ± 0.42** (train loss 2.299). Mean 79.34 = `ftb4e3fix` (79.50), 0.5 below `ftbqmlnvo` -- as registered in §0c.11: separating the q and k pools changes nothing, so the `ftb4e3fix`-`ftbqmlnvo` gap is the permuted linear biases, not the q/k asymmetry. Its init profile was identical to `ftb4e3fix` in every measured quantity (§0d.5), which makes it the cleanest confirmation that the arrangement within a slice is irrelevant at the 0.45 level.
+
+**First readout of arm 1, 2026-09-08 08:15 (`ftbqmlnvog` s0 at epoch 287; n = 1, so resolution
+~0.65 against the n = 3 references):**
+
+| epoch | 149 | 199 | 249 | 274 | 284 | 299 |
+|---|---|---|---|---|---|---|
+| `ftbqmlnvog` s0 (Gaussian twin) | 77.48 | 78.61 | 78.93 | 79.12 | **79.17** | ~79.3 (drift) |
+| `ftbqmlnvo` (n=3) | 77.80 | 79.04 | 79.59 | 79.84 | 79.93 | 79.93 |
+| `ftbqks` / `ftb4e3fix` / `ftbqm1dvo` (n=3) | 77.6-77.7 | 78.6-78.8 | 79.0-79.2 | 79.0-79.4 | 79.1-79.4 | 79.1-79.5 |
+| `ftbnorm` (n=3) | 77.21 | 78.03 | 78.18 | 78.29 | 78.25 | 78.28 |
+| train loss: twin / `ftbqmlnvo` | 3.060 / 3.044 | 2.776 / 2.759 | 2.459 / 2.466 | 2.352 / 2.360 | 2.329 / 2.337 | -- |
+
+Neither registered outcome exactly: the twin is **~0.7 below `ftbqmlnvo` at every checkpoint from
+epoch 199 on** (a consistent offset, not end-point noise) and **~1.0 above `ftbnorm`**, landing where
+`ftbqks` / `ftb4e3fix` / `ftbqm1dvo` sit. Its **training loss is identical to `ftbqmlnvo`'s** (within
+0.01 nat throughout): the scale profile alone reproduces the fit deficit exactly, and proc's actual
+values add ~0.7 pp of accuracy *at the same fit* -- a pure frontier effect in the language of
+§0d.3. Reading: the per-block scale profile is the bulk of the early-block effect (~+1.2 of +1.85,
+checkpoint-free), and something beyond second moments is worth the remaining ~0.6. On one seed the
+0.7 gap is at the edge of resolution; `ftbqmlnvog` s1/s2 (parked at epochs 4/6) decide whether it
+is real, and the Student-t twin (§0d.8 item 5) then decides whether it is the tails. `ftbrhos` s0 is
+at epoch 182 and not readable yet.
+
+`ftb11e` (proc blocks 1-11 downscaled to random rho, block 0 random) finished at **79.92** (n = 1),
+completing the e-sweep: 76.4, 76.7, 77.4, 77.3, 78.0, 78.9, 79.4, 79.5, 80.1, 79.7, 79.9 for k = 1..11.
 
 Independent of the cell: `ftb4m` to n = 3 (the single-seed "intact proc is insensitive to the
 write" point that the scale story leans on), and `ftbqks` closes the q/k-asymmetry question when its

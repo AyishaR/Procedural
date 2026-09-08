@@ -70,6 +70,11 @@ BLACKLIST = {
     ("ftbqm1dqk", "s0"): "parked 2026-09-05, low value (clean re-run of the qk_only variant)",
     ("ftbqm1dqk", "s1"): "parked 2026-09-05, low value",
     ("ftbqm1dqk", "s2"): "parked 2026-09-05, low value",
+    # Reduced to seed 0 on 2026-09-06 to save fair-share; s1/s2 checkpoints (epochs 4/6 and 2/3) kept.
+    ("ftbqmlnvog", "s1"): "parked 2026-09-06, seed 0 only for now",
+    ("ftbqmlnvog", "s2"): "parked 2026-09-06, seed 0 only for now",
+    ("ftbrhos", "s1"): "parked 2026-09-06, seed 0 only for now",
+    ("ftbrhos", "s2"): "parked 2026-09-06, seed 0 only for now",
 }
 
 
