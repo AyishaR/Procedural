@@ -36,6 +36,12 @@ fi
 if [[ -z "$PR_NOTES" ]]; then
     PR_NOTES=""
 fi
+if [[ -z "$WANDB_PROJECT" ]]; then
+    WANDB_PROJECT="vit base kdyck"
+fi
+# sbatch --export values cannot contain spaces on this cluster (the site wrapper splits on them), so
+# launchers pass underscores and they are turned back into spaces here.
+WANDB_PROJECT="${WANDB_PROJECT//_/ }"
 
 export PATH="$HOME/.local/bin:$PATH"
 source .venv/bin/activate
@@ -64,7 +70,7 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_
     --initialize "$INITIALIZE" \
     --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
     --enable_wandb true \
-    --project "vit base kdyck" \
+    --project "$WANDB_PROJECT" \
     --wandb_entity_name "procedural_pretraining" \
     --notes "" \
     --accuracy_json "results/imnet_base/accuracy_IMNET_BASE_$SLURM_ID.json" \

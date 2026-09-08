@@ -6,6 +6,7 @@ ASSIGNED=false
 INITIALIZE="results/pr_vitb_ksd/pr_6463456_final.pth"
 PROCEDURAL_DATA="kdyck_shuffled"
 PR_NOTES="d98"
+WANDB_PROJECT="vit_base_kdyck_shuffle"   # underscores = spaces (see run script)
 
 cd Procedural
 
@@ -19,14 +20,14 @@ for i in 0; do
         if [[ "$SLURM_ID" -eq 0 ]]; then
             echo "Submitting initial job..."
             JOB_ID=$(sbatch --parsable  \
-                --export="SEED=$i,INITIALIZE=$INITIALIZE,PROCEDURAL_DATA=$PROCEDURAL_DATA,PR_NOTES=$PR_NOTES" \
+                --export="SEED=$i,INITIALIZE=$INITIALIZE,PROCEDURAL_DATA=$PROCEDURAL_DATA,PR_NOTES=$PR_NOTES,WANDB_PROJECT=$WANDB_PROJECT" \
                 $SCRIPT | awk '{print $1}' | tr -d ':')
             ASSIGNED=true
             SLURM_ID=$JOB_ID
         else
             echo "Submitting job with SLURM_ID=$SLURM_ID..."
             JOB_ID=$(sbatch --parsable  \
-                --export="SLURM_ID=$SLURM_ID,SEED=$i,INITIALIZE=$INITIALIZE,PROCEDURAL_DATA=$PROCEDURAL_DATA,PR_NOTES=$PR_NOTES" \
+                --export="SLURM_ID=$SLURM_ID,SEED=$i,INITIALIZE=$INITIALIZE,PROCEDURAL_DATA=$PROCEDURAL_DATA,PR_NOTES=$PR_NOTES,WANDB_PROJECT=$WANDB_PROJECT" \
                 $SCRIPT | awk '{print $1}' | tr -d ':')
         fi
 
