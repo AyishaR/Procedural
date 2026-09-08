@@ -3,7 +3,7 @@ SLURM_ID=0
 ASSIGNED=false
 
 # TODO: set the version-2 values for this run
-INITIALIZE="results/pr_vitb/pr_6463456_final.pth"  # TODO: replace with version-2 checkpoint path
+INITIALIZE="results/pr_vitb_ksd/pr_6463456_final.pth"
 PROCEDURAL_DATA="kdyck_shuffled"
 PR_NOTES="d98"
 
