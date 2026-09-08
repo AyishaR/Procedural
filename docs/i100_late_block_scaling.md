@@ -1077,6 +1077,19 @@ at epoch 182 and not readable yet.
 `ftb11e` (proc blocks 1-11 downscaled to random rho, block 0 random) finished at **79.92** (n = 1),
 completing the e-sweep: 76.4, 76.7, 77.4, 77.3, 78.0, 78.9, 79.4, 79.5, 80.1, 79.7, 79.9 for k = 1..11.
 
+**Queued 2026-09-08 09:00 (all on `alldlc2_gpu-h200`):** `ftbqmlnvog` s1 / s2 re-queued (jobs 29543643/4,
+resume from epochs 4 / 6) to decide whether the twin's 0.7 gap is real; **`ftbqmlnvot`** (SLURM_ID 29543647, seed 0) =
+the Student-t twin, `run_train_ftbqmlnvog.sh` with `--quantile_source parametric`: same per-slice norms
+(verified within 0.03% of `ftbqmlnvo`), same permuted LayerNorm 1-D, zero linear biases, and every
+slice's kurtosis reproduced (v ~3.7-4.9, fc1/fc2 ~5-10; the df clamp at 4.5 caps the heaviest fc2 at
+~9 instead of 11.8). It sits between the Gaussian twin (kurtosis 3.0) and `ftbqmlnvo` (proc's exact
+marginals) and asks whether the ~0.7 the Gaussian twin misses at identical fit is the tail weight:
+~79.9 -> a 4-moment per-slice donor is enough (checkpoint-free); ~79.2 -> it is not the tails, and what
+remains is the exact per-slice marginal (skew, multimodality) or noise. `ftbrhos` s0 is back on
+`alldlc2`. Since the 2026-09-05 merge, `main.py` runs `calculate_rank_final` / `calculate_cka_final`
+unconditionally at every fresh start (the guards at ~1983/1988 are commented out): a few minutes per
+start and rank_/cka_ files next to `--accuracy_json`; `plots/dump_init.py` skips them.
+
 Independent of the cell: `ftb4m` to n = 3 (the single-seed "intact proc is insensitive to the
 write" point that the scale story leans on), and `ftbqks` closes the q/k-asymmetry question when its
 resumes finish.

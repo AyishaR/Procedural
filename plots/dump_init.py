@@ -47,6 +47,12 @@ if __name__ == "__main__":
         # when wandb is on; it is irrelevant to the init and is skipped here.
         if hasattr(M, "model_analyse"):
             M.model_analyse = lambda *a, **k: None
+        # Since the 2026-09-05 merge main.py also runs the effective-rank / CKA analyses
+        # unconditionally before training (engine.calculate_rank_final asserts on
+        # --accuracy_json); neither touches the init, so they are skipped here too.
+        for fn in ("calculate_rank_final", "calculate_cka_final"):
+            if hasattr(M, fn):
+                setattr(M, fn, lambda *a, **k: None)
     parser = argparse.ArgumentParser(parents=[M.get_args_parser()])
     args = parser.parse_args(rest)
     M.train_one_epoch = _capture(known.dump_to)     # patched in main's namespace
