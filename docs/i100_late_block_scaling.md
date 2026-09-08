@@ -1115,6 +1115,53 @@ Independent of the cell: `ftb4m` to n = 3 (the single-seed "intact proc is insen
 write" point that the scale story leans on), and `ftbqks` closes the q/k-asymmetry question when its
 resumes finish.
 
+### 0d.10 Synthesis (2026-09-08): the early- and late-block effects are one effect, reached by two levers
+
+**Same end state.** Three independent readouts say the two interventions produce the same trained
+network, not two different improvements that happen to be similar in size:
+
+* *Sub-additivity.* Early alone +1.9 (`ftb3i`), late alone +1.6-1.9 (`ftbrho`, `ftb3b`), both
+  together +2.3-2.6 (`ftb1i`, `ftbcomp11`, `ftbcomp25`) -- far short of the +3.5 two independent
+  effects would give. Two levers on one bottleneck saturate; two mechanisms add.
+* *Same fit/frontier decomposition* (§0d.3). The permuted-proc prefix and the late recipe both take
+  most of their gain as a frontier term at a small persistent fit deficit -- `ftbqmlnvo` +0.53 fit /
+  +1.33 frontier, `ftbrho` +0.24 / +1.37 -- while intact proc buys the same accuracy purely by
+  under-fitting (+2.06 / -0.16).
+* *Same allocation of the network* (`plots/out/fig17_layer_convergence.png`, wandb traces, epochs
+  <= 289). With a proc prefix (`ftb3i`, `p`) and with the checkpoint-free late recipe (`ftbrho`,
+  `ftb3b`) alike, blocks 0-9 never become class-decodable by the head and blocks 10-11 carry the
+  readout; random init (`r`, and `ftb3h`, `ftb4o`) lets blocks 6-9 partly turn into classifiers early
+  and partly unlearn it. The epoch-299 weights agree (§0d.6): quiet middle MLPs in the prefix arms,
+  loud calibrated top in the recipe arms. Convergence *speed* per block is the same in every arm
+  (rho settles at epochs 190-250; block 11's probe at 59-69 except intact proc at 99-119, which gains
+  nothing from being slower): it is the final allocation, not the timing, that differs.
+
+**Different levers.** The early route makes blocks 0-8 slow-moving, low-write feature blocks (large
+q/k norms -> small relative Adam steps; gains 0.4 and small fc -> small writes), so the readout is
+pushed up because the front cannot move fast enough to become a classifier. The late route makes
+blocks 9-11 loud at init, so the head co-adapts with them from epoch 0 and the readout is captured at
+the top; the middle is never needed for classification and stays generic. That these are distinct
+handles follows from the depth asymmetry: quiet is good early and loud is good late -- proc's values
+placed late (`ftb3h`, quiet blocks with rho 0.3-0.6 against random's 0.5-1.3) gain only +0.8, and
+loud random blocks placed early (`ftb4o`, `ftb4n`, `ftb11s`) are harmful.
+
+**One description that covers both.** A random ViT-B starts with a flat depth profile (every block
+writes and moves the same) and ends with its upper half doing the classification. Both interventions
+tilt the profile toward *increasing with depth* -- one by lowering the front, one by raising the back
+-- and the tilted network learns features early, classifies late, fits the augmented training set
+slightly worse and generalises better. Sub-additivity, the shared trace signature and the flipped
+arm's weakness all follow. Anything that flattens or inverts the profile (loud random front) damages
+the stream instead and lands off the fit/generalisation line.
+
+**Not yet established.** (1) Whether the operative variable is how fast blocks *move* or how much
+they *write*: every transplant arm conflates the two; `ftblrm` (steps matched to proc, forward pass
+random) and `ftbrhos` (writes matched, steps random) separate them. (2) Whether the readout
+allocation is causal or a signature: `ftbqmlnvo` reaches +1.85 with only an intermediate profile.
+(3) n = 1 on several of the arms carrying this reading. The decisive follow-up once `ftblrm` /
+`ftbrhos` land is the **combined checkpoint-free init** -- quiet prefix (LR scaling or rho budgets)
+plus loud suffix (rho 1.4): the one-mechanism reading predicts `ftbcomp11`'s +2.5 with no checkpoint
+and no further gain beyond it; two mechanisms would predict more.
+
 ## 0b. Can a short run act as a proxy? Yes -- but NOT the obvious one (2026-08-31)
 
 > **THE FIT BELOW HAS FAILED TWICE — 2.4 sigma and 4.2 sigma, in OPPOSITE directions. Do not use
