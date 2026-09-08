@@ -1111,6 +1111,15 @@ an optimisation bias ("early blocks move slowly") and layer-wise learning-rate s
 checkpoint-free recipe, with the late-block upscaling as its complement; ~78.1 => the profile acts
 through the forward pass (write budgets, logits), which is `ftbrhos`'s question.
 
+**Moved to the group L40S partition 2026-09-08 15:30.** Fair-share on this cluster is charged in
+CPU-hours (`billing = cpu`), and the site wrapper allocates 48 CPUs per H200 GPU but 16 per L40S GPU: a
+4xH200 job bills 192/h, an 8xL40S job 128/h, so the L40S run is no more expensive even at 1.5x the wall
+time, and `lmbdlc2_gpu-l40s` (QoS cap 47 GPUs per account, 10 in use, idle nodes) starts jobs at once
+instead of the ~day-long `alldlc2` wait. `ftbrhos` (29546563), `ftbqmlnvot` (29546564), `ftbqmlnvog` s1
+(29546565) / s2 (29546566) resubmitted there with `--gres=gpu:8` (update_freq 4, same global batch
+4096; results dirs unchanged). `ftblrm` stays on `lmbdlc2_gpu-h200` (a fifth 8-GPU job would exceed the
+cap).
+
 Independent of the cell: `ftb4m` to n = 3 (the single-seed "intact proc is insensitive to the
 write" point that the scale story leans on), and `ftbqks` closes the q/k-asymmetry question when its
 resumes finish.

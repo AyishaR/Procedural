@@ -29,6 +29,10 @@ fi
 echo "Running with ID $SLURM_ID";
 
 export PATH="$HOME/.local/bin:$PATH"
+# 8-rank NCCL on the L40S nodes fails at the first barrier with the shared-memory transport
+# ("Error while attaching to shared memory segment /dev/shm/nccl-... (size 0)"; reproduced on
+# dlc2gpu02/08/10/34, 2026-09-08). 2 ranks work; 8 ranks work with SHM disabled (P2P over PCIe).
+if [[ "$SLURM_JOB_PARTITION" == *l40s* ]]; then export NCCL_SHM_DISABLE=1; echo "L40S partition: NCCL_SHM_DISABLE=1"; fi
 source .venv/bin/activate
 
 echo "Current working directory: $(pwd)";
