@@ -1134,6 +1134,26 @@ slower in wall time, not the 1.5x assumed above. Fair-share per epoch: H200 192/
 128/6 = 21 CPU-h, about 40% more per epoch, bought against zero queue wait. Remaining wall time:
 `ftbrhos` (at epoch 200) ~17 h; `ftbqmlnvot` and `ftbqmlnvog` s1 (from epoch 0/4) ~50 h each.
 
+*`ftbrhos` s0 died with a non-finite loss at epoch 272 (2026-09-09 03:13, job 29546613).* All six
+in-script retries resumed from `checkpoint-271.pth` and died at the same iteration, so it is the data,
+not the node. The weights are finite; the cause is the attention **k-bias**, which is a null
+direction of softmax (q.(k+b) differs from q.k by a per-query constant) and therefore never receives
+a restoring gradient: it random-walked to max|b_k| = 18 / 17 / 39 / 54 in blocks 7-10, and with fp16
+autocast the q.k product overflows on one batch. Fix: `plots/verify/zero_kbias.py` zeroes the k-bias
+slice in the model and EMA weights (exact no-op for the forward pass; Adam state untouched, its
+residual momentum can move the bias by < 2.5 over the remaining 28 epochs); original kept as
+`checkpoint-271.pth.orig_kbias`; resumed as 29549025 on `lmbdlc2_gpu-l40s`. The k-bias drift is worth
+checking in every arm with upscaled late blocks. Readout so far: **74.99 at epoch 269** versus 80.01
+for the unshuffled `ftbrho` at the same epoch and ~77.5 for `r`, i.e. matching proc's scale profile on
+a block-shuffled net is clearly *harmful*, not neutral -- the profile without the structure is worse
+than random (final number after epoch 299).
+
+*Sweeper incident (2026-09-08/09).* A coworker launched the ksd runs (`ftb4*`, 19:10) from their own
+checkout; the scripts write into this shared `results/`, and the hourly `sweep_stalled.py` cron (on
+kislogin1) resubmitted their preempted/queued runs under this account into their directories
+(29547903 ftb4e ran 57 epochs in parallel with their relaunch). All six cancelled; the sweeper now
+skips result dirs not owned by the caller (034719e); the cron was removed.
+
 Independent of the cell: `ftb4m` to n = 3 (the single-seed "intact proc is insensitive to the
 write" point that the scale story leans on), and `ftbqks` closes the q/k-asymmetry question when its
 resumes finish.
