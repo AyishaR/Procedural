@@ -1146,7 +1146,14 @@ residual momentum can move the bias by < 2.5 over the remaining 28 epochs); orig
 checking in every arm with upscaled late blocks. Readout so far: **74.99 at epoch 269** versus 80.01
 for the unshuffled `ftbrho` at the same epoch and ~77.5 for `r`, i.e. matching proc's scale profile on
 a block-shuffled net is clearly *harmful*, not neutral -- the profile without the structure is worse
-than random (final number after epoch 299).
+than random. **Final (2026-09-09 14:46, job 29549025): 75.07 at epoch 299** (train loss 2.195, test
+loss 1.342), n = 1; 3.0 below `r` and 4.6 below `ftbrho`. The epoch-272 resume with the zeroed k-bias ran
+through without a non-finite loss, so the fix holds.
+
+*L40S wall-time cap.* `ftbqmlnvot` (29546614) and `ftbqmlnvog` s1 (29546615) hit the 23:30 partition
+limit at epoch 145 / 149 on 2026-09-09 15:06 (TIMEOUT is not requeued); resubmitted on the same partition
+with their `SLURM_ID`s so they resume in place. At ~6 epochs/h each 300-epoch L40S run needs three
+23.5 h jobs.
 
 *Sweeper incident (2026-09-08/09).* A coworker launched the ksd runs (`ftb4*`, 19:10) from their own
 checkout; the scripts write into this shared `results/`, and the hourly `sweep_stalled.py` cron (on
