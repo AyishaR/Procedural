@@ -23,7 +23,7 @@ Usage:
     python sweep_stalled.py                 # report
     python sweep_stalled.py --submit        # report + resume
 """
-import argparse, json, re, subprocess, sys, time
+import argparse, json, os, re, subprocess, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -145,6 +145,11 @@ def main():
     stalled = []
     for d in sorted(RES.glob("results_IMNET_BASE_*")):
         if d.name.endswith("contaminated") or "diverged" in d.name:
+            continue
+        if d.stat().st_uid != os.getuid():
+            # results/ is shared with coworkers who launch the same scripts from their own
+            # checkouts (kempfe's ksd runs, 2026-09-08). Their preempted/queued runs looked
+            # "stalled" and were resubmitted under this account, into their directories.
             continue
         sid = d.name.rsplit("_", 1)[1]
         arm = id2arm.get(sid)
