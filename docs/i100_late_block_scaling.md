@@ -57,7 +57,7 @@ write lever. (iii) identical transfer curves everywhere => the lens result is re
 change in feature generality. (iv) `ftb4o` / `ftbrhos` (loud / quiet random front, both below random) land
 below random on transfer if generality tracks accuracy.
 
-**Results (2026-09-10, 20 final checkpoints; `ftblrm` pending).** Figures `fig18_layer_probes.png`
+**Results (2026-09-10, 21 final checkpoints).** Figures `fig18_layer_probes.png`
 (+ `fig18b` per feature type), `fig19_lens.png`, `fig20_dense_probes.png`; tables `probes_summary.csv`,
 `lens_summary.csv`, `summary_tables.md` under `.../kempfe/probes/figures/`. Mean ± sd over 3 seeds unless n=1;
 depth labels: emb = patch+pos embedding, bK = output of block K. Concat (CLS + mean-patch) features.
@@ -143,12 +143,22 @@ prediction on 100 % of images; every final-depth accuracy matches `log.txt` with
 **What this changes in §0d.10.** "Learns features early, classifies late" should read "*moves slowly early,
 classifies late, and keeps its top blocks general*". The regulariser is not a better early representation;
 it is the top two blocks not over-fitting the readout — which is where the fit/frontier decomposition of
-§0d.3 already put the gain. The decisive test for the two-lever reading is unchanged: `ftblrm` (steps
-matched, forward random) should show the same late readout and top-block transfer if the step lever
-suffices; its probes/lens are one `MODELS=ftblrm_s0` re-run of the four scripts once its epoch-299
-checkpoint exists.
+§0d.3 already put the gain. The two-lever test (`ftblrm`) is in the addendum below: the step lever alone does not
+reproduce the late readout or the top-block transfer.
 
-**Caveats.** n=1 for `ftb4o` and `ftbrhos`; probes use a single centre crop and 100 ImageNet train images per
+**`ftblrm` addendum (landed 2026-09-10 ~15:30, n=1).** Random init with proc's relative Adam steps in blocks 0-8
+(§0d.9): **77.73** top-1, below random (78.08 ± 0.19). Its depth profile is random-like with a mildly slowed
+front: ImageNet probe b6 / b8 47.0 / 57.9 (r 51.1 / 64.6, p 37.8 / 50.6); transfer mean b8 / b10 / b11
+67.1 / 66.7 / 65.3 (r 68.6 / 67.9 / 65.8) — the top-block drop is random's, not proc's; logit lens b8 / b10
+16.3 / 67.8 (r 23.2 / 73.3, p 1.5 / 39.0); 48 % of images decided by b8 (r 54, p 41); low-level R² at b8
+0.859 (r 0.830, p 0.927); VOC best 53.2, k-NN transfer best 50.3 (r 54.6, 52.8). So the step lever alone
+reproduces neither the late readout nor the top-block generality nor the accuracy gain, and `ftbrhos`
+(writes matched, steps random, 75.07) reproduces neither either: **neither front lever on its own is the
+mechanism** — what every accurate arm shares is the loud, general top (late recipe, proc suffix or prefix,
+rank-mapped marginals), which settles §0d.10's open question (1) in favour of the late lever. The fused-qkv
+caveat of §0d.9 (v moves ~2x slower than in proc) still applies to `ftblrm`.
+
+**Caveats.** n=1 for `ftb4o`, `ftbrhos` and `ftblrm`; probes use a single centre crop and 100 ImageNet train images per
 class (the absolute numbers are below full-train linear-probe numbers but every arm is treated identically);
 dense metrics are on the 14x14 patch grid; the transfer mean weights EuroSAT (saturated at 98 %) like the
 others — dropping it lowers every arm's mean by ~5 points and only swaps `ftbrho` / `ftb3b` (0.1 apart).
