@@ -18,7 +18,7 @@ C = json.load(open(f"{ROOT}/plots/cache/verify/wandb_layerwise.json"))
 F = json.load(open(f"{ROOT}/results/init_dumps/init_forward_stats.json"))
 LAST = 289   # last epoch with a valid per-block measurement
 COND = [("r", "standard init (timm trunc-normal, std 0.02)", "#555555"),
-        ("ftbqmlnvo", "early blocks 0–8: weight scales set to the reference network’s (block 0 amplified ×4, blocks 1–8 attenuated)", "#c0392b"),
+        ("ftbqmlnvo", "early blocks 0–8: per-matrix weight std set to the reference network’s (weights zero-mean; q,k ×3–4, v ×1.2–2, MLP ×0.7–1.2 vs standard), LayerNorm gains 0.3–0.5 instead of 1", "#c0392b"),
         ("ftbrho", "late blocks 9–11: write matrices (v, proj, fc2) scaled so that ‖f(x)‖/‖x‖ = 1.4 for both sublayers", "#1f77b4"),
         ("ftb3b", "late blocks 9–11: write matrices scaled to the reference network’s ‖f(x)‖/‖x‖", "#17becf")]
 FINAL = {"r": 78.1, "ftbqmlnvo": 79.9, "ftbrho": 79.7, "ftb3b": 80.0}
