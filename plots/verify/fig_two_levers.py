@@ -10,8 +10,9 @@ matplotlib.use("Agg"); import matplotlib.pyplot as plt
 ROOT = "/home/schrodi/Procedural"
 C = json.load(open(f"{ROOT}/plots/cache/verify/wandb_layerwise.json"))
 F = json.load(open(f"{ROOT}/results/init_dumps/init_forward_stats.json"))
-ARMS = [("r", "random", "0.4"), ("ftbqmlnvo", "early lever: 0-8 quiet, block 0 loud (79.9)", "C3"),
-        ("ftbrho", "late lever: 9-11 upscaled x1.4 (79.7)", "C0"), ("ftb3b", "late lever: 9-11 rho-matched to proc (80.0)", "C9")]
+ARMS = [("r", "random init (78.1)", "0.4"), ("ftbqmlnvo", "early lever: blocks 0-8 quiet, block 0 loud (79.9)", "C3"),
+        ("ftbrho", "late lever: blocks 9-11 upscaled x1.4 (79.7)", "C0"), ("ftb3b", "late lever: blocks 9-11 matched to proc (80.0)", "C9")]
+SHORT = {"r": "random", "ftbqmlnvo": "early lever", "ftbrho": "late lever (x1.4)", "ftb3b": "late lever (proc)"}
 
 def seed_mean(arm, fam):
     per = []
@@ -35,8 +36,12 @@ for arm, lab, c in ARMS:
     rm = [F[key][str(b)]["rho_mlp"] / r0[str(b)]["rho_mlp"] for b in blocks]
     ax[0].plot(blocks, ra, "-o", color=c, ms=3, label=lab); ax[0].plot(blocks, rm, "--s", color=c, ms=3, alpha=0.7)
     print(f"init rho/random {arm:10s} attn " + " ".join(f"{x:4.2f}" for x in ra) + " | mlp " + " ".join(f"{x:4.2f}" for x in rm))
-ax[0].set_yscale("log"); ax[0].axhline(1, color="k", lw=0.5); ax[0].set_xlabel("block"); ax[0].set_ylabel("write / random at init (solid attn, dashed MLP)")
-ax[0].set_title("(a) init: what each lever changes", fontsize=9); ax[0].legend(fontsize=6, loc="lower left")
+from matplotlib.lines import Line2D
+ax[0].set_yscale("log"); ax[0].axhline(1, color="k", lw=0.5); ax[0].set_xlabel("block"); ax[0].set_ylabel("sublayer write / random, at init")
+ax[0].set_title("(a) init: what each lever changes", fontsize=9)
+h, l = ax[0].get_legend_handles_labels()
+h += [Line2D([], [], color="k", ls="-", marker="o", ms=3), Line2D([], [], color="k", ls="--", marker="s", ms=3)]; l += ["attention write |attn(x)| / |x|", "MLP write |mlp(x)| / |x|"]
+ax[0].legend(h, l, fontsize=6, loc="lower left")
 # (b) readout location at 289
 print("\nprobe top-1 per block at epoch 289 (seed mean):")
 for arm, lab, c in ARMS:
@@ -47,9 +52,9 @@ ax[1].set_xlabel("block"); ax[1].set_ylabel("head-probe top-1 at epoch 289 (%)")
 # (c) probe over training for blocks 7 and 11
 for arm, lab, c in ARMS:
     eps, A = seed_mean(arm, "acc")
-    ax[2].plot(eps, A[:, 11], "-", color=c, label=f"{arm} block 11"); ax[2].plot(eps, A[:, 7], "--", color=c, alpha=0.8, label=f"{arm} block 7")
+    ax[2].plot(eps, A[:, 11], "-", color=c, label=f"{SHORT[arm]}, block 11"); ax[2].plot(eps, A[:, 7], "--", color=c, alpha=0.8, label=f"{SHORT[arm]}, block 7")
     pk = int(np.nanargmax(A[:, 7])); print(f"{arm:10s} block-7 probe peak {A[pk,7]:.1f} at epoch {eps[pk]}, at 289: {A[-1,7]:.1f};  block 11 at 289: {A[-1,11]:.1f}")
-ax[2].set_xlabel("epoch"); ax[2].set_ylabel("head-probe top-1 (%)"); ax[2].set_title("(c) training: top block (solid) vs block 7 (dashed)", fontsize=9); ax[2].legend(fontsize=5, ncol=2)
+ax[2].set_xlabel("epoch"); ax[2].set_ylabel("head-probe top-1 (%)"); ax[2].set_title("(c) training: probe of the top block (solid) and of block 7 (dashed)", fontsize=9); ax[2].legend(fontsize=6, ncol=2)
 # (d) end profile relative to random
 epsr, Rr = seed_mean("r", "delta_norm_ratio"); rend = Rr[epsr.index(289)]
 print("\nrho at epoch 289 relative to random:")
