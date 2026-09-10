@@ -83,26 +83,21 @@ def draw_row(ax, conds, tag):
     ax[2].set_title("(c) Probe accuracy during training")
     ax[2].legend([Line2D([], [], color="k", ls="-"), Line2D([], [], color="k", ls="--")], ["block 11 (last)", "block 7"], loc="center right", frameon=False)
 
-    # (d) residual-write ratio at the end of training, absolute: attention (solid) and MLP (dashed) sublayer
+    # (d, e) residual-write ratio at the end of training, absolute: attention sublayer and MLP sublayer
     for arm, lab, c in conds:
-        eps, A = seed_mean(arm, "delta_norm_ratio"); ax[3].plot(blocks, A[eps.index(LAST)], "--s", color=c, ms=3, lw=1.2, alpha=0.8)
-        try:
-            eps_a, Aa = seed_mean(arm, "attn_delta_norm_ratio"); ax[3].plot(blocks, Aa[eps_a.index(LAST)], "-o", color=c, ms=3, lw=1.4)
-        except (ValueError, IndexError):
-            pass   # attention rows not fetched yet for this arm
-    ax[3].set_yscale("log"); ax[3].set_xlabel("block"); ax[3].set_ylabel(r"$\|f_\ell(x)\|\,/\,\|x\|$ at epoch " + str(LAST))
-    ax[3].set_title(f"(d) Residual-write ratio at epoch {LAST}")
-    ax[3].legend([Line2D([], [], color="k", ls="-", marker="o", ms=3), Line2D([], [], color="k", ls="--", marker="s", ms=3)],
-                 ["attention sublayer", "MLP sublayer"], loc="lower left", frameon=False)
+        eps_a, Aa = seed_mean(arm, "attn_delta_norm_ratio"); ax[3].plot(blocks, Aa[eps_a.index(LAST)], "-o", color=c, ms=3, lw=1.4)
+        eps, A = seed_mean(arm, "delta_norm_ratio"); ax[4].plot(blocks, A[eps.index(LAST)], "-o", color=c, ms=3, lw=1.4)
+    for a, sub, letter in ((ax[3], "Attention", "d"), (ax[4], "MLP", "e")):
+        a.set_yscale("log"); a.set_xlabel("block"); a.set_ylabel(r"$\|f_\ell(x)\|\,/\,\|x\|$ at epoch " + str(LAST))
+        a.set_title(f"({letter}) {sub} residual-write ratio, epoch {LAST}")
 
     for a in ax: a.grid(alpha=0.25); a.spines[["top", "right"]].set_visible(False)
     handles = [Line2D([], [], color=c, lw=2) for _, _, c in conds]
     labels = [f"{lab}  ({FINAL[arm]:.1f}%)" for arm, lab, _ in conds]
-    ax[0].text(-0.28, 1.18, tag, transform=ax[0].transAxes, fontsize=10, fontweight="bold", va="bottom")
     return handles, labels
 
 for name, conds, tag, ncol, lg_y in (("fig18_two_levers_paper", COND, "", 2, 1.09), ("fig19_proc_suffix_paper", COND2, "", 4, 1.06)):
-    fig, ax = plt.subplots(1, 4, figsize=(15, 3.8))
+    fig, ax = plt.subplots(1, 5, figsize=(18.5, 3.8))
     h, l = draw_row(ax, conds, tag)
     fig.legend(h, l, loc="upper center", ncol=ncol, frameon=False, bbox_to_anchor=(0.5, lg_y))
     plt.tight_layout(rect=(0, 0, 1, 0.90))
