@@ -9,7 +9,7 @@ Conditions (seed means, 3 seeds each):
   late-block amplification*     blocks 9-11 residual writes matched to a proc network (ftb3b)
 Panels: (a) residual-write ratio at init; (b) per-block linear-probe accuracy at the end of training;
 (c) probe accuracy of the last block and of block 7 during training; (d) residual-write ratio at the end.
-Output: plots/out/fig18_two_levers_paper.{png,pdf}"""
+Output: plots/out/fig18_two_levers_paper.{png,pdf} (two levers) and fig19_proc_suffix_paper.{png,pdf} (proc-suffix split series)"""
 import json, numpy as np, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -20,6 +20,7 @@ LAST = 289   # last epoch with a valid per-block measurement
 import seaborn as sns
 T10 = sns.color_palette("tab10")
 COND = [("r", "random init", T10[7]),
+        ("p", "proc weights in all blocks", T10[2]),
         ("ftb3i", "blocks 0–8: proc weights, blocks 9–11 random", T10[1]),
         ("ftbqmlnvo", "blocks 0–8: per-matrix weight std from proc (zero mean), LN gains 0.3–0.5", T10[3]),
         ("ftb3h", "blocks 9–11: proc weights, blocks 0–8 random (1 seed)", T10[4]),
@@ -95,12 +96,11 @@ def draw_row(ax, conds, tag):
     ax[0].text(-0.28, 1.18, tag, transform=ax[0].transAxes, fontsize=10, fontweight="bold", va="bottom")
     return handles, labels
 
-fig, axes = plt.subplots(2, 4, figsize=(15, 8.6))
-h1, l1 = draw_row(axes[0], COND, "A  two levers")
-h2, l2 = draw_row(axes[1], COND2, "B  proc-suffix split series")
-fig.legend(h1, l1, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.045))
-fig.legend(h2, l2, loc="upper center", ncol=4, frameon=False, bbox_to_anchor=(0.5, 0.515))
-plt.tight_layout(rect=(0, 0, 1, 0.96), h_pad=7.5)
-for ext in ("png", "pdf"):
-    plt.savefig(f"{ROOT}/plots/out/fig18_two_levers_paper.{ext}", dpi=200, bbox_inches="tight")
-print("wrote plots/out/fig18_two_levers_paper.png / .pdf")
+for name, conds, tag, ncol, lg_y in (("fig18_two_levers_paper", COND, "", 2, 1.09), ("fig19_proc_suffix_paper", COND2, "", 4, 1.06)):
+    fig, ax = plt.subplots(1, 4, figsize=(15, 3.8))
+    h, l = draw_row(ax, conds, tag)
+    fig.legend(h, l, loc="upper center", ncol=ncol, frameon=False, bbox_to_anchor=(0.5, lg_y))
+    plt.tight_layout(rect=(0, 0, 1, 0.90))
+    for ext in ("png", "pdf"):
+        plt.savefig(f"{ROOT}/plots/out/{name}.{ext}", dpi=200, bbox_inches="tight")
+    plt.close(fig); print(f"wrote plots/out/{name}.png / .pdf")
