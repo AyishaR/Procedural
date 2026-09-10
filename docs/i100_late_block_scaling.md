@@ -1259,6 +1259,12 @@ vs random 5.25). A first spec with q/k at 1.45/1.64 (rms-level folding) gave log
 because proc's q/k columns are anti-correlated with gamma; corrected to 1.32/1.32. Blocks 9-11, LN,
 biases, embeddings, head bit-identical to `r_s0`.
 
+**`ftbqmlnvot` s0 final (2026-09-10 16:40, job 29571923 after two L40S segments): 80.36** (train loss 2.356),
+against `ftbqmlnvo` 80.14 / 80.18 / 79.48 and the Gaussian twin s0 79.20 (s1 at 80.34 at epoch 294). The
+Student-t donor (proc's per-slice kurtosis, Gaussian otherwise) reproduces `ftbqmlnvo`; with the Gaussian
+twin this makes the distribution *shape* irrelevant and the per-slice second moments the whole content of the
+early-block init (n = 1 + 1, the Gaussian seed 0 at 79.20 was a low draw, 0.8 behind from epoch 224 on).
+
 **`ftblrm` final (2026-09-10 14:52, job 29571912): 77.73** (train loss 2.253, test loss 1.18), against `r`
 78.08 +/- 0.19 and the nine random controls at 77.69. Matching proc's relative Adam step sizes in blocks 0-8
 with an unchanged random forward pass gives nothing; the step-size half of the profile is ruled out as the
