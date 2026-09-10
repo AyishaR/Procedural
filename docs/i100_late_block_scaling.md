@@ -57,8 +57,101 @@ write lever. (iii) identical transfer curves everywhere => the lens result is re
 change in feature generality. (iv) `ftb4o` / `ftbrhos` (loud / quiet random front, both below random) land
 below random on transfer if generality tracks accuracy.
 
-**Results.** *(pending — arrays submitted 2026-09-10; figures `fig18_layer_probes.png`, `fig19_lens.png`,
-`fig20_dense_probes.png` and `probes_summary.csv` / `lens_summary.csv` under `.../probes/figures/`.)*
+**Results (2026-09-10, 20 final checkpoints; `ftblrm` pending).** Figures `fig18_layer_probes.png`
+(+ `fig18b` per feature type), `fig19_lens.png`, `fig20_dense_probes.png`; tables `probes_summary.csv`,
+`lens_summary.csv`, `summary_tables.md` under `.../kempfe/probes/figures/`. Mean ± sd over 3 seeds unless n=1;
+depth labels: emb = patch+pos embedding, bK = output of block K. Concat (CLS + mean-patch) features.
+
+*ImageNet-1k linear probe, test top-1* (proper trained readout at every depth):
+
+| arm | b4 | b6 | b8 | b10 | b11 |
+|---|---|---|---|---|---|
+| r | 38.8 ± 1.3 | 51.1 ± 2.7 | 64.6 ± 3.6 | 76.6 ± 0.4 | 77.7 ± 0.3 |
+| ftbrho | 33.0 ± 0.6 | 41.4 ± 0.1 | 54.7 ± 0.7 | 75.4 ± 0.2 | 79.1 ± 0.2 |
+| ftb3b | 33.5 ± 0.2 | 42.6 ± 0.3 | 57.1 ± 2.0 | 77.5 ± 0.9 | 79.5 ± 0.2 |
+| ftbqmlnvo | 35.9 ± 1.4 | 46.0 ± 1.4 | 58.5 ± 3.3 | 76.2 ± 1.1 | 79.2 ± 0.5 |
+| ftb3i | 23.9 ± 2.6 | 30.8 ± 2.5 | 42.7 ± 3.1 | 69.8 ± 1.9 | 78.6 ± 0.4 |
+| p | 29.3 ± 0.7 | 37.8 ± 0.5 | 50.6 ± 1.2 | 73.5 ± 0.4 | 79.2 ± 0.2 |
+
+*Transfer, mean over the 7 sets (Places365, CIFAR-100, DTD, Flowers, Cars, Aircraft, EuroSAT), test top-1:*
+
+| arm | b4 | b6 | b8 | b10 | b11 | best over depth |
+|---|---|---|---|---|---|---|
+| r | 58.9 ± 0.8 | 65.0 ± 1.1 | 68.6 ± 1.4 | 67.9 ± 1.3 | 65.8 ± 2.0 | 69.2 ± 1.1 (b9) |
+| ftbrhos (n=1) | 58.1 | 64.2 | 68.7 | 67.5 | 64.8 | 68.8 (b9) |
+| ftb4o (n=1) | 57.3 | 61.8 | 66.0 | 66.7 | 64.8 | 67.7 (b9) |
+| ftbrho | 54.8 ± 0.4 | 60.3 ± 0.3 | 67.5 ± 0.4 | 70.0 ± 0.4 | 67.3 ± 0.4 | 70.0 ± 0.4 (b10) |
+| ftb3b | 55.3 ± 0.3 | 61.2 ± 0.2 | 67.9 ± 1.2 | 69.3 ± 0.1 | 66.9 ± 1.3 | 70.1 ± 0.7 (b9) |
+| ftbqmlnvo | 57.4 ± 1.0 | 63.9 ± 0.8 | 69.5 ± 1.0 | 69.9 ± 0.5 | 68.0 ± 1.3 | 70.3 ± 0.9 (b9-10) |
+| ftb3i | 46.8 ± 2.1 | 52.5 ± 2.4 | 61.4 ± 1.9 | 69.5 ± 0.6 | 68.8 ± 0.7 | 69.6 ± 0.5 (b10) |
+| p | 51.6 ± 0.7 | 58.4 ± 0.5 | 66.7 ± 0.5 | 70.2 ± 0.3 | 68.8 ± 0.3 | 70.2 ± 0.3 (b10) |
+
+*The same pattern in every other readout* (b6 / b8 / b10 / b11, r vs p, 3 seeds each):
+VOC patch mIoU 42.8 / 52.5 / 53.6 / 51.4 vs 30.0 / 42.6 / 56.1 / 55.9; ADE20K 19.0 / 21.4 / 22.1 / 21.2 vs
+12.9 / 18.7 / 22.8 / 23.1; NYUv2 delta1 56.7 / 58.8 / 57.8 / 56.3 vs 52.5 / 56.4 / 57.7 / 57.6 (baseline 39.6);
+k-NN transfer mean 47.1 / 51.6 / 51.5 / 46.4 vs 39.0 / 48.0 / 53.4 / 52.0; ImageNet-R zero-shot with the
+ImageNet probes 18.1 / 25.5 / 29.7 / 32.0 vs 11.2 / 18.6 / 29.6 / 35.0. Low-level image statistics (ridge R²,
+mean of 10 targets): r 0.909 / 0.830 / 0.691 / 0.630 vs p 0.961 / 0.927 / 0.754 / 0.681 — proc keeps the input
+statistics further up the stack.
+
+*Lenses (ImageNet val):*
+
+| arm | logit lens b8 / b10 / b11 | tuned lens b6 / b8 / b10 | mean prediction depth | % decided by b8 |
+|---|---|---|---|---|
+| r | 23.2 ± 13.5 / 73.3 / 78.1 | 46.7 / 56.4 / 73.7 | 8.16 | 54 |
+| ftbrho | 0.3 / 41.7 / 79.7 | 35.8 / 49.9 / 68.5 | 8.98 | 44 |
+| ftb3b | 0.3 / 58.2 ± 18 / 80.0 | 35.3 / 48.1 / 73.9 | 8.90 | 43 |
+| ftbqmlnvo | 8.0 / 64.9 / 79.9 | 43.1 / 53.8 / 70.6 | 8.69 | 47 |
+| ftb3i | 1.0 / 33.8 / 80.0 | 28.0 / 40.9 / 61.5 | 9.54 | 34 |
+| p | 1.5 / 39.0 / 80.1 | 34.6 / 48.0 / 64.4 | 9.11 | 41 |
+
+The logit lens reproduces fig17 at epoch 299 with three seeds (random decodable from b6-b7, the proc-prefix
+and late-recipe arms only at b10-b11; `ftbqmlnvo` intermediate; `ftb4o` and `ftbrhos` like random). The tuned
+lens is converged (9000 vs 3000 steps: ≤ 0.6 points, KL ≤ 0.02) and its depth-12 output equals the model's own
+prediction on 100 % of images; every final-depth accuracy matches `log.txt` within 0.06.
+
+**Reading.**
+
+1. *The early-block half of the hypothesis is wrong.* Proc's blocks 2-8 are not more general — they are less
+   linearly decodable than random's for **everything**: ImageNet (−13 / −14 points at b6 / b8), all seven
+   transfer sets (−6.6 / −1.9 on the mean; largest on Cars, smallest on EuroSAT), segmentation, depth,
+   k-NN and ImageNet-R. The tuned lens says the same, so the late logit-lens readout is not a head-basis
+   artefact: proc's mid-stack CLS token genuinely carries less class information. What the proc front does
+   instead is *less*: it discards the low-level image statistics more slowly (R² 0.93 vs 0.83 at b8), i.e.
+   it is a slower, lower-write transformation of the input, exactly as the quiet-front description of §0d.10
+   says — but "quiet" means "later", not "more general".
+2. *The gain is at the top, and it is generality there that separates the arms.* Random init's transfer
+   accuracy peaks at b8-b9 (68.6-69.2) and then **drops** to 65.8 at b11 as its last blocks specialise to
+   the ImageNet readout; proc's keeps rising to b10 (70.2) and stays at 68.8 at b11. The same holds for
+   k-NN (r 51.6 → 46.4, p 48.0 → 52.0), for VOC/ADE20K (r flat or falling after b9, p rising to b11), and
+   for ImageNet-R (35.0 vs 32.0 at b11). The arms' final ImageNet accuracy groups the same way as their
+   b10-b11 transfer accuracy (p, ftbqmlnvo, ftb3i, ftb3b, ftbrho: 68-70 transfer and 79.7-80.1 top-1; r:
+   65.8-67.9 and 78.1; ftb4o / ftbrhos: 64.8-67.5 and 77.3 / 75.1), and *not* like mid-depth decodability
+   (`ftb3i` is the least decodable arm at b6 and one of the most accurate; `ftbrhos` is random-like at b6
+   and the worst).
+3. *The checkpoint-free late recipe reproduces the late-block effect.* `ftbrho` / `ftb3b` reach proc's
+   top-block transfer (70.0 / 70.1 best, 67.3 / 66.9 at b11 vs r 65.8), proc's late readout (logit lens
+   0.3 at b8), and about half of proc's mid-depth deficit and low-level retention (R² 0.92 at b8). The
+   ordering of the mid-depth deficit is proc prefix (`ftb3i`) > intact proc > late recipe > `ftbqmlnvo` ≈
+   random: it is the proc *prefix* that makes the front slow, and the late recipe gets most of the accuracy
+   without it. `ftbqmlnvo` (proc marginals in 0-8) has random-like mid-depth decodability *and* proc-like
+   top-block generality (70.3 best transfer, the highest), which is why it matches proc's accuracy.
+4. *Prediction (iv) holds.* The loud random front (`ftb4o`) is below random at every depth on transfer
+   (best 67.7 vs 69.2) and at the top; the quiet-shuffled front (`ftbrhos`) is random-like in the middle
+   but collapses at the top (64.8 at b11, VOC plateau at 37-38 from b7).
+
+**What this changes in §0d.10.** "Learns features early, classifies late" should read "*moves slowly early,
+classifies late, and keeps its top blocks general*". The regulariser is not a better early representation;
+it is the top two blocks not over-fitting the readout — which is where the fit/frontier decomposition of
+§0d.3 already put the gain. The decisive test for the two-lever reading is unchanged: `ftblrm` (steps
+matched, forward random) should show the same late readout and top-block transfer if the step lever
+suffices; its probes/lens are one `MODELS=ftblrm_s0` re-run of the four scripts once its epoch-299
+checkpoint exists.
+
+**Caveats.** n=1 for `ftb4o` and `ftbrhos`; probes use a single centre crop and 100 ImageNet train images per
+class (the absolute numbers are below full-train linear-probe numbers but every arm is treated identically);
+dense metrics are on the 14x14 patch grid; the transfer mean weights EuroSAT (saturated at 98 %) like the
+others — dropping it lowers every arm's mean by ~5 points and only swaps `ftbrho` / `ftb3b` (0.1 apart).
 
 ## 0c. CURRENT UNDERSTANDING: the early blocks carry the VALUE DISTRIBUTION (2026-09-02, rev 2)
 
