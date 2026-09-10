@@ -17,10 +17,10 @@ ROOT = "/home/schrodi/Procedural"
 C = json.load(open(f"{ROOT}/plots/cache/verify/wandb_layerwise.json"))
 F = json.load(open(f"{ROOT}/results/init_dumps/init_forward_stats.json"))
 LAST = 289   # last epoch with a valid per-block measurement
-COND = [("r", "standard init (timm trunc-normal, std 0.02)", "#555555"),
-        ("ftbqmlnvo", "early blocks 0–8: per-matrix weight std set to the reference network’s (weights zero-mean; q,k ×3–4, v ×1.2–2, MLP ×0.7–1.2 vs standard), LayerNorm gains 0.3–0.5 instead of 1", "#c0392b"),
-        ("ftbrho", "late blocks 9–11: write matrices (v, proj, fc2) scaled so that ‖f(x)‖/‖x‖ = 1.4 for both sublayers", "#1f77b4"),
-        ("ftb3b", "late blocks 9–11: write matrices scaled to the reference network’s ‖f(x)‖/‖x‖", "#17becf")]
+COND = [("r", "standard init", "#555555"),
+        ("ftbqmlnvo", "blocks 0–8: per-matrix weight std from the reference net (zero mean), LN gains 0.3–0.5", "#c0392b"),
+        ("ftbrho", "blocks 9–11: v, proj, fc2 scaled to ‖f(x)‖/‖x‖ = 1.4", "#1f77b4"),
+        ("ftb3b", "blocks 9–11: v, proj, fc2 scaled to the reference net’s ‖f(x)‖/‖x‖", "#17becf")]
 FINAL = {"r": 78.1, "ftbqmlnvo": 79.9, "ftbrho": 79.7, "ftb3b": 80.0}
 
 def seed_mean(arm, fam):
@@ -66,18 +66,17 @@ ax[2].set_xlabel("epoch"); ax[2].set_ylabel("linear-probe top-1 accuracy (%)")
 ax[2].set_title("(c) Probe accuracy during training")
 ax[2].legend([Line2D([], [], color="k", ls="-"), Line2D([], [], color="k", ls="--")], ["block 11 (last)", "block 7"], loc="center right", frameon=False)
 
-# (d) residual-write ratio at the end of training, relative to the standard init
-epsr, Rr = seed_mean("r", "delta_norm_ratio"); rend = Rr[epsr.index(LAST)]
-for arm, lab, c in COND[1:]:
-    eps, A = seed_mean(arm, "delta_norm_ratio"); ax[3].plot(blocks, A[eps.index(LAST)] / rend, "-o", color=c, ms=3, lw=1.4)
-ax[3].plot(blocks, np.ones(12), "-o", color=COND[0][2], ms=3, lw=1.4)   # the standard init is the reference (= 1 by construction)
-ax[3].set_xlabel("block"); ax[3].set_ylabel(r"$\|f_\ell(x)\|\,/\,\|x\|$, relative to standard init")
+# (d) residual-write ratio at the end of training, absolute (the standard init is not flat: training
+# itself builds a loud block 0, quiet middle and loud top from every init)
+for arm, lab, c in COND:
+    eps, A = seed_mean(arm, "delta_norm_ratio"); ax[3].plot(blocks, A[eps.index(LAST)], "-o", color=c, ms=3, lw=1.4)
+ax[3].set_yscale("log"); ax[3].set_xlabel("block"); ax[3].set_ylabel(r"$\|f_\ell(x)\|\,/\,\|x\|$, MLP sublayer")
 ax[3].set_title(f"(d) Residual-write ratio at epoch {LAST}")
 
 for a in ax: a.grid(alpha=0.25); a.spines[["top", "right"]].set_visible(False)
 handles = [Line2D([], [], color=c, lw=2) for _, _, c in COND]
-labels = [f"{lab}  —  final top-1 {FINAL[arm]:.1f}%" for arm, lab, _ in COND]
-fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.06))
+labels = [f"{lab}  ({FINAL[arm]:.1f}%)" for arm, lab, _ in COND]
+fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.05))
 plt.tight_layout(rect=(0, 0, 1, 0.90))
 for ext in ("png", "pdf"):
     plt.savefig(f"{ROOT}/plots/out/fig18_two_levers_paper.{ext}", dpi=200, bbox_inches="tight")
