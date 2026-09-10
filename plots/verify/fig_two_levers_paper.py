@@ -6,7 +6,7 @@ Conditions (seed means, 3 seeds each):
   early-block attenuation       blocks 0-8 rescaled to a depth profile: block 0 amplified, blocks 1-8
                                 attenuated; blocks 9-11 standard (ftbqmlnvo)
   late-block amplification      blocks 9-11 residual writes amplified x1.4 (ftbrho)
-  late-block amplification*     blocks 9-11 residual writes matched to a reference network (ftb3b)
+  late-block amplification*     blocks 9-11 residual writes matched to a proc network (ftb3b)
 Panels: (a) residual-write ratio at init; (b) per-block linear-probe accuracy at the end of training;
 (c) probe accuracy of the last block and of block 7 during training; (d) residual-write ratio at the end.
 Output: plots/out/fig18_two_levers_paper.{png,pdf}"""
@@ -17,12 +17,14 @@ ROOT = "/home/schrodi/Procedural"
 C = json.load(open(f"{ROOT}/plots/cache/verify/wandb_layerwise.json"))
 F = json.load(open(f"{ROOT}/results/init_dumps/init_forward_stats.json"))
 LAST = 289   # last epoch with a valid per-block measurement
-COND = [("r", "standard init", "#555555"),
-        ("ftb3i", "blocks 0–8: reference net weights, blocks 9–11 standard", "#e67e22"),
-        ("ftbqmlnvo", "blocks 0–8: per-matrix weight std from the reference net (zero mean), LN gains 0.3–0.5", "#c0392b"),
-        ("ftb3h", "blocks 9–11: reference net weights, blocks 0–8 standard (1 seed)", "#8e44ad"),
-        ("ftbrho", "blocks 9–11: v, proj, fc2 scaled to ‖f(x)‖/‖x‖ = 1.4", "#1f77b4"),
-        ("ftb3b", "blocks 9–11: v, proj, fc2 scaled to the reference net’s ‖f(x)‖/‖x‖", "#17becf")]
+import seaborn as sns
+T10 = sns.color_palette("tab10")
+COND = [("r", "standard init", T10[7]),
+        ("ftb3i", "blocks 0–8: proc weights, blocks 9–11 standard", T10[1]),
+        ("ftbqmlnvo", "blocks 0–8: per-matrix weight std from proc (zero mean), LN gains 0.3–0.5", T10[3]),
+        ("ftb3h", "blocks 9–11: proc weights, blocks 0–8 standard (1 seed)", T10[4]),
+        ("ftbrho", "blocks 9–11: v, proj, fc2 scaled to ‖f(x)‖/‖x‖ = 1.4", T10[0]),
+        ("ftb3b", "blocks 9–11: v, proj, fc2 scaled to proc’s ‖f(x)‖/‖x‖", T10[9])]
 FINAL = {"r": 78.1, "ftb3i": 80.0, "ftbqmlnvo": 79.9, "ftb3h": 78.9, "ftbrho": 79.7, "ftb3b": 80.0}
 
 def seed_mean(arm, fam):
