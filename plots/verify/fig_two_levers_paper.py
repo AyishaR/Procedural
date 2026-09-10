@@ -18,10 +18,12 @@ C = json.load(open(f"{ROOT}/plots/cache/verify/wandb_layerwise.json"))
 F = json.load(open(f"{ROOT}/results/init_dumps/init_forward_stats.json"))
 LAST = 289   # last epoch with a valid per-block measurement
 COND = [("r", "standard init", "#555555"),
+        ("ftb3i", "blocks 0–8: reference net weights, blocks 9–11 standard", "#e67e22"),
         ("ftbqmlnvo", "blocks 0–8: per-matrix weight std from the reference net (zero mean), LN gains 0.3–0.5", "#c0392b"),
+        ("ftb3h", "blocks 9–11: reference net weights, blocks 0–8 standard (1 seed)", "#8e44ad"),
         ("ftbrho", "blocks 9–11: v, proj, fc2 scaled to ‖f(x)‖/‖x‖ = 1.4", "#1f77b4"),
         ("ftb3b", "blocks 9–11: v, proj, fc2 scaled to the reference net’s ‖f(x)‖/‖x‖", "#17becf")]
-FINAL = {"r": 78.1, "ftbqmlnvo": 79.9, "ftbrho": 79.7, "ftb3b": 80.0}
+FINAL = {"r": 78.1, "ftb3i": 80.0, "ftbqmlnvo": 79.9, "ftb3h": 78.9, "ftbrho": 79.7, "ftb3b": 80.0}
 
 def seed_mean(arm, fam):
     per = []
@@ -31,9 +33,15 @@ def seed_mean(arm, fam):
             if int(e) > LAST: continue
             v = np.array([row.get(f"{fam}_layer{l}", np.nan) for l in range(12)], float); v[v == -1.0] = np.nan
             if not np.all(np.isnan(v)): m[int(e)] = v
+        if fam == "acc":
+            # drop artefact rows: a resumed job's end-of-segment analysis pass measures a random model
+            # (probe at chance in every block), e.g. ftb3i seeds 0 and 2 at epoch 69 and every run's epoch 299
+            eps_s = sorted(m); m = {e: v for i, e in enumerate(eps_s) for v in [m[e]]
+                                    if not (i > 0 and e > 20 and np.nanmax(v) < 0.5 * np.nanmax(m[eps_s[i - 1]]))}
         per.append(m)
-    eps = sorted(set.intersection(*[set(m) for m in per]))
-    return eps, np.array([np.nanmean([m[e] for m in per], 0) for e in eps])
+    eps = sorted(set.union(*[set(m) for m in per]))
+    eps = [e for e in eps if sum(e in m for m in per) >= max(1, len(per) - 1)]   # keep epochs present in all but one seed
+    return eps, np.array([np.nanmean([m[e] for m in per if e in m], 0) for e in eps])
 
 plt.rcParams.update({"font.size": 9, "axes.titlesize": 9.5, "axes.labelsize": 9, "legend.fontsize": 8, "xtick.labelsize": 8, "ytick.labelsize": 8})
 fig, ax = plt.subplots(1, 4, figsize=(15, 3.6)); blocks = np.arange(12)
@@ -76,8 +84,8 @@ ax[3].set_title(f"(d) Residual-write ratio at epoch {LAST}")
 for a in ax: a.grid(alpha=0.25); a.spines[["top", "right"]].set_visible(False)
 handles = [Line2D([], [], color=c, lw=2) for _, _, c in COND]
 labels = [f"{lab}  ({FINAL[arm]:.1f}%)" for arm, lab, _ in COND]
-fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.05))
-plt.tight_layout(rect=(0, 0, 1, 0.90))
+fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.09))
+plt.tight_layout(rect=(0, 0, 1, 0.88))
 for ext in ("png", "pdf"):
     plt.savefig(f"{ROOT}/plots/out/fig18_two_levers_paper.{ext}", dpi=200, bbox_inches="tight")
 print("wrote plots/out/fig18_two_levers_paper.png / .pdf")
