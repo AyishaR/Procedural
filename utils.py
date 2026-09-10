@@ -669,13 +669,74 @@ def build_model(args):
             head_init_scale=args.head_init_scale,
             )
     else:
+        # residual routing kwargs only when the flag is on, so the call is byte-identical to
+        # the vanilla one otherwise. Read through getattr: the other build_model callers
+        # (ft.py, main_lp.py, main_stats*.py, probes/registry.py) may pass older namespaces.
+        routing = {}
+        if getattr(args, 'resid_routing', False):
+            routing = dict(resid_routing=True,
+                           routing_bound=float(getattr(args, 'routing_bound', 0.0)),
+                           routing_impl=str(getattr(args, 'routing_impl', 'loop')))
         model = create_model(
             args.model, 
             pretrained=False, 
             num_classes=args.nb_classes, 
             drop_path_rate=args.drop_path,
+            **routing,
             )
     return model
+
+# Flags a residual-routing run may legitimately set: experiment identity, data, schedule,
+# infrastructure, logging and the routing knobs themselves. EVERYTHING else must sit at its
+# parser default. Routing REPLACES the residual adds, so it composes with no other architecture,
+# init or residual intervention -- and several of those would fail SILENTLY rather than loudly:
+#   --attention_residual_scaling / --attention_out_scaling monkeypatch Block.forward, which the
+#     routed traversal never calls, so the flag would appear set and do nothing;
+#   --initialize / --init_method load or surgically edit vanilla checkpoints that carry no router
+#     keys, and utils.load_state_dict is not strict;
+#   --custom_lr_layer / --lr_match_ckpt build parameter groups by name and would misgroup the
+#     thetas.
+# Deliberately NOT allowlisted: --initialize and --init_method, so an accidental warm start is
+# refused rather than silently turning the experiment into something else.
+ROUTING_ALLOWED_NON_DEFAULT = frozenset({
+    # experiment identity / logging
+    "model", "output_dir", "accuracy_json", "grad_norms_json", "enable_wandb", "project",
+    "wandb_entity_name", "notes", "pr_notes", "slurm_id", "seed",
+    # data
+    "data_set", "data_path", "input_size", "nb_classes", "num_workers", "pin_mem",
+    "procedural_data", "procedural_order",
+    # schedule / optimisation (the base arm's recipe)
+    "batch_size", "total_batch_size", "update_freq", "epochs", "warmup_epochs", "lr", "min_lr",
+    "weight_decay", "use_amp", "skip_norm",
+    # checkpointing / infrastructure
+    "resume", "auto_resume", "requeue", "save_ckpt", "save_ckpt_freq", "save_ckpt_num",
+    "save_for_analysis", "start_epoch", "world_size", "local_rank", "dist_on_itp", "dist_url",
+    "device", "eval", "crop_pct", "weight_decay_end",
+    # diagnostics (see engine.model_analyse_routed)
+    "detailed_metrics", "stage_wise_metrics",
+    # the intervention itself
+    "resid_routing", "routing_bound", "routing_impl",
+})
+
+
+def assert_routing_isolated(args, parser):
+    """One intervention at a time: refuse --resid_routing composed with anything else.
+
+    Call this straight after parse_args() and BEFORE main(args), which rewrites flags such as
+    freeze_blocks ('' -> []) and attention_residual_scaling ('' -> {}) in place; after that the
+    comparison against the parser defaults is meaningless.
+    """
+    if not getattr(args, "resid_routing", False):
+        return
+    defaults = {a.dest: a.default for a in parser._actions if a.dest != "help"}
+    bad = sorted(k for k, d in defaults.items()
+                 if k not in ROUTING_ALLOWED_NON_DEFAULT and getattr(args, k, d) != d)
+    assert not bad, (
+        "--resid_routing composes with no other intervention, but these flags are off their "
+        f"defaults: {bad}. If one of them is genuinely harmless here, add it to "
+        "utils.ROUTING_ALLOWED_NON_DEFAULT after checking what it does to the residual path.")
+    print(f"[routing] isolation check passed ({len(defaults)} flags inspected)", flush=True)
+
 
 SPECTRAL_INTERVENTION_MATRICES = ["attn.qkv.weight", "attn.proj.weight", "mlp.fc1.weight", "mlp.fc2.weight"]
 

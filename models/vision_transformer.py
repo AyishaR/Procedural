@@ -36,6 +36,8 @@ from timm.models.helpers import build_model_with_cfg, resolve_pretrained_cfg, na
 from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_normal_
 from timm.models.registry import register_model
 
+from models.residual_routing import ResidualRouter, routed_forward_buf
+
 _logger = logging.getLogger(__name__)
 
 
@@ -418,7 +420,10 @@ class VisionTransformer(nn.Module):
             distill_head_dim=-1,
             distill_num_heads=1,
             is_teacher=False,
-            distill_proj="linear"
+            distill_proj="linear",
+            resid_routing=False,
+            routing_bound=0.0,
+            routing_impl='loop'
     ):
         """
         Args:
@@ -446,6 +451,32 @@ class VisionTransformer(nn.Module):
         super().__init__()
         assert global_pool in ('', 'avg', 'token')
         assert class_token or global_pool != 'token'
+
+        # residual routing: every branch and the readout learn their own weighted mix of the
+        # embedding stream and all earlier branch outputs, replacing the residual adds
+        # (models/residual_routing.py). One intervention at a time -- routing REPLACES the
+        # residual additions, so it composes with no other residual-path modification.
+        self.resid_routing = bool(resid_routing)
+        self.routing_bound = float(routing_bound)
+        self.routing_impl = str(routing_impl)
+        if self.resid_routing:
+            assert self.routing_bound == 0.0 or self.routing_bound > 1.0, \
+                f'routing_bound must be 0 (softplus) or > 1: {self.routing_bound}'
+            assert self.routing_impl in ('loop', 'buf'), \
+                f"routing_impl must be 'loop' or 'buf': {self.routing_impl!r}"
+            assert init_values is None, \
+                'resid_routing replaces the residual adds; LayerScale is a second residual ' \
+                'intervention (and its fp32 gamma would promote the branch output under AMP)'
+            assert drop_path_rate == 0., \
+                'resid_routing replaces the residual adds; stochastic depth is a second ' \
+                'residual intervention'
+            assert block_fn is Block, \
+                'resid_routing assumes the pre-norm Block (norm1/attn/ls1/drop_path1 + ' \
+                'norm2/mlp/ls2/drop_path2)'
+            assert not is_teacher and distill_head_dim == -1 and distill_num_heads == 1, \
+                'resid_routing has no per-block residual stream, so the intermediate features ' \
+                'the distillation heads read do not exist'
+            assert global_pool in ('token', 'avg'), 'resid_routing needs a pooled readout'
         use_fc_norm = global_pool == 'avg' if fc_norm is None else fc_norm
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         act_layer = act_layer or nn.GELU
@@ -521,6 +552,20 @@ class VisionTransformer(nn.Module):
         if weight_init != 'skip':
             self.init_weights(weight_init)
 
+        # residual routing AFTER every RNG-consuming init (init_weights' trunc_normal_ /
+        # named_apply walk just above is the last one) and after that walk, so the router is
+        # never visited by it. The router's init is constant (torch.full / torch.tril) and
+        # draws no RNG, so a routed model's backbone is bit-identical to a same-seed vanilla
+        # one. Registered only when the flag is on: default-off state dicts are unchanged.
+        if self.resid_routing:
+            kind = ('softplus (unbounded) coefficients, all exactly 1 at init'
+                    if self.routing_bound == 0.0 else
+                    f'{self.routing_bound:g}*sigmoid coefficients, all 1 at init up to fp32 '
+                    'rounding')
+            print(f'residual routing: {2 * depth + 1} consumers, static {kind}, '
+                  f'impl {self.routing_impl}', flush=True)
+            self.router = ResidualRouter(depth, bound=self.routing_bound)
+
     def init_weights(self, mode=''):
         assert mode in ('jax', 'jax_nlhb', 'moco', '')
         head_bias = -math.log(self.num_classes) if 'nlhb' in mode else 0.
@@ -586,7 +631,17 @@ class VisionTransformer(nn.Module):
         x = self.patch_embed(x)
         x = self._pos_embed(x)
         x = self.norm_pre(x)
-        if self.grad_checkpointing and not torch.jit.is_scripting():
+        if self.resid_routing:
+            # No per-block residual stream exists under routing: history[0] is x, every branch
+            # output is its own history entry, and the READOUT consumer's mix is the routed
+            # analogue of "the stream after the last block". features_list therefore holds
+            # exactly that one entry, BEFORE self.norm -- matching the vanilla convention that
+            # features_list[-1] is the pre-norm tensor self.norm is then applied to. __init__
+            # asserts distill_num_heads == 1, so forward's unconditional
+            # `for i in range(self.distill_num_heads)` indexes exactly this entry.
+            x = self._forward_routed(x)
+            features_list = [x]
+        elif self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
         else:
             features_list = []
@@ -596,6 +651,29 @@ class VisionTransformer(nn.Module):
                     features_list.append(x)
         x = self.norm(x)
         return x, features_list
+
+    def _forward_routed(self, x):
+        """Routed traversal of the blocks; returns the readout consumer's mix, pre-norm.
+
+        history[0] = the tokens entering block 0 (patch_embed -> _pos_embed -> norm_pre);
+        history[k] = the k-th branch output in execution order (attn_0, mlp_0, attn_1, ...),
+        INCLUDING ls/drop_path, i.e. exactly what the vanilla Block would have added to the
+        stream. Consumer i mixes history[:i] with its own coefficients; the mixes REPLACE the
+        residual adds, so Block.forward is never called (see utils.RoutedHookCollector).
+        """
+        assert not self.grad_checkpointing, (
+            'resid_routing does not support gradient checkpointing: the recomputation would '
+            "run the routed traversal twice, which routing_impl='buf' refuses by design")
+        if self.routing_impl == 'buf':
+            return routed_forward_buf(self, x)
+        history = [x]
+        i = 1
+        for blk in self.blocks:
+            history.append(blk.drop_path1(blk.ls1(blk.attn(blk.norm1(self.router(i, history))))))
+            i += 1
+            history.append(blk.drop_path2(blk.ls2(blk.mlp(blk.norm2(self.router(i, history))))))
+            i += 1
+        return self.router(i, history)  # readout (consumer M+1) over all M+1 entries
 
     # def forward_head(self, x, pre_logits: bool = False):
     #     if self.global_pool:

@@ -123,6 +123,19 @@ def get_args_parser():
     parser.add_argument('--drop_path', type=float, default=0, metavar='PCT',
                         help='Drop path rate (default: 0.0)')
 
+    # Residual routing (models/residual_routing.py): every attention branch, every MLP branch
+    # and the readout learns its own weighted mix of the embedding stream and all earlier branch
+    # outputs, REPLACING the residual adds. All coefficients are exactly 1 at init, so a routed
+    # model is the vanilla model at init and shares a same-seed baseline's backbone bit for bit.
+    parser.add_argument('--resid_routing', type=str2bool, default=False,
+                        help='independently weighted residual inputs (default: False = vanilla)')
+    parser.add_argument('--routing_bound', type=float, default=0.0,
+                        help='0 = unbounded softplus coefficients; > 1 = bounded '
+                             'routing_bound*sigmoid. Both start at 1.')
+    parser.add_argument('--routing_impl', type=str, default='loop', choices=('loop', 'buf'),
+                        help="'loop' (ordered autograd accumulation, bit-identical to vanilla at "
+                             "init) or 'buf' (fused history buffer, same math, cheaper at depth)")
+
     # Augmentation parameters
     parser.add_argument('--color_jitter', type=float, default=0.4, metavar='PCT',
                         help='Color jitter factor (default: 0.4)')
@@ -2181,6 +2194,9 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
+    # one intervention at a time -- must run BEFORE main(args), which rewrites several flags
+    # in place ('' -> [] / {}) and would make the comparison against the defaults meaningless
+    utils.assert_routing_isolated(args, parser)
     if args.output_dir and not args.output_dir.endswith(".pth"):
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     if args.accuracy_json and not args.accuracy_json.endswith(".json"):
