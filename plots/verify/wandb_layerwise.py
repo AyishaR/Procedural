@@ -20,7 +20,11 @@ ARMS = {  # arm -> [(slurm_id, seed)]
     "ftb8h": [(29484975, 0)],     # random 0-3, proc 4-11 (79.11)
     "ftb9h": [(29484976, 0)],     # random 0-2, proc 3-11 (78.82)
 }
-FAMS = ["acc", "delta_norm_ratio", "attn_entropy", "grad_norm", "blk_act_rms"]
+FAMS = ["acc", "delta_norm_ratio", "attn_entropy", "grad_norm", "blk_act_rms", "attn_delta_norm_ratio"]
+# `Epoch-wise/delta_norm_ratio_layer{l}` is logged twice per epoch and layer (engine.py:563 attention row,
+# engine.py:599 MLP row, same key). The last row wins in `delta_norm_ratio` (= MLP write ratio); the
+# family `attn_delta_norm_ratio` re-reads the same key and keeps the FIRST row per epoch (= attention).
+WANDB_KEY = {"attn_delta_norm_ratio": "delta_norm_ratio"}
 api = wandb.Api(timeout=120)
 cache = json.load(open(OUT)) if os.path.exists(OUT) else {}
 for arm, ids in ARMS.items():
@@ -36,14 +40,18 @@ for arm, ids in ARMS.items():
         for run in runs:
             for fam in missing:
                 for l in range(12):
-                    k = f"Epoch-wise/{fam}_layer{l}"
+                    k = f"Epoch-wise/{WANDB_KEY.get(fam, fam)}_layer{l}"
                     try:
                         rows = run.history(keys=["Epoch-wise/epoch", k], samples=5000, pandas=False)
                     except Exception as e:
                         print("  ERR", run.id, k, e, flush=True); continue
+                    seen = set()
                     for row in rows:
                         e = row.get("Epoch-wise/epoch"); v = row.get(k)
                         if e is None or v is None: continue
+                        if fam in WANDB_KEY:            # keep the first row per epoch (attention sublayer)
+                            if (int(e), l) in seen: continue
+                            seen.add((int(e), l))
                         merged.setdefault(str(int(e)), {})[f"{fam}_layer{l}"] = float(v)
         cache.setdefault(arm, {})[str(seed)] = merged
         json.dump(cache, open(OUT, "w"))

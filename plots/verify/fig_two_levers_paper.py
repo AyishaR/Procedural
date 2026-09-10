@@ -83,12 +83,17 @@ def draw_row(ax, conds, tag):
     ax[2].set_title("(c) Probe accuracy during training")
     ax[2].legend([Line2D([], [], color="k", ls="-"), Line2D([], [], color="k", ls="--")], ["block 11 (last)", "block 7"], loc="center right", frameon=False)
 
-    # (d) residual-write ratio at the end of training, absolute (the random init is not flat: training
-    # itself builds a loud block 0, quiet middle and loud top from every init)
+    # (d) residual-write ratio at the end of training, absolute: attention (solid) and MLP (dashed) sublayer
     for arm, lab, c in conds:
-        eps, A = seed_mean(arm, "delta_norm_ratio"); ax[3].plot(blocks, A[eps.index(LAST)], "-o", color=c, ms=3, lw=1.4)
-    ax[3].set_yscale("log"); ax[3].set_xlabel("block"); ax[3].set_ylabel(r"$\|f_\ell(x)\|\,/\,\|x\|$, MLP sublayer")
+        eps, A = seed_mean(arm, "delta_norm_ratio"); ax[3].plot(blocks, A[eps.index(LAST)], "--s", color=c, ms=3, lw=1.2, alpha=0.8)
+        try:
+            eps_a, Aa = seed_mean(arm, "attn_delta_norm_ratio"); ax[3].plot(blocks, Aa[eps_a.index(LAST)], "-o", color=c, ms=3, lw=1.4)
+        except (ValueError, IndexError):
+            pass   # attention rows not fetched yet for this arm
+    ax[3].set_yscale("log"); ax[3].set_xlabel("block"); ax[3].set_ylabel(r"$\|f_\ell(x)\|\,/\,\|x\|$ at epoch " + str(LAST))
     ax[3].set_title(f"(d) Residual-write ratio at epoch {LAST}")
+    ax[3].legend([Line2D([], [], color="k", ls="-", marker="o", ms=3), Line2D([], [], color="k", ls="--", marker="s", ms=3)],
+                 ["attention sublayer", "MLP sublayer"], loc="lower left", frameon=False)
 
     for a in ax: a.grid(alpha=0.25); a.spines[["top", "right"]].set_visible(False)
     handles = [Line2D([], [], color=c, lw=2) for _, _, c in conds]
