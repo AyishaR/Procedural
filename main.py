@@ -2084,7 +2084,11 @@ def main(args):
                     loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
             if args.save_for_analysis:
                 checkpoint_path = Path(args.output_dir) / ('checkpoint-%s-model.pth' % str(epoch))
-                torch.save({k: v.half() for k, v in model_without_ddp.state_dict().items()}, checkpoint_path)
+                # the router stays fp32: THETA_ONE rounds to softplus ~0.99976 in fp16, which
+                # would cost the "every coefficient is exactly 1 at init" property in the dump
+                # (1.3 kB; a no-op for vanilla checkpoints, which have no router.* keys)
+                torch.save({k: (v if k.startswith('router.') else v.half())
+                            for k, v in model_without_ddp.state_dict().items()}, checkpoint_path)
             
         if data_loader_val is not None and \
         ((args.model == "vit_base" and (epoch+1)%5 == 0) or (args.model != "vit_base")):
@@ -2150,6 +2154,24 @@ def main(args):
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                          'epoch': epoch,
                          'n_parameters': n_parameters}
+
+        # GradScaler backs its scale off on an overflow and skips that optimizer step; a
+        # systematic difference between arms would silently change the number of effective
+        # updates, so record it for both.
+        if args.use_amp:
+            log_stats['amp_scale'] = float(loss_scaler._scaler.get_scale())
+
+        # residual routing: the routing/* scalars ride along in log_stats (so they reach both
+        # log.txt and wandb), the full coefficient matrix goes to its own jsonl. Like log.txt
+        # this is append-only and will repeat an epoch after a requeue -- readers take
+        # last-wins per epoch.
+        if args.resid_routing:
+            router = model_without_ddp.router
+            log_stats.update({f'routing/{k}': v for k, v in router.summary().items()})
+            if args.output_dir and utils.is_main_process():
+                with open(os.path.join(args.output_dir, 'routing.jsonl'), 'a') as f:
+                    f.write(json.dumps({'epoch': epoch,
+                                        'a': router.coefficient_matrix().cpu().tolist()}) + '\n')
 
         if args.output_dir and utils.is_main_process():
             if log_writer is not None:

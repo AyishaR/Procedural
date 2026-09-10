@@ -597,10 +597,33 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
                     checkpoint = torch.load(backup_resume, map_location='cpu', weights_only=False)
                 else:
                     raise e
-        if 'model' in checkpoint:
-            model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
-        else:
-            model_without_ddp.load_state_dict(checkpoint, strict=False)
+        sd = checkpoint['model'] if 'model' in checkpoint else checkpoint
+        # this load is strict=False, so a routing-flag mismatch would corrupt the run in
+        # silence: resuming a routed checkpoint without --resid_routing drops the router and
+        # trains on as vanilla with routed-trained weights, and the reverse leaves the router
+        # at init while the architecture changes mid-run. --auto_resume defaults to True and
+        # the chain driver resubmits on every TIMEOUT, so this path runs many times per run.
+        ck_args = checkpoint.get('args') if isinstance(checkpoint, dict) else None
+        want = bool(getattr(args, 'resid_routing', False))
+        if ck_args is not None:
+            have = bool(getattr(ck_args, 'resid_routing', False))
+            assert have == want, (
+                f"{args.resume} was trained with resid_routing={have} but this run has "
+                f"resid_routing={want}; the load below is strict=False and would silently "
+                f"drop / ignore the router")
+            if want:
+                assert float(getattr(ck_args, 'routing_bound', 0.0)) == float(args.routing_bound), (
+                    f"routing_bound {getattr(ck_args, 'routing_bound', 0.0)} in the checkpoint "
+                    f"but {args.routing_bound} here; the coefficients would change meaning")
+                # routing_impl is deliberately NOT forced: same parameters and same math, so
+                # the implementation choice on the command line wins on resume
+        if want:  # strict for the router subset only
+            missing = [k for k in model_without_ddp.state_dict() if k.startswith('router.') and k not in sd]
+            assert not missing, (
+                f"--resid_routing is on but {args.resume} has no {missing[:3]}; refusing to "
+                f"start a routed run from an unrouted checkpoint by accident")
+            print(f"[routing] restored {sum(k.startswith('router.') for k in sd)} router tensors")
+        model_without_ddp.load_state_dict(sd, strict=False)
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer'])
@@ -1159,6 +1182,10 @@ class HookCollector:
             self.model_without_ddp = model.module
         except AttributeError:
             self.model_without_ddp = model
+        assert not getattr(self.model_without_ddp, "resid_routing", False), (
+            "HookCollector reconstructs a per-block residual stream (acts[i]['inp'/'attn'/'blk']) that "
+            "resid_routing does not have: Block.forward never runs, so the block hook would never "
+            "fire. Use utils.RoutedHookCollector / engine.routed_layer_metrics instead.")
         self.handles = []
         # Cache: {layer: {'resid': tensor, 'attn': tensor}}
         self.acts = defaultdict(dict)
@@ -1218,6 +1245,84 @@ class HookCollector:
         for h in self.handles:
             h.remove()
 
+class RoutedHookCollector:
+    """HookCollector's counterpart for resid_routing models.
+
+    Block.forward never runs under routing, so HookCollector's block hook never fires and the
+    per-block residual stream it reconstructs -- acts[i]['inp'/'attn'/'blk'] -- does not exist:
+    the two consumers of block i read DIFFERENT weighted mixes of the history and nothing is ever
+    added back into one running tensor.
+
+    What routing does define is captured here:
+      * each branch's output, history[2i+1] and history[2i+2], hooked on drop_path1 / drop_path2,
+        the LAST module of each branch (an nn.Identity still fires forward hooks, and hooking
+        there stays correct if LayerScale or stochastic depth is ever re-enabled). These are
+        exactly the tensors the vanilla path calls acts[i]['attn_out'] and
+        acts[i]['blk'] - acts[i]['attn'];
+      * each consumer's mixed input, hooked on the router (its forward args are (i, history[,
+        state]), so args[0] is the 1-based consumer index: 2*layer+1 is that layer's attention,
+        2*layer+2 its MLP, and M+1 the readout);
+      * attention maps, exactly as HookCollector collects them.
+
+    acts[layer] = {attn_map, attn_out, mlp_out, attn_mix, mlp_mix};  acts['readout'] = {mix}.
+
+    One shared hook function per kind, keyed by module identity: per-block closures would make a
+    compiled branch function recompile once per block and exhaust the dynamo cache.
+    """
+
+    def __init__(self, model):
+        try:
+            self.model_without_ddp = model.module
+        except AttributeError:
+            self.model_without_ddp = model
+        assert getattr(self.model_without_ddp, "resid_routing", False), \
+            "RoutedHookCollector needs a resid_routing model; use HookCollector"
+        self.handles = []
+        self.acts = defaultdict(dict)
+
+    def __enter__(self):
+        m = self.model_without_ddp
+        n_consumers = m.router.n_consumers          # 2 * depth + 1
+
+        def on_mix(_mod, args, out):
+            i = args[0]                             # 1-based consumer index
+            if i >= n_consumers:                    # readout consumer (M+1)
+                self.acts['readout']['mix'] = out.detach()
+            else:
+                layer, is_mlp = (i - 1) // 2, i % 2 == 0
+                self.acts[layer]['mlp_mix' if is_mlp else 'attn_mix'] = out.detach()
+
+        branch_of = {}                              # module -> (layer, key)
+        attn_of = {}                                # module -> layer
+        for layer, blk in enumerate(m.blocks):
+            branch_of[blk.drop_path1] = (layer, 'attn_out')
+            branch_of[blk.drop_path2] = (layer, 'mlp_out')
+            attn_of[blk.attn] = layer
+
+        def on_branch(mod, _a, out):
+            layer, key = branch_of[mod]
+            self.acts[layer][key] = out.detach()
+
+        def on_attn_map(mod, inp, _out):
+            B, N, C = inp[0].shape
+            qkv = mod.qkv(inp[0]).reshape(B, N, 3, mod.num_heads, C // mod.num_heads).permute(2, 0, 3, 1, 4)
+            q, k, v = qkv.unbind(0)
+            attn = (q @ k.transpose(-2, -1)) * mod.scale
+            attn = attn.softmax(dim=-1)
+            self.acts[attn_of[mod]]['attn_map'] = attn      # [B, heads, N, N]
+
+        self.handles.append(m.router.register_forward_hook(on_mix))
+        for mod in branch_of:
+            self.handles.append(mod.register_forward_hook(on_branch))
+        for mod in attn_of:
+            self.handles.append(mod.register_forward_hook(on_attn_map))
+        return self.acts
+
+    def __exit__(self, *args):
+        for h in self.handles:
+            h.remove()
+
+
 class HookCollectorTrain:
     def __init__(self, model):
         self.model = model
@@ -1225,6 +1330,10 @@ class HookCollectorTrain:
             self.model_without_ddp = model.module
         except AttributeError:
             self.model_without_ddp = model
+        assert not getattr(self.model_without_ddp, "resid_routing", False), (
+            "HookCollectorTrain reconstructs a per-block residual stream (acts[i]['inp'/'attn'/'blk']) that "
+            "resid_routing does not have: Block.forward never runs, so the block hook would never "
+            "fire. Use utils.RoutedHookCollector / engine.routed_layer_metrics instead.")
         self.handles = []
         # Cache: {layer: {'resid': tensor, 'attn': tensor}}
         self.acts = defaultdict(dict)

@@ -384,6 +384,40 @@ def compute_detailed_metrics(acts, i, images, metric_logger, num_heads, prefix="
         metric_logger.meters[f'{prefix}attn_mad_head{hi}_layer{i}'].update(mad_per_head[hi].item(), n=images.shape[0])
     metric_logger.meters[f'{prefix}attn_mad_layer{i}'].update(mad_per_head.mean().item(), n=images.shape[0])
 
+def routed_layer_metrics(acts, i, images, metric_logger, num_heads, prefix="", detailed=False):
+    """Per-layer metrics for a resid_routing model (collected by utils.RoutedHookCollector).
+
+    Only what routing actually defines. attn_delta_norm / mlp_delta_norm are the SAME tensors the
+    vanilla path measures -- acts[i]['attn_out'] and acts[i]['blk'] - acts[i]['attn'] are exactly
+    history[2i+1] and history[2i+2] -- so those two series compare directly with the baseline arm.
+    The two ratios keep the vanilla name and definition (branch output over that branch's input),
+    but the input is now the consumer's mix rather than the block stream. The two coincide exactly
+    while every coefficient is 1, so the series are comparable at init and drift apart as the
+    coefficients move; the mix norms are logged separately so the denominator stays recoverable.
+
+    Deliberately absent, because they are defined on "the tensor entering / leaving block i",
+    which routing does not have: attn_acc and blk_acc (a logit lens on the per-block stream), ece,
+    blk_act_norm, blk_act_rms, mlp_blk_act_norm, attn_blk_act_norm, inp_norm.
+    """
+    n = images.shape[0]
+    a = acts[i]
+    attn_delta = torch.norm(a['attn_out'], dim=-1)
+    mlp_delta = torch.norm(a['mlp_out'], dim=-1)
+    attn_mix = torch.norm(a['attn_mix'], dim=-1)
+    mlp_mix = torch.norm(a['mlp_mix'], dim=-1)
+    meters = metric_logger.meters
+    meters[f'{prefix}attn_delta_norm_layer{i}'].update(attn_delta.mean().item(), n=n)
+    meters[f'{prefix}mlp_delta_norm_layer{i}'].update(mlp_delta.mean().item(), n=n)
+    meters[f'{prefix}attn_mix_norm_layer{i}'].update(attn_mix.mean().item(), n=n)
+    meters[f'{prefix}mlp_mix_norm_layer{i}'].update(mlp_mix.mean().item(), n=n)
+    meters[f'{prefix}attn_delta_norm_ratio_layer{i}'].update(
+        (attn_delta / (attn_mix + 1e-8)).mean().item(), n=n)
+    meters[f'{prefix}mlp_delta_norm_ratio_layer{i}'].update(
+        (mlp_delta / (mlp_mix + 1e-8)).mean().item(), n=n)
+    if detailed:   # attention maps survive routing untouched
+        compute_detailed_metrics(acts, i, images, metric_logger, num_heads, prefix=prefix)
+
+
 @torch.no_grad()
 def model_analyse(
     model, 
@@ -414,6 +448,9 @@ def model_analyse(
     patch_count = 14  # 224/16
     num_heads = model.blocks[0].attn.num_heads
     loss = None
+    # routing replaces Block.forward, so HookCollector's block hook would never fire
+    routed = bool(getattr(getattr(model, 'module', model), 'resid_routing', False))
+    collector = utils.RoutedHookCollector if routed else utils.HookCollector
     model.eval()
     for batch in metric_logger.log_every(data_loader, 10, header):
         images = batch[0]
@@ -424,13 +461,13 @@ def model_analyse(
 
         if args.use_amp:
             with torch.cuda.amp.autocast():
-                with utils.HookCollector(model) as acts:
+                with collector(model) as acts:
                     with torch.no_grad():
                         output = model(images)
                         if criterion is not None:
                             loss = criterion(output, target)
         else:
-            with utils.HookCollector(model) as acts:
+            with collector(model) as acts:
                 with torch.no_grad():
                     output = model(images)
                     if criterion is not None:
@@ -448,6 +485,11 @@ def model_analyse(
 
         with torch.no_grad():
             for i in layers_to_analyse:
+                if routed:
+                    routed_layer_metrics(acts, i, images, detailed_metrics_logger,
+                                         num_heads, prefix=prefix,
+                                         detailed=args.detailed_metrics)
+                    continue
                 with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                     x = model.norm(acts[i]['attn'])
                     x = model.fc_norm(x)
@@ -506,15 +548,21 @@ def model_analyse(
 
     detailed_metrics_logger.synchronize_between_processes()
 
-    ece = ece_metric.compute()
+    # under routing the ECE is never updated (it is fed by the per-block logit lens), and
+    # SmoothedValue.global_avg would divide by zero
+    ece = None if routed else ece_metric.compute()
     # if wandb_logger:
     #     wandb_logger.log_epoch_metrics({"epoch": epoch, "test_ece": ece})
-    if device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0):
+    if ece is not None and (device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0)):
         print("ECE:", ece)
         detailed_metrics_logger.meters["ece"].update(ece, n=1)
 
-    blk_metric_keys = ["cls_attn_entropy", "attn_entropy", "attn_mad", "blk_acc", "blk_act_norm", "mlp_blk_act_norm", "blk_act_rms", "mlp_delta_norm", "mlp_inp_norm", "mlp_delta_norm_ratio"]
-    attn_metric_keys = ["attn_acc", "attn_delta_norm", "attn_blk_act_norm", "attn_inp_norm", "attn_delta_norm_ratio"]
+    if routed:   # see routed_layer_metrics for what routing does and does not define
+        blk_metric_keys = ["cls_attn_entropy", "attn_entropy", "attn_mad", "mlp_delta_norm", "mlp_mix_norm", "mlp_delta_norm_ratio"]
+        attn_metric_keys = ["attn_delta_norm", "attn_mix_norm", "attn_delta_norm_ratio"]
+    else:
+        blk_metric_keys = ["cls_attn_entropy", "attn_entropy", "attn_mad", "blk_acc", "blk_act_norm", "mlp_blk_act_norm", "blk_act_rms", "mlp_delta_norm", "mlp_inp_norm", "mlp_delta_norm_ratio"]
+        attn_metric_keys = ["attn_acc", "attn_delta_norm", "attn_blk_act_norm", "attn_inp_norm", "attn_delta_norm_ratio"]
 
     for layer in layers_to_analyse:
         stats_dict = {
@@ -617,7 +665,7 @@ def model_analyse(
                 model_stats = {
                     "acc1": metric_logger.meters["acc1"].global_avg,
                     "acc5": metric_logger.meters["acc5"].global_avg,
-                    "ece": detailed_metrics_logger.meters["ece"].global_avg,
+                    "ece": None if routed else detailed_metrics_logger.meters["ece"].global_avg,
                     "epoch": epoch
                 },
                 epoch=epoch,
