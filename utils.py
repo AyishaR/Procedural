@@ -1313,3 +1313,50 @@ def patched_last_block_forward(self, x):
     x = (x * self.attn_res_scale) + (self.drop_path1(self.ls1(attn_out)) * self.attn_out_scale)
     x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
     return x
+
+
+def apply_analytic_profile(model, spec, blocks, timm_std=0.02):
+    """Checkpoint-free early-block init: rescale the timm random weights of `blocks` so that every
+    slice (q, k, v, proj, fc1, fc2) has a prescribed rms relative to timm's trunc-normal std.
+
+    `spec` is a dict {slice: {"b0": m0, "start": s, "end": e}} (or a path to such a JSON):
+    block 0 (if listed) gets multiplier m0; the remaining listed blocks ramp linearly from `s`
+    (first) to `e` (last). LayerNorm gains stay 1 and biases 0, so the multipliers are the
+    *effective* scales rms(gamma) * rms(W) / 0.02 read off the proc checkpoint (docs 0d.11).
+    Deterministic, so it is safe on every rank before or after the DDP broadcast.
+    Returns {block: {slice: multiplier}} for logging / verification.
+    """
+    import json as _json
+    if isinstance(spec, str):
+        spec = _json.load(open(spec)) if os.path.exists(spec) else _json.loads(spec)
+    blocks = sorted(int(b) for b in blocks)
+    ramp = [b for b in blocks if b != 0]
+    D = model.blocks[0].attn.qkv.weight.shape[1]
+    applied = {}
+    with torch.no_grad():
+        for b in blocks:
+            blk = model.blocks[b]
+            mult = {}
+            for s, p in spec.items():
+                if b == 0:
+                    m = float(p["b0"])
+                else:
+                    i = ramp.index(b)
+                    t = i / (len(ramp) - 1) if len(ramp) > 1 else 0.0
+                    m = float(p["start"]) + t * (float(p["end"]) - float(p["start"]))
+                mult[s] = m
+            W = blk.attn.qkv.weight
+            for j, s in enumerate(("q", "k", "v")):
+                if s in mult:
+                    W[j * D:(j + 1) * D].mul_(mult[s])
+            if "proj" in mult:
+                blk.attn.proj.weight.mul_(mult["proj"])
+            if "fc1" in mult:
+                blk.mlp.fc1.weight.mul_(mult["fc1"])
+            if "fc2" in mult:
+                blk.mlp.fc2.weight.mul_(mult["fc2"])
+            # measured rms / timm std, for the log
+            got = {"q": W[:D], "k": W[D:2 * D], "v": W[2 * D:], "proj": blk.attn.proj.weight,
+                   "fc1": blk.mlp.fc1.weight, "fc2": blk.mlp.fc2.weight}
+            applied[b] = {s: (round(mult.get(s, 1.0), 3), round(float(got[s].pow(2).mean().sqrt()) / timm_std, 3)) for s in got}
+    return applied

@@ -1221,6 +1221,51 @@ allocation is causal or a signature: `ftbqmlnvo` reaches +1.85 with only an inte
 plus loud suffix (rho 1.4): the one-mechanism reading predicts `ftbcomp11`'s +2.5 with no checkpoint
 and no further gain beyond it; two mechanisms would predict more.
 
+
+### 0d.11 Analytic-profile arm `ftbana` (2026-09-10): the early-block effect as 18 numbers
+
+**Why.** The twins (§0d.9) show that a Gaussian with proc's per-slice mean and norm in blocks 0-8
+reproduces `ftbqmlnvo`, and the weight means are zero to within |mean|/std <= 0.017 in every slice
+(`p_s0` vs `r_s0` init dumps), so the twin is, for the weights, "timm random with proc's per-slice
+std". `ftbrhos` (75.07) shows the *output-side write budgets alone* are harmful, `ftblrm` (on the
+random line at epoch 224) that the *step size alone* does nothing. `ftbana` asks whether a smooth,
+checkpoint-free description of the full second-moment profile is sufficient.
+
+**Construction** (`--init_method analytic_profile --profile_spec vitbase_runs/profile_ftbana.json
+--init_method_scaled_blocks 0..8 --initialize ""`, `utils.apply_analytic_profile`): timm random ViT-B;
+in blocks 0-8 each weight slice (q, k, v, proj, fc1, fc2) is multiplied by a scalar; LayerNorm gains
+stay 1, all biases 0, blocks 9-11 / embeddings / head untouched. Multipliers of the timm std 0.02 are
+the *effective* proc scales rms(gamma) x rms(W) / 0.02 (gamma folded into W), block 0 separately and a
+linear ramp over blocks 1-8:
+
+| slice | block 0 | block 1 -> 8 | what it is |
+|---|---|---|---|
+| q, k | 1.25, 1.23 | 1.32 flat | logits 1.5x (block 0) / 1.75x random |
+| v | 1.15 | 0.55 -> 0.80 | value read, quiet, rising with depth |
+| proj | 3.61 | 1.55 -> 2.35 | attention write |
+| fc1 | 1.73 | 0.31 -> 0.42 | MLP pre-activation, quiet |
+| fc2 | 3.11 | 0.74 -> 0.95 | MLP write |
+
+Block 0 is loud (attention write 4.1x, MLP write 5.4x random), blocks 1-8 quiet with a rising write
+(0.85x -> 1.9x) and an MLP write of 0.23x -> 0.40x. Eighteen numbers, no checkpoint.
+
+**Verification** (`plots/verify/verify_ana.py` on the dump made through `main.py`,
+`results/init_dumps/ftbana_s0.pth`, job 29572257): effective logit / attention-write / MLP-write scales
+within 10% of `ftbqmlnvo_s0` in blocks 0-2, 4, 6-7; attention write 0.89-0.91x at blocks 3-5 (the
+twin's profile bumps there); block 8 MLP write 0.77x (the twin jumps 0.37 -> 0.52 into the loud blocks
+9-11, the ramp does not follow, deliberate). Forward pass on 64 val images: rho_attn 0.85-1.06x and
+rho_mlp 0.96-1.11x of the twin in blocks 0-7, 0.78x at block 8; attention entropy identical (5.20-5.23
+vs random 5.25). A first spec with q/k at 1.45/1.64 (rms-level folding) gave logits 1.3-1.5x too high
+because proc's q/k columns are anti-correlated with gamma; corrected to 1.32/1.32. Blocks 9-11, LN,
+biases, embeddings, head bit-identical to `r_s0`.
+
+**Pre-registered expectations** (last epoch, one seed first, resolution ~0.45 against n = 3 arms):
+~79.9 (= twins, `ftbqmlnvo`) if the smooth second-moment profile is the whole early-block effect ->
+first checkpoint-free recipe at full strength, and the per-channel LayerNorm pattern, LN biases and
+the block-to-block wiggles are irrelevant; ~78.7 (= `ftbvd`) if the non-smooth details or the LN
+pattern carry part of it; ~78.1 if nothing survives the smoothing. Then the late-block upscaling of
+the b-series is added on top as the combined recipe (`ftbanab`). Launched as seed 0 on
+`lmbdlc2_gpu-h200` (4 GPUs, starts when `ftblrm` frees the account cap).
 ## 0b. Can a short run act as a proxy? Yes -- but NOT the obvious one (2026-08-31)
 
 > **THE FIT BELOW HAS FAILED TWICE — 2.4 sigma and 4.2 sigma, in OPPOSITE directions. Do not use

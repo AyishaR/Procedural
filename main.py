@@ -377,6 +377,11 @@ def get_args_parser():
                              'step-size half of a scale profile from its forward-pass half (docs 0d.9, ftblrm).')
     parser.add_argument('--lr_match_blocks', type=str, default="0,1,2,3,4,5,6,7,8",
                         help='Comma separated block indices for --lr_match_ckpt (default 0-8).')
+    parser.add_argument('--profile_spec', type=str, default="",
+                        help='JSON (inline or a .json path) for --init_method analytic_profile: per slice '
+                             '(q,k,v,proj,fc1,fc2) {"b0": m0, "start": s, "end": e}, multipliers of the timm '
+                             'std for block 0 and a linear ramp over the other --init_method_scaled_blocks. '
+                             'No checkpoint is used (docs 0d.11).')
     parser.add_argument('--weight_init', type=str, default="",
                         help='Re-initialise all 2-D weights with an alternative scheme before any other init step. Currently: "xavier". Empty = use the model default (timm).')
     parser.add_argument('--target_ratio_absolute', type=float, default=-1.0,
@@ -1009,6 +1014,19 @@ def main(args):
             device = device,
             model = model_temp
         )
+    elif args.init_method == "analytic_profile":
+        # Checkpoint-free: timm random model, then per-slice rms multipliers from --profile_spec
+        # (utils.apply_analytic_profile). Deterministic edit, rank-safe.
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = "",
+            args = args,
+            device = device,
+            model = model
+        )
+        _applied = utils.apply_analytic_profile(model_without_ddp, args.profile_spec, args.init_method_scaled_blocks)
+        if utils.is_main_process():
+            for _b, _m in _applied.items():
+                print(f"[analytic_profile] block {_b}: " + "  ".join(f"{k} x{v[0]} (rms/0.02 = {v[1]})" for k, v in _m.items()))
     elif args.init_method == "clip_outlier_weights":
         # Checkpoint init with the largest-magnitude weights of
         # args.init_method_scaled_blocks winsorised to the (1 - outlier_clip_frac)
