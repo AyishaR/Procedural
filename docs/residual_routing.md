@@ -105,6 +105,20 @@ accuracy source — stays schema-compatible with the already-trained base arm. T
 `routing/{mean,min,max,emb_col_mean,prev_diag_mean,readout_row_mean,n_edges}` per epoch, the full
 25x25 coefficient matrix in `routing.jsonl`, and `amp_scale`.
 
+## Smoke: the warmup, not the routing
+
+The first 5-epoch smoke hit a non-finite loss in epoch 2. It had compressed warmup from 50 epochs
+to 1 while keeping `lr 2e-3`. The controlled re-run settles it: the **vanilla** arm at the same
+compressed schedule diverges too (job 29579323, `grad_norm nan` in epoch 1), so this is the LR
+schedule and not residual routing. The coefficient matrix at the point of failure was
+unremarkable in any case — mean 1.01, range [0.65, 1.66], readout row all ~1.
+
+There is no way to smoke-test "the first 5 epochs of the real recipe" by lowering `--epochs`:
+`utils.cosine_scheduler` asserts `len(schedule) == epochs * niter_per_ep`, so `warmup_epochs`
+must fit inside the run (job 29579324 died on that assert in 21 s). The smoke therefore runs the
+real 300/50 schedule and is bounded by `--time`, ending in TIMEOUT; re-submitting it against the
+same output directory is the `--auto_resume` rehearsal.
+
 ## The experiment
 
 The base arm already exists: **`r`, slurm 29384839** — random-init `vit_base`, 300 epochs,
