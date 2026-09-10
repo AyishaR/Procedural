@@ -1,19 +1,26 @@
 #!/bin/bash
-# Smoke + resume rehearsal for the routed arm: 5 epochs of the real recipe so that epoch 4 hits
-# the analysis path ((epoch+1)%5==0), then re-submit this same script with EPOCHS=7 to exercise
-# --auto_resume on a routed checkpoint.
+# Smoke + resume rehearsal for the routed arm.
+#
+# EPOCHS/WARMUP default to the REAL recipe (300/50) and the run is bounded by --time instead, so
+# the LR trajectory is the one the actual run will see. Do not shorten it by lowering --epochs:
+# utils.cosine_scheduler asserts len(schedule) == epochs * niter_per_ep, so warmup_epochs must be
+# <= epochs, and a compressed warmup at lr 2e-3 diverges -- verified, and it diverges for the
+# VANILLA arm too (job 29579323), so it is the schedule, not routing.
+#
+# The run is expected to end in TIMEOUT; re-submitting against the same OUT rehearses
+# --auto_resume on a routed checkpoint, exactly as the chain driver does.
 #SBATCH --job-name route-smoke
 #SBATCH --partition alldlc2_gpu-h200
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:4
-#SBATCH --time 2:00:00
+#SBATCH --time 1:20:00
 #SBATCH -o /work/dlc2workfs3/schrodi-procedural/kempfe/routing/logs/%x_%j.out
 #SBATCH -e /work/dlc2workfs3/schrodi-procedural/kempfe/routing/logs/%x_%j.err
 set -o pipefail
 ROOT=${PROC_ROOT:-/work/dlc2workfs3/schrodi-procedural/kempfe/Procedural}
 OUT=${OUT:-/work/dlc2workfs3/schrodi-procedural/kempfe/routing/smoke}
-EPOCHS=${EPOCHS:-5}
-WARMUP=${WARMUP:-50}      # keep the real recipe: epochs 0-4 sit inside the LR ramp
+EPOCHS=${EPOCHS:-300}
+WARMUP=${WARMUP:-50}     # must be <= EPOCHS (cosine_scheduler asserts on the length)
 ROUTED=${ROUTED:-true}   # false = the vanilla control at the identical config
 ROUTING_IMPL=${ROUTING_IMPL:-buf}
 cd "$ROOT" || exit 1
