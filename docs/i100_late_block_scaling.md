@@ -1259,6 +1259,11 @@ vs random 5.25). A first spec with q/k at 1.45/1.64 (rms-level folding) gave log
 because proc's q/k columns are anti-correlated with gamma; corrected to 1.32/1.32. Blocks 9-11, LN,
 biases, embeddings, head bit-identical to `r_s0`.
 
+**`ftblrm` final (2026-09-10 14:52, job 29571912): 77.73** (train loss 2.253, test loss 1.18), against `r`
+78.08 +/- 0.19 and the nine random controls at 77.69. Matching proc's relative Adam step sizes in blocks 0-8
+with an unchanged random forward pass gives nothing; the step-size half of the profile is ruled out as the
+mechanism (n = 1, but the gap to every winner is > 2 pp at every epoch from 100 on).
+
 **Pre-registered expectations** (last epoch, one seed first, resolution ~0.45 against n = 3 arms):
 ~79.9 (= twins, `ftbqmlnvo`) if the smooth second-moment profile is the whole early-block effect ->
 first checkpoint-free recipe at full strength, and the per-channel LayerNorm pattern, LN biases and
