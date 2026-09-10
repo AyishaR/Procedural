@@ -15,6 +15,10 @@ ARMS = {  # arm -> [(slurm_id, seed)]
     "ftb3b": [(29388202, 0), (29406778, 1), (29406779, 2)],
     "ftb4o": [(29451652, 0)],
     "ftbqmlnvo": [(29523316, 0), (29523316, 1), (29523316, 2)],
+    "ftb7h": [(29469076, 0)],     # random 0-4, proc 5-11 (79.67)
+    "ftb11h": [(29484978, 0)],    # random block 0, proc 1-11 (79.85)
+    "ftb8h": [(29484975, 0)],     # random 0-3, proc 4-11 (79.11)
+    "ftb9h": [(29484976, 0)],     # random 0-2, proc 3-11 (78.82)
 }
 FAMS = ["acc", "delta_norm_ratio", "attn_entropy", "grad_norm", "blk_act_rms"]
 api = wandb.Api(timeout=120)
