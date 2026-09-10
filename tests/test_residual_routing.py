@@ -453,6 +453,58 @@ def test_routing_isolation_guard():
     utils.assert_routing_isolated(args, p)
 
 
+def test_auto_load_model_refuses_a_routing_mismatch(tmp_path):
+    """utils.auto_load_model loads with strict=False, so a flag mismatch would corrupt the run in
+    silence -- and with --auto_resume plus a chain driver resubmitting on every TIMEOUT this path
+    runs many times per 300-epoch run. The highest-severity guard in the port.
+    """
+    import argparse
+
+    import main
+    import utils
+
+    def mkargs(routed, out):
+        p = argparse.ArgumentParser("t", parents=[main.get_args_parser()])
+        a = p.parse_args(["--model", "vit_b_test",
+                          "--resid_routing", "true" if routed else "false",
+                          "--output_dir", str(out)])
+        a.auto_resume, a.resume, a.model_ema, a.start_epoch = True, "", False, 0
+        return a
+
+    class Stub:
+        def load_state_dict(self, sd):
+            pass
+
+    dirs = {}
+    for tag, routed in (("routed", True), ("vanilla", False)):
+        d = tmp_path / tag
+        d.mkdir()
+        m = _model(0, resid_routing=True) if routed else _model(0)
+        torch.save({"model": m.state_dict(), "args": mkargs(routed, d), "epoch": 3,
+                    "optimizer": torch.optim.AdamW(m.parameters()).state_dict(), "scaler": {}},
+                   d / "checkpoint-3.pth")
+        dirs[tag] = d
+
+    def run(ckpt, routed):
+        a = mkargs(routed, dirs[ckpt])
+        m = _model(0, resid_routing=True) if routed else _model(0)
+        utils.auto_load_model(args=a, model=m, model_without_ddp=m,
+                              optimizer=torch.optim.AdamW(m.parameters()),
+                              loss_scaler=Stub(), model_ema=None)
+        return a, m
+
+    a, m = run("routed", True)            # matching flags: loads, router restored, epoch advances
+    assert a.start_epoch == 4
+    assert torch.equal(m.router.coefficient_matrix(),
+                       _model(0, resid_routing=True).router.coefficient_matrix())
+    run("vanilla", False)                 # the untouched vanilla path still works
+
+    with pytest.raises(AssertionError, match="resid_routing"):
+        run("routed", False)              # would silently drop the router
+    with pytest.raises(AssertionError, match="resid_routing"):
+        run("vanilla", True)              # would leave the router at init mid-run
+
+
 def test_hook_collectors():
     """HookCollector reconstructs a per-block stream routing does not have, so it must refuse a
     routed model; RoutedHookCollector captures what routing does define."""
