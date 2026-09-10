@@ -14,8 +14,8 @@ from probes.figutils import by_arm, load_json_dir, plot_arms, style_depth_axis
 def main():
     registry.ensure_dirs()
     dense = load_json_dir("dense")
-    knn = [json.load(open(f)) for f in sorted((registry.RES / "probes").glob("*__knn.json"))]
-    low = [json.load(open(f)) for f in sorted((registry.RES / "probes").glob("*__lowlevel.json"))]
+    knn = [json.load(open(f)) for f in sorted((registry.RES / "probes").glob("*__knn.json")) if "__limit" not in f.name]
+    low = [json.load(open(f)) for f in sorted((registry.RES / "probes").glob("*__lowlevel.json")) if "__limit" not in f.name]
     fig, axes = plt.subplots(2, 4, figsize=(16, 7.5))
     panels = [
         (axes[0, 0], by_arm([r for r in dense if r["dataset"] == "voc"], lambda r: r["miou"]), "VOC 2012: patch-level mIoU (%)"),

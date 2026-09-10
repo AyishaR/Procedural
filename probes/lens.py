@@ -48,8 +48,11 @@ class Lens(torch.nn.Module):
 
 
 @torch.no_grad()
-def metrics(lens, X, y, p_final_pred, p_final_logp, mask=None, chunk=2048):
-    """-> dict of per-depth lists: top1, top5, agree (with final argmax), kl(p_final||p_d); plus prediction depth."""
+def metrics(lens, X, y, p_final_pred, p_final_logp, cols=None, chunk=2048):
+    """-> dict of per-depth lists: top1, top5, agree (with final argmax), kl(p_final||p_d); plus prediction depth.
+
+    `cols` restricts every distribution to a class subset (ImageNet-R): logits are column-indexed and re-normalised,
+    and `y` / `p_final_pred` must already be indices into that subset (see `final_dist`)."""
     K = X.shape[1]
     top1 = torch.zeros(K); top5 = torch.zeros(K); agree = torch.zeros(K); kl = torch.zeros(K)
     pred_depth = []
@@ -57,8 +60,8 @@ def metrics(lens, X, y, p_final_pred, p_final_logp, mask=None, chunk=2048):
         h = X[s:s + chunk].float()
         yy = y[s:s + chunk]
         logits = lens(h)                                             # [K,B,C]
-        if mask is not None:
-            logits = logits.masked_fill(~mask, float("-inf"))
+        if cols is not None:
+            logits = logits[..., cols]
         logp = F.log_softmax(logits, -1)
         pred = logits.argmax(-1)                                    # [K,B]
         top1 += (pred == yy[None]).float().sum(1).cpu()
@@ -66,9 +69,8 @@ def metrics(lens, X, y, p_final_pred, p_final_logp, mask=None, chunk=2048):
         fp = p_final_pred[s:s + chunk]
         eq = pred == fp[None]                                       # [K,B]
         agree += eq.float().sum(1).cpu()
-        if p_final_logp is not None:
-            lp = p_final_logp[s:s + chunk]                          # [B,C]
-            kl += (lp.exp() * (lp[None] - logp)).sum(-1).sum(1).cpu()
+        lp = p_final_logp[s:s + chunk]                              # [B,C']  same support as logp
+        kl += (lp.exp() * (lp[None] - logp)).sum(-1).sum(1).cpu()
         # prediction depth: first k such that eq[k:] all True (K-1 if only the last depth agrees)
         suffix_all = torch.flip(torch.cumprod(torch.flip(eq.int(), [0]), 0), [0]).bool()   # [K,B]
         first = torch.where(suffix_all.any(0), suffix_all.int().argmax(0), torch.full_like(yy, K - 1))
@@ -90,10 +92,13 @@ def run(entry, steps, batch, device="cuda"):
     ytr, yva, yte = (torch.from_numpy(d["y"].astype(np.int64)).to(device) for d in (tr, va, te))
 
     @torch.no_grad()
-    def final_dist(X, chunk=4096):
+    def final_dist(X, cols=None, chunk=4096):
+        """Final-depth distribution and argmax; with `cols`, both restricted to (and indexed within) that class subset."""
         lp, pr = [], []
         for s in range(0, X.shape[0], chunk):
             lg = lens(X[s:s + chunk].float(), depths=[12])[0]
+            if cols is not None:
+                lg = lg[:, cols]
             lp.append(F.log_softmax(lg, -1)); pr.append(lg.argmax(-1))
         return torch.cat(lp), torch.cat(pr)
     lp_tr, pred_tr = final_dist(Xtr)
@@ -110,12 +115,17 @@ def run(entry, steps, batch, device="cuda"):
     r = feat.load(name, "imagenet_r", "test") if feat.is_done(name, "imagenet_r", "test") else None
     if r is not None:
         Xr = feat.select(r["X"], "cls", device)
-        yr = torch.from_numpy(r["y"].astype(np.int64)).to(device)
         mask = torch.from_numpy(pdata.imagenet_r_class_mask()).to(device)
-        lp_r, pred_r = final_dist(Xr)
-        out["imagenet_r"] = dict(logit_lens=metrics(lens, Xr, yr, pred_r, None, mask=mask))
+        cols = mask.nonzero().flatten()                              # the 200 ImageNet classes of ImageNet-R
+        remap = torch.full((1000,), -1, dtype=torch.long, device=device)
+        remap[cols] = torch.arange(cols.numel(), device=device)
+        yr = remap[torch.from_numpy(r["y"].astype(np.int64)).to(device)]
+        assert int((yr < 0).sum()) == 0
+        lp_r, pred_r = final_dist(Xr, cols=cols)                     # reference restricted to the same 200 classes
+        out["imagenet_r"] = dict(n_classes=int(cols.numel()), logit_lens=metrics(lens, Xr, yr, pred_r, lp_r, cols=cols))
 
     # tuned lens
+    assert steps >= EVAL_EVERY, f"steps must be >= {EVAL_EVERY} (one validation point)"
     opt = torch.optim.Adam(lens.parameters(), lr=1e-3)
     g = torch.Generator(device="cpu").manual_seed(0)
     N = Xtr.shape[0]
@@ -148,12 +158,13 @@ def run(entry, steps, batch, device="cuda"):
             if v < best_val:
                 best_val, best_step = v, step + 1
                 best_state = {k: t.detach().clone() for k, t in lens.state_dict().items()}
+    assert best_state is not None
     lens.load_state_dict(best_state)
     out["tuned_lens"] = metrics(lens, Xte, yte, pred_te, lp_te)
     out["tuned_lens"].update(best_step=best_step, best_val_kl_sum=best_val, train_curve=curve, seconds=time.time() - t0)
     assert out["tuned_lens"]["kl"][12] < 1e-4, out["tuned_lens"]["kl"][12]
     if r is not None:
-        out["imagenet_r"]["tuned_lens"] = metrics(lens, Xr, yr, pred_r, None, mask=mask)
+        out["imagenet_r"]["tuned_lens"] = metrics(lens, Xr, yr, pred_r, lp_r, cols=cols)
     del Xtr, Xva, Xte
     torch.cuda.empty_cache()
     return out
@@ -169,7 +180,7 @@ def main():
     os.umask(0o002)
     registry.ensure_dirs()
     for e in registry.resolve_models(args.models):
-        outp = registry.RES / "lens" / f"{e['name']}.json"
+        outp = registry.RES / "lens" / f"{e['name']}{feat.result_suffix(e['name'], 'imnet')}.json"
         if outp.exists() and not args.force:
             print(f"skip {outp.name} (exists)", flush=True); continue
         if not all(feat.is_done(e["name"], "imnet", s) for s in ("train", "val", "test")):

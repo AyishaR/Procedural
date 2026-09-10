@@ -9,7 +9,7 @@ from probes import registry
 DEPTH_X = np.arange(13)
 
 
-def load_json_dir(sub, suffix=".json", exclude=("__knn", "__lowlevel")):
+def load_json_dir(sub, suffix=".json", exclude=("__knn", "__lowlevel", "__limit")):
     out = []
     for f in sorted((registry.RES / sub).glob(f"*{suffix}")):
         if any(x in f.name for x in exclude):

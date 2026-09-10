@@ -21,7 +21,7 @@ def main():
     missing_report(recs, DATASETS, "fig18")
     acc = {ft: {ds: by_arm([r for r in recs if r["dataset"] == ds], lambda r, ft=ft: r["ftypes"].get(ft, {}).get("test_acc")) for ds in DATASETS}
            for ft in ("cls", "mean", "concat")}
-    inr = by_arm([r for r in recs if r["dataset"] == "imnet"], lambda r: r["ftypes"].get("concat", {}).get("imagenet_r_acc_final_step"))
+    inr = by_arm([r for r in recs if r["dataset"] == "imnet"], lambda r: r["ftypes"].get("concat", {}).get("imagenet_r_acc"))
 
     # ---- fig18: concat headline
     n = len(DATASETS) + 1

@@ -62,6 +62,7 @@ def evaluate(X, y, mu, sd, W, b, mask=None, chunk=2048, per_class=False):
 
 
 def train_one(model, dataset, ftype, steps, batch, device="cuda", seed=0):
+    assert steps >= EVAL_EVERY, f"steps must be >= {EVAL_EVERY} (one validation point)"
     tr, va, te = (feat.load(model, dataset, s) for s in ("train", "val", "test"))
     C = int(tr["meta"]["n_classes"])
     Xtr, Xva, Xte = (feat.select(d["X"], ftype, device) for d in (tr, va, te))
@@ -79,6 +80,13 @@ def train_one(model, dataset, ftype, steps, batch, device="cuda", seed=0):
     n_eval = steps // EVAL_EVERY
     val_curve = torch.zeros(n_eval, K, nw)
     test_curve = torch.zeros(n_eval, K, nw)
+    # running best per depth over (wd, step) by val accuracy: the selected probe's weights are snapshotted so
+    # every reported number (test, per-class, train, ImageNet-R) comes from exactly the selected probe
+    best_val = torch.full((K,), -1.0)
+    best_wd_i = torch.zeros(K, dtype=torch.long)
+    best_step = torch.zeros(K, dtype=torch.long)
+    best_W = torch.zeros(K, 1, D, C, device=device)
+    best_b = torch.zeros(K, 1, C, device=device)
     t0 = time.time()
     for step in range(steps):
         if ptr + B > N:
@@ -97,36 +105,36 @@ def train_one(model, dataset, ftype, steps, batch, device="cuda", seed=0):
         opt.step()
         if (step + 1) % EVAL_EVERY == 0:
             i = (step + 1) // EVAL_EVERY - 1
-            val_curve[i] = evaluate(Xva, yva, mu, sd, W.detach(), b.detach()).cpu()
+            va_acc = evaluate(Xva, yva, mu, sd, W.detach(), b.detach()).cpu()
+            val_curve[i] = va_acc
             test_curve[i] = evaluate(Xte, yte, mu, sd, W.detach(), b.detach()).cpu()
-    # selection per depth over (wd, step) by val accuracy
-    vc = val_curve.permute(1, 2, 0)                                   # [K, nw, n_eval]
-    flat = vc.reshape(K, -1)
-    best = flat.argmax(1)
-    best_wd_i, best_step_i = best // n_eval, best % n_eval
-    test_at = test_curve.permute(1, 2, 0).reshape(K, -1).gather(1, best[:, None]).squeeze(1)
-    val_at = flat.gather(1, best[:, None]).squeeze(1)
-    train_acc_final = evaluate(Xtr[:20000], ytr[:20000], mu, sd, W.detach(), b.detach()).cpu()
+            cur_best, cur_w = va_acc.max(1)                            # [K]
+            improved = cur_best > best_val
+            for k in torch.nonzero(improved).flatten().tolist():
+                best_val[k], best_wd_i[k], best_step[k] = cur_best[k], cur_w[k], step + 1
+                best_W[k, 0] = W.detach()[k, cur_w[k]]
+                best_b[k, 0] = b.detach()[k, cur_w[k]]
+    del W, b, opt
+    test_sel, pc = evaluate(Xte, yte, mu, sd, best_W, best_b, per_class=True)
+    n_tr_eval = min(20000, N)
+    tr_idx = torch.randperm(N, generator=torch.Generator(device="cpu").manual_seed(seed + 1))[:n_tr_eval].to(device)
+    train_sel = evaluate(Xtr[tr_idx], ytr[tr_idx], mu, sd, best_W, best_b)
     out = dict(
-        test_acc=test_at.tolist(), val_acc=val_at.tolist(),
-        best_wd=[WD_GRID[int(i)] for i in best_wd_i], best_step=[int((i + 1) * EVAL_EVERY) for i in best_step_i],
+        test_acc=test_sel[:, 0].cpu().tolist(), val_acc=best_val.tolist(),
+        best_wd=[WD_GRID[int(i)] for i in best_wd_i], best_step=best_step.tolist(),
         val_curve=val_curve.permute(1, 2, 0).tolist(), test_curve=test_curve.permute(1, 2, 0).tolist(),
-        train_acc_final=train_acc_final.gather(1, best_wd_i[:, None]).squeeze(1).tolist(),
+        train_acc=train_sel[:, 0].cpu().tolist(), train_acc_n=int(n_tr_eval), train_acc_sampling="seeded uniform subset of the train split",
+        mean_class_acc=pc[:, 0].cpu().tolist(),
         seconds=time.time() - t0,
     )
-    # extras: mean per-class test accuracy at the selected (wd, step) is not stored (final-step weights differ),
-    # so report it for the final-step weights of the selected wd instead
-    _, pc = evaluate(Xte, yte, mu, sd, W.detach(), b.detach(), per_class=True)
-    out["mean_class_acc_final_step"] = pc.gather(1, best_wd_i.to(device)[:, None]).squeeze(1).cpu().tolist()
-    if dataset == "imnet":
+    if dataset == "imnet" and feat.is_done(model, "imagenet_r", "test"):
         r = feat.load(model, "imagenet_r", "test")
         Xr = feat.select(r["X"], ftype, device)
         yr = torch.from_numpy(r["y"].astype(np.int64)).to(device)
         mask = torch.from_numpy(pdata.imagenet_r_class_mask()).to(device)
-        acc_r = evaluate(Xr, yr, mu, sd, W.detach(), b.detach(), mask=mask).cpu()
-        out["imagenet_r_acc_final_step"] = acc_r.gather(1, best_wd_i[:, None]).squeeze(1).tolist()
-        out["imagenet_r_acc_grid_final_step"] = acc_r.tolist()
-    del Xtr, Xva, Xte, W, b, opt
+        out["imagenet_r_acc"] = evaluate(Xr, yr, mu, sd, best_W, best_b, mask=mask)[:, 0].cpu().tolist()
+        del Xr
+    del Xtr, Xva, Xte, best_W, best_b
     torch.cuda.empty_cache()
     return out, dict(n_train=N, n_val=int(va["y"].shape[0]), n_test=int(te["y"].shape[0]), n_classes=C)
 
@@ -147,7 +155,7 @@ def main():
     ftypes = args.ftypes.split(",")
     for e in models:
         for dataset in names:
-            outp = registry.RES / "probes" / f"{e['name']}__{dataset}.json"
+            outp = registry.RES / "probes" / f"{e['name']}__{dataset}{feat.result_suffix(e['name'], dataset)}.json"
             if outp.exists() and not args.force:
                 print(f"skip {outp.name} (exists)", flush=True)
                 continue

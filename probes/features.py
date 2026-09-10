@@ -5,6 +5,7 @@ Layout: $PROBE_ROOT/features/<model>/<dataset>/<split>/{feats.npy, labels.npy, i
 d = output of block d-1), axis 2 = {CLS token, mean over patch tokens}.
 """
 import json
+import os
 
 import numpy as np
 import torch
@@ -12,6 +13,7 @@ import torch
 from probes import registry
 
 FTYPES = ("cls", "mean", "concat")
+ALLOW_LIMITED = os.environ.get("PROBE_ALLOW_LIMITED") == "1"    # smoke tests only: accept --limit caches
 LOWLEVEL_TARGETS = ["mean_r", "mean_g", "mean_b", "std_r", "std_g", "std_b", "lum_std", "grad_mag", "laplacian_var", "saturation"]
 
 
@@ -19,14 +21,34 @@ def cache_dir(model, dataset, split):
     return registry.FEATURES / model / dataset / split
 
 
+def cache_limit(model, dataset, split):
+    """None for a complete cache, the --limit value for a smoke cache, False if there is no finished cache."""
+    d = cache_dir(model, dataset, split)
+    if not (d / "_DONE").exists() or not (d / "meta.json").exists():
+        return False
+    return json.load(open(d / "meta.json")).get("limit")
+
+
 def is_done(model, dataset, split):
-    return (cache_dir(model, dataset, split) / "_DONE").exists()
+    lim = cache_limit(model, dataset, split)
+    if lim is False:
+        return False
+    return lim is None or ALLOW_LIMITED
+
+
+def result_suffix(model, dataset, split="train"):
+    """'' for complete caches, '__limitN' when a smoke cache is (explicitly) consumed, so results never mix."""
+    lim = cache_limit(model, dataset, split)
+    return f"__limit{lim}" if lim else ""
 
 
 def load(model, dataset, split):
     d = cache_dir(model, dataset, split)
     if not (d / "_DONE").exists():
         raise FileNotFoundError(f"no finished feature cache at {d}")
+    lim = json.load(open(d / "meta.json")).get("limit")
+    if lim is not None and not ALLOW_LIMITED:
+        raise RuntimeError(f"{d} is a limited smoke cache (limit={lim}); set PROBE_ALLOW_LIMITED=1 to use it")
     out = dict(
         X=np.load(d / "feats.npy", mmap_mode="r"),
         y=np.load(d / "labels.npy"),

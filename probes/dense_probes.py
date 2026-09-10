@@ -86,8 +86,9 @@ def seg_metrics(conf):
     tp = torch.diagonal(conf, dim1=-2, dim2=-1)
     fn = conf.sum(-1) - tp
     fp = conf.sum(-2) - tp
-    iou = tp / (tp + fn + fp).clamp_min(1)
-    present = conf.sum(-1) > 0
+    union = tp + fn + fp
+    iou = tp / union.clamp_min(1)
+    present = union > 0                                            # standard mIoU: classes with an empty union are skipped
     miou = (iou * present).sum(-1) / present.sum(-1).clamp_min(1)
     acc = tp.sum(-1) / conf.sum((-1, -2)).clamp_min(1)
     return 100 * miou, 100 * acc
@@ -159,7 +160,8 @@ def baseline(loader, task, C, tmu, majority):
 
 def run(models, dataset, limit, epochs, batch, workers):
     task = "depth" if dataset == "nyu" else "seg"
-    todo = [e for e in models if not (registry.RES / "dense" / f"{e['name']}__{dataset}.json").exists()]
+    sfx = f"__limit{limit}" if limit else ""
+    todo = [e for e in models if not (registry.RES / "dense" / f"{e['name']}__{dataset}{sfx}.json").exists()]
     if not todo:
         print(f"[{dataset}] all models done", flush=True); return
     ds_tr, C, meta = pdata.build_dense_dataset(dataset, "train")
@@ -237,7 +239,7 @@ def run(models, dataset, limit, epochs, batch, workers):
                     for k, v in ev_te[n].items():
                         best[n]["test"][k] = torch.where(better, v, best[n]["test"][k])
             print(f"[{dataset}] epoch {ep + 1}/{epochs} ({time.time() - t0:.0f}s) " + " | ".join(
-                f"{n}: {key} b11 {float(ev_te[n][key][12].max()):.1f}" for n in list(nets)[:4]), flush=True)
+                f"{n}: {key} b11 {float(ev_te[n][key][12][int(ev_va[n][key][12].argmax())]):.1f}" for n in list(nets)[:4]), flush=True)
     for e in todo:
         n = e["name"]
         b = best[n]
@@ -249,7 +251,7 @@ def run(models, dataset, limit, epochs, batch, workers):
         for k, v in b["test"].items():
             rec[k] = v.gather(1, wsel[:, None]).squeeze(1).tolist()
             rec[k + "_grid"] = v.tolist()
-        outp = registry.RES / "dense" / f"{n}__{dataset}.json"
+        outp = registry.RES / "dense" / f"{n}__{dataset}{sfx}.json"
         tmp = outp.with_suffix(".tmp"); json.dump(rec, open(tmp, "w")); os.replace(tmp, outp)
         key = "miou" if task == "seg" else "delta1"
         print(f"{n:14s} {dataset:7s} {key} by depth: " + " ".join(f"{a:5.1f}" for a in rec[key]), flush=True)

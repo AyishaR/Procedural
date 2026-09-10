@@ -78,7 +78,8 @@ def main():
         for dataset in names:
             if not all(feat.is_done(e["name"], dataset, s) for s in ("train", "val", "test")):
                 print(f"skip {e['name']} {dataset}: features not cached", flush=True); continue
-            outk = registry.RES / "probes" / f"{e['name']}__{dataset}__knn.json"
+            sfx = feat.result_suffix(e['name'], dataset)
+            outk = registry.RES / "probes" / f"{e['name']}__{dataset}__knn{sfx}.json"
             if not outk.exists() or args.force:
                 tr, te = feat.load(e["name"], dataset, "train"), feat.load(e["name"], dataset, "test")
                 C = int(tr["meta"]["n_classes"])
@@ -89,7 +90,7 @@ def main():
                                knn_top1=acc, git=registry.git_commit(), date=datetime.now().isoformat(timespec="seconds")), open(outk, "w"))
                 print(f"{e['name']:14s} {dataset:10s} kNN top-1 by depth: " + " ".join(f"{a:5.1f}" for a in acc), flush=True)
                 del Xtr, Xte; torch.cuda.empty_cache()
-            outl = registry.RES / "probes" / f"{e['name']}__{dataset}__lowlevel.json"
+            outl = registry.RES / "probes" / f"{e['name']}__{dataset}__lowlevel{sfx}.json"
             if dataset in ("imnet", "places365") and (not outl.exists() or args.force):
                 tr, va, te = (feat.load(e["name"], dataset, s) for s in ("train", "val", "test"))
                 if "lowlevel" not in tr:
