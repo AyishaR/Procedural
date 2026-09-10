@@ -1155,6 +1155,15 @@ limit at epoch 145 / 149 on 2026-09-09 15:06 (TIMEOUT is not requeued); resubmit
 with their `SLURM_ID`s so they resume in place. At ~6 epochs/h each 300-epoch L40S run needs three
 23.5 h jobs.
 
+*`ftblrm` s0 died the same way at epoch 228* (2026-09-09 18:21, job 29545846, six identical resumes):
+max|k-bias| 37 / 52 / 65 in blocks 8-10 of a *random* init, so the drift is not inherited from proc but
+grows during training in whichever blocks are loud (the twins at epoch 253-259 are at 35-37 in block
+10; the finished `ftbqmlnvo` ended at 28). Zeroed and resumed on `lmbdlc2_gpu-h200` (29571912). The
+three L40S continuation jobs now go through `vitbase_runs/resume_zero_kbias.sh`, which zeroes the
+k-bias of the latest checkpoint before calling the arm's run script (exact no-op for the forward
+pass). Twin readouts at epoch 249-259 (not final): `ftbqmlnvot` s0 79.97 @249, `ftbqmlnvog` s1
+80.19 @259, versus `ftbqmlnvo` seeds 79.72 / 79.85 / 79.21 @249 and 80.03 / 79.97 / 79.13 @259.
+
 *Sweeper incident (2026-09-08/09).* A coworker launched the ksd runs (`ftb4*`, 19:10) from their own
 checkout; the scripts write into this shared `results/`, and the hourly `sweep_stalled.py` cron (on
 kislogin1) resubmitted their preempted/queued runs under this account into their directories
