@@ -119,8 +119,12 @@ def _subset_file(dataset, split):
 
 def _save_subset(dataset, split, items, n_classes, kind="path"):
     registry.SUBSETS.mkdir(parents=True, exist_ok=True)
+    def ser(p):                      # path -> str, torchvision index -> int, dense (image, label) pair -> list
+        if isinstance(p, (list, tuple)):
+            return [str(q) for q in p]
+        return int(p) if isinstance(p, (int, np.integer)) else str(p)
     rec = dict(dataset=dataset, split=split, seed=SEED, kind=kind, n=len(items), n_classes=n_classes,
-               items=[[str(p), int(y)] for p, y in items])
+               items=[[ser(p), int(y)] for p, y in items])
     rec["sha256"] = hashlib.sha256(json.dumps(rec["items"]).encode()).hexdigest()
     tmp = _subset_file(dataset, split).with_suffix(".tmp")
     json.dump(rec, open(tmp, "w"))
@@ -370,7 +374,7 @@ def _dense_items(dataset):
     """{split: [(image_path, label_path)]} for voc / ade20k, or {split: [indices]} for nyu; seeded once."""
     rec = _load_subset(dataset, "train")
     if rec is not None:
-        return {s: [tuple(x) if isinstance(x, list) else x for x, _ in _load_subset(dataset, s)["items"]] for s in SPLITS}
+        return {s: [tuple(x) if isinstance(x, list) else int(x) for x, _ in _load_subset(dataset, s)["items"]] for s in SPLITS}
     rng = _rng(dataset)
     if dataset == "voc":
         root = registry.DATA / "voc" / "VOCdevkit" / "VOC2012"

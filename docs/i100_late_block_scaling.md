@@ -12,6 +12,54 @@
 >
 > When adding an arm, take the final `test_acc1` from `log.txt`, never `Max accuracy` from stdout.
 
+## 0e. Do proc's early blocks learn more general features? Layerwise probes, logit lens, tuned lens (2026-09-10)
+
+**Question.** §0d.10 reads fig17 as "the readout is pushed to blocks 10-11 and blocks 0-9 stay generic" in
+the proc-prefix and late-recipe arms. The head-probe traces only show that the *ImageNet head* cannot read
+the class from the early blocks; they do not show that those blocks carry anything more general. This pass
+measures generality directly at epoch 299: trained linear probes at every depth on eight classification sets,
+per-patch probes for segmentation and depth, k-NN and low-level-statistics readouts, and a proper logit lens
+plus a tuned lens on the final checkpoints (the wandb epoch-299 row is an artefact, §0d.6).
+
+**Protocol** (code: `probes/` on branch `probes-lens`; every output under
+`/work/dlc2workfs3/schrodi-procedural/kempfe/probes/` — `features/`, `results/{probes,lens,dense}/`, `figures/`;
+nothing but code and this section is committed):
+
+* *Models.* Final (epoch-299) checkpoints only, gated on `checkpoint-299-model.pth` + `log.txt` ending at
+  epoch 299: `r` x3, `p` x3, `ftbrho` x3, `ftb3b` x3, `ftb3i` x3, `ftbqmlnvo` x3, `ftb4o`, `ftbrhos`; `ftblrm`
+  is added when it finishes. No init dumps, no intermediate epochs.
+* *Features.* One forward per image (bf16, eval transform Resize 256 / CenterCrop 224); the residual stream
+  is read at 13 depths — the patch+pos embedding ("emb") and the output of each block (b0..b11) — and pooled
+  to the CLS token and the mean over patch tokens, cached as fp16.
+* *Classification probes.* Per (model, dataset, feature type in {CLS, mean-patch, concat}) a multinomial
+  logistic regression on standardised features at every depth, all 13 depths x 6 weight decays trained at
+  once (Adam, 2000 steps, batch 4096, cosine lr); the (wd, step) pair is chosen per depth on a held-out
+  split, test top-1 is reported at that point. Sets: ImageNet-1k (100/class train subset, 20/class held-out,
+  official val as test), Places365 (100/20 per class, official val), CIFAR-100, DTD (partition 1),
+  Flowers-102, Stanford Cars, FGVC-Aircraft, EuroSAT (60/20/20). The ImageNet probes are also scored
+  zero-shot on ImageNet-R (200-class mask).
+* *Dense probes* (online, frozen backbone, 14x14 patch grid): per-patch linear heads at every depth for
+  VOC 2012 and ADE20K (majority label per 16x16 cell, mIoU over patches) and NYU Depth v2 (mean log-depth per
+  cell, standardised regression; delta1 / RMSE / abs-rel on the patch grid). Patch-level numbers, not
+  pixel-level.
+* *Cheap readouts.* k-NN (k=20, cosine, temperature-weighted votes) per depth on every classification set;
+  ridge R^2 per depth for ten low-level image statistics (mean/std RGB, luminance std, gradient energy,
+  Laplacian variance, saturation) on ImageNet.
+* *Lenses* (CLS token, fp32). Logit lens = frozen final norm + head at every depth. Tuned lens = per depth
+  `h + A h + c` (zero-initialised, so untrained == logit lens) into the same frozen norm/head, trained with
+  KL(p_final || p_lens) on the 100k train subset (3000 steps), step chosen by val KL; reported: top-1 vs
+  truth, agreement with the final prediction, KL, and per-image prediction depth.
+
+**Predictions to read against.** (i) proc's transfer/dense/low-level curves above random's at depths b3-b8
+while its ImageNet probe/lens sit below random's there => early blocks are more general, not just less
+trained. (ii) `ftblrm` reproducing proc => the step lever suffices; `ftbrho`/`ftb3b` reproducing => the
+write lever. (iii) identical transfer curves everywhere => the lens result is readout allocation without a
+change in feature generality. (iv) `ftb4o` / `ftbrhos` (loud / quiet random front, both below random) land
+below random on transfer if generality tracks accuracy.
+
+**Results.** *(pending — arrays submitted 2026-09-10; figures `fig18_layer_probes.png`, `fig19_lens.png`,
+`fig20_dense_probes.png` and `probes_summary.csv` / `lens_summary.csv` under `.../probes/figures/`.)*
+
 ## 0c. CURRENT UNDERSTANDING: the early blocks carry the VALUE DISTRIBUTION (2026-09-02, rev 2)
 
 > **2026-09-05: read §0d first.** A run-by-run verification pass (configs re-read from every run's own

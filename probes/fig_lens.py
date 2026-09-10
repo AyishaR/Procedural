@@ -30,16 +30,16 @@ def main():
     ax = axes[1, 0]
     plot_arms(ax, {a: {s: np.maximum(v, 1e-4) for s, v in d.items()} for a, d in tk.items()}, label_n=False)
     plot_arms(ax, {a: {s: np.maximum(v, 1e-4) for s, v in d.items()} for a, d in lk.items()}, band=False, ls=":", lw=1.0, label_n=False, alpha=0.7)
-    ax.set_yscale("log"); ax.set_title("KL(final || lens): tuned (solid), logit (dotted)", fontsize=9); style_depth_axis(ax)
+    ax.set_yscale("log"); ax.set_title("KL(final || lens): tuned (solid), logit (dotted)", fontsize=8); style_depth_axis(ax)
     ax = axes[1, 1]; plot_arms(ax, rt); plot_arms(ax, rl, band=False, ls=":", lw=1.0, label_n=False, alpha=0.7)
-    ax.set_title("ImageNet-R top-1 (200-class mask): tuned (solid), logit (dotted)", fontsize=9); style_depth_axis(ax)
+    ax.set_title("ImageNet-R top-1 (200-class mask): tuned (solid), logit (dotted)", fontsize=8); style_depth_axis(ax)
     ax = axes[1, 2]
     for arm in registry.ARM_ORDER:
         hs = [r["tuned_lens"]["pred_depth_hist"] for r in recs if r["arm"] == arm]
         if hs:
             h = np.mean(hs, 0); h = h / h.sum() * 100
             ax.plot(np.arange(13), h, color=registry.ARM_COLOR[arm], lw=1.4, label=f"{arm} (n={len(hs)})")
-    ax.set_title("tuned lens: prediction depth (first depth from which the final class is fixed), % of images", fontsize=8); style_depth_axis(ax); ax.legend(fontsize=6)
+    ax.set_title("tuned lens: prediction depth (% of images)", fontsize=9); style_depth_axis(ax); ax.legend(fontsize=6)
     fig.suptitle("fig19: logit lens and tuned lens at epoch 299 (CLS features; tuned lens = identity + affine into the frozen norm/head, trained with KL to the final distribution)", fontsize=9)
     fig.tight_layout(rect=(0, 0, 1, 0.96)); fig.savefig(registry.FIGS / "fig19_lens.png", dpi=300); plt.close(fig)
 

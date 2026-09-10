@@ -52,6 +52,8 @@ class Heads:
         self.wd = torch.tensor(WD_GRID, device=device).view(1, -1, 1, 1)
         self.mu = None
         self.sd = None
+        self.tmu = 0.0          # target standardisation (depth task): train on (log d - tmu) / tsd
+        self.tsd = 1.0
 
     def logits(self, f):                                            # f [B,13,196,768] -> [13,nw,B,196,C]
         x = (f - self.mu) / self.sd
@@ -69,9 +71,9 @@ def seg_loss(logits, y):                                            # y [B,14,14
     return ce.sum()
 
 
-def depth_loss(logits, y):                                          # y [B,14,14] float (nan ignore)
+def depth_loss(logits, y, tmu=0.0, tsd=1.0):                        # y [B,14,14] float (nan ignore)
     K, nw, B, P, _ = logits.shape
-    t = y.view(B, P)
+    t = (y.view(B, P) - tmu) / tsd
     valid = torch.isfinite(t)
     tt = torch.where(valid, t, torch.zeros_like(t))
     err = (logits[..., 0] - tt.view(1, 1, B, P)) ** 2
@@ -114,7 +116,7 @@ def evaluate(nets, heads, loader, task, C):
             else:
                 t = y.view(-1)
                 valid = torch.isfinite(t)
-                p = lg[..., 0].reshape(N_DEPTH, len(WD_GRID), -1)[:, :, valid]
+                p = lg[..., 0].reshape(N_DEPTH, len(WD_GRID), -1)[:, :, valid] * heads[n].tsd + heads[n].tmu
                 tt = t[valid]
                 st["se"] += ((p.exp() - tt.exp()) ** 2).sum(-1)
                 st["ae"] += ((p.exp() - tt.exp()).abs() / tt.exp()).sum(-1)
@@ -137,6 +139,24 @@ def evaluate(nets, heads, loader, task, C):
     return out
 
 
+@torch.no_grad()
+def baseline(loader, task, C, tmu, majority):
+    """Constant-prediction reference on the test split: majority train class (seg) or mean log-depth (depth)."""
+    if task == "seg":
+        conf = torch.zeros(C, C)
+        for _, y in loader:
+            t = y.view(-1); t = t[t >= 0]
+            conf[:, majority] += torch.bincount(t, minlength=C).float()
+        miou, acc = seg_metrics(conf[None, None])
+        return dict(majority_class=int(majority), miou=float(miou[0, 0]), acc=float(acc[0, 0]))
+    se = ae = d1 = 0.0; n = 0
+    for _, y in loader:
+        t = y.view(-1); t = t[torch.isfinite(t)]
+        se += float(((torch.exp(torch.tensor(tmu)) - t.exp()) ** 2).sum()); ae += float(((torch.exp(torch.tensor(tmu)) - t.exp()).abs() / t.exp()).sum())
+        d1 += float((torch.maximum((tmu - t).exp(), (t - tmu).exp()) < 1.25).float().sum()); n += t.numel()
+    return dict(mean_logdepth=tmu, rmse=(se / max(n, 1)) ** 0.5, absrel=ae / max(n, 1), delta1=100 * d1 / max(n, 1))
+
+
 def run(models, dataset, limit, epochs, batch, workers):
     task = "depth" if dataset == "nyu" else "seg"
     todo = [e for e in models if not (registry.RES / "dense" / f"{e['name']}__{dataset}.json").exists()]
@@ -155,19 +175,33 @@ def run(models, dataset, limit, epochs, batch, workers):
     with torch.no_grad():
         acc = {n: [torch.zeros(N_DEPTH, D, device="cuda"), torch.zeros(N_DEPTH, D, device="cuda"), 0] for n in nets}
         seen = 0
-        for img, _ in ltr:
+        tvals = []
+        label_hist = torch.zeros(C)
+        for img, y in ltr:
             img = img.cuda()
+            if task == "depth":
+                tvals.append(y[torch.isfinite(y)].float())
+            else:
+                t = y.view(-1); label_hist += torch.bincount(t[t >= 0], minlength=C).float()
             for n, m in nets.items():
                 f = token_maps(m, img)
                 acc[n][0] += f.sum((0, 2)); acc[n][1] += (f * f).sum((0, 2)); acc[n][2] += f.shape[0] * f.shape[2]
             seen += img.shape[0]
             if seen >= 256:
                 break
+        tmu, tsd = (0.0, 1.0)
+        if task == "depth":
+            tv = torch.cat(tvals)
+            tmu, tsd = float(tv.mean()), float(tv.std().clamp_min(1e-3))
+            print(f"[{dataset}] log-depth target mean {tmu:.3f} sd {tsd:.3f} from {tv.numel()} patches", flush=True)
         for n in nets:
             s1, s2, cnt = acc[n]
             mu = s1 / cnt
             heads[n].mu = mu[None, :, None, :]
             heads[n].sd = ((s2 / cnt - mu * mu).clamp_min(0).sqrt().clamp_min(1e-6))[None, :, None, :]
+            heads[n].tmu, heads[n].tsd = tmu, tsd
+    base = baseline(lte, task, C, tmu, int(label_hist.argmax()) if task == "seg" else None)
+    print(f"[{dataset}] constant-prediction baseline on test: {base}", flush=True)
     steps_per_epoch = len(ltr)
     total = epochs * steps_per_epoch
     step = 0
@@ -178,13 +212,13 @@ def run(models, dataset, limit, epochs, batch, workers):
     for ep in range(epochs):
         for img, y in ltr:
             img, y = img.cuda(non_blocking=True), y.cuda(non_blocking=True)
-            lr = lr_at(step, total)
+            lr = lr_at(step, total, base=3e-3, final=3e-5)
             for n, m in nets.items():
                 h = heads[n]
                 for grp in h.opt.param_groups:
                     grp["lr"] = lr
                 lg = h.logits(token_maps(m, img))
-                loss = (seg_loss(lg, y) if task == "seg" else depth_loss(lg, y)) + 0.5 * (h.wd * h.W * h.W).sum()
+                loss = (seg_loss(lg, y) if task == "seg" else depth_loss(lg, y, h.tmu, h.tsd)) + 0.5 * (h.wd * h.W * h.W).sum()
                 h.opt.zero_grad(set_to_none=True); loss.backward(); h.opt.step()
             step += 1
         if (ep + 1) % EVAL_EVERY_EPOCHS[dataset] == 0 or ep + 1 == epochs:
@@ -211,7 +245,7 @@ def run(models, dataset, limit, epochs, batch, workers):
         rec = dict(model=n, arm=e["arm"], seed=e["seed"], ckpt=str(registry.ckpt_path(e)), dataset=dataset, task=task, n_classes=C,
                    depths=registry.DEPTHS, wd_grid=WD_GRID, epochs=epochs, n_train=len(ds_tr), n_val=len(ds_va), n_test=len(ds_te),
                    best_wd=[WD_GRID[int(i)] for i in wsel], best_epoch=b["epoch"].gather(1, wsel[:, None]).squeeze(1).tolist(),
-                   history=hist[n], git=registry.git_commit(), date=datetime.now().isoformat(timespec="seconds"), limit=limit)
+                   history=hist[n], baseline=base, lr=3e-3, git=registry.git_commit(), date=datetime.now().isoformat(timespec="seconds"), limit=limit)
         for k, v in b["test"].items():
             rec[k] = v.gather(1, wsel[:, None]).squeeze(1).tolist()
             rec[k + "_grid"] = v.tolist()

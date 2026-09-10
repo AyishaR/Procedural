@@ -47,7 +47,7 @@ def select(X, ftype, device="cuda", chunk=8192):
     D = 1536 if ftype == "concat" else 768
     out = torch.empty((N, X.shape[1], D), dtype=torch.float16, device=device)
     for s in range(0, N, chunk):
-        blk = torch.from_numpy(np.ascontiguousarray(X[s:s + chunk]))
+        blk = torch.from_numpy(np.array(X[s:s + chunk]))   # copy: memmap is read-only
         if ftype == "cls":
             v = blk[:, :, 0]
         elif ftype == "mean":
