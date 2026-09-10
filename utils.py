@@ -1321,7 +1321,8 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02):
 
     `spec` is a dict {slice: {"b0": m0, "start": s, "end": e}} (or a path to such a JSON):
     block 0 (if listed) gets multiplier m0; the remaining listed blocks ramp linearly from `s`
-    (first) to `e` (last). LayerNorm gains stay 1 and biases 0, so the multipliers are the
+    (first) to `e` (last). An optional key "extra": {block: {slice: multiplier}} applies fixed
+    multipliers to further blocks outside `blocks` (used by ftbanaf to flatten blocks 9-11). LayerNorm gains stay 1 and biases 0, so the multipliers are the
     *effective* scales rms(gamma) * rms(W) / 0.02 read off the proc checkpoint (docs 0d.11).
     Deterministic, so it is safe on every rank before or after the DDP broadcast.
     Returns {block: {slice: multiplier}} for logging / verification.
@@ -1338,6 +1339,8 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02):
             blk = model.blocks[b]
             mult = {}
             for s, p in spec.items():
+                if s == "extra":
+                    continue
                 if b == 0:
                     m = float(p["b0"])
                 else:
@@ -1359,4 +1362,15 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02):
             got = {"q": W[:D], "k": W[D:2 * D], "v": W[2 * D:], "proj": blk.attn.proj.weight,
                    "fc1": blk.mlp.fc1.weight, "fc2": blk.mlp.fc2.weight}
             applied[b] = {s: (round(mult.get(s, 1.0), 3), round(float(got[s].pow(2).mean().sqrt()) / timm_std, 3)) for s in got}
+        for b_str, mult in spec.get("extra", {}).items():
+            b = int(b_str); blk = model.blocks[b]; W = blk.attn.qkv.weight
+            for j, s in enumerate(("q", "k", "v")):
+                if s in mult:
+                    W[j * D:(j + 1) * D].mul_(float(mult[s]))
+            for s, layer in (("proj", blk.attn.proj), ("fc1", blk.mlp.fc1), ("fc2", blk.mlp.fc2)):
+                if s in mult:
+                    layer.weight.mul_(float(mult[s]))
+            got = {"q": W[:D], "k": W[D:2 * D], "v": W[2 * D:], "proj": blk.attn.proj.weight,
+                   "fc1": blk.mlp.fc1.weight, "fc2": blk.mlp.fc2.weight}
+            applied[b] = {s: (round(float(mult.get(s, 1.0)), 3), round(float(got[s].pow(2).mean().sqrt()) / timm_std, 3)) for s in got}
     return applied

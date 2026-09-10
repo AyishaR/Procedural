@@ -1277,6 +1277,17 @@ the block-to-block wiggles are irrelevant; ~78.7 (= `ftbvd`) if the non-smooth d
 pattern carry part of it; ~78.1 if nothing survives the smoothing. Then the late-block upscaling of
 the b-series is added on top as the combined recipe (`ftbanab`). Launched as seed 0 on
 `lmbdlc2_gpu-h200` (4 GPUs, starts when `ftblrm` frees the account cap).
+
+**`ftbanaf` (flat top), launched 2026-09-10 17:30, one seed.** Is the early-block gain confounded by the
+*relative* loudness of blocks 9-11? In `ftbqmlnvo`/`ftbana` the random top blocks write 0.13-0.14 (MLP)
+against 0.04 in blocks 1-8, a top/middle contrast of 3.4 that resembles the late lever's 4.0 (in absolute
+terms the top is *quieter* than random, 0.6x, because the stream is larger). `ftb3i` argues the contrast is
+unnecessary (its random top writes 0.4x its middle and it scores 80.0), but the direct test is `ftbana`
+with blocks 9-11 `fc2` x0.30 (`profile_ftbanaf.json`, key `"extra"`): MLP write of blocks 9-11 0.042 =
+the blocks-1-8 mean, contrast 1.04; every other tensor and every attention ratio identical to `ftbana_s0`
+(`plots/verify/verify_anaf.py` PASS on the dump through `main.py`). Reading: ~79.9 (= `ftbana`, if that
+lands there) => the early-block effect is self-contained; a drop towards random => the top/middle write
+contrast is part of the mechanism and the two levers share it at init, not only in the dynamics.
 ## 0b. Can a short run act as a proxy? Yes -- but NOT the obvious one (2026-08-31)
 
 > **THE FIT BELOW HAS FAILED TWICE — 2.4 sigma and 4.2 sigma, in OPPOSITE directions. Do not use
