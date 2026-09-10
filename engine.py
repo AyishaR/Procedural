@@ -830,6 +830,15 @@ def calculate_rank_final(dataset_train, device, args, model=None):
     never-materialised) activation matrix; stable rank and effective rank are both scale
     invariant, so no centering/normalisation of the accumulated sum is needed.
     """
+    if getattr(args, "resid_routing", False):
+        # routing replaces the residual adds, so the attention-residual-out and block-output
+        # capture points do not exist: block i's two consumers read different mixes and
+        # nothing is added back into one stream. utils.HookCollector refuses a routed model
+        # outright; see docs/residual_routing.md for what the routed arm does log.
+        print("[routing] skipping calculate_rank_final: it reads a per-block "
+              "residual stream that residual routing does not have", flush=True)
+        return
+
     assert args.accuracy_json, "--accuracy_json must be set (its folder/basename determine the rank json output path) when using --calculate_rank"
 
     if model is None:
@@ -959,6 +968,15 @@ def calculate_cka_final(dataset_train, device, args, model=None):
     rank computes CKA over only its own local shard of the subset under DDP (there is no
     cross-rank feature gather); only the main process writes output.
     """
+    if getattr(args, "resid_routing", False):
+        # routing replaces the residual adds, so the per-block representations it correlates
+        # do not exist: block i's two consumers read different mixes and nothing is added
+        # back into one stream. utils.HookCollector refuses a routed model
+        # outright; see docs/residual_routing.md for what the routed arm does log.
+        print("[routing] skipping calculate_cka_final: it reads a per-block "
+              "residual stream that residual routing does not have", flush=True)
+        return
+
     assert args.accuracy_json, "--accuracy_json must be set (its folder/basename determine the cka json/png output paths) when using --calculate_cka"
 
     if model is None:
