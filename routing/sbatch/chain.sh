@@ -11,7 +11,7 @@ umask 002
 
 while true; do
     EXPORT="ALL,SEED=$SEED,ROUTING_IMPL=$ROUTING_IMPL,OUT_ROOT=$OUT_ROOT"
-    if [[ "$SLURM_ID" -ne 0 ]]; then EXPORT="SLURM_ID=$SLURM_ID,$EXPORT"; fi
+    if [[ "$SLURM_ID" -ne 0 ]]; then EXPORT="$EXPORT,SLURM_ID=$SLURM_ID"; fi
     echo "$(date) submitting (SLURM_ID=$SLURM_ID seed=$SEED impl=$ROUTING_IMPL)"
     JOB_ID=$(sbatch --parsable --export="$EXPORT" "$SCRIPT" | awk '{print $1}' | tr -d ':')
     [[ -z "$JOB_ID" ]] && { echo "sbatch failed - stopping chain"; exit 1; }
