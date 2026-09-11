@@ -198,8 +198,8 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | `ftbanab` train loss | | 5.948 | 4.339 | 3.840 | 3.270 | 2.975 | - | - | - |
 | `ftbanag` acc | 1 | 21.38 | 59.05 | 68.22 | 75.29 | 77.77 | - | - | - |
 | `ftbanag` train loss | | 5.988 | 4.461 | 3.908 | 3.374 | 3.086 | - | - | - |
-| `ftbanap` acc | 1 | 21.12 | - | - | - | - | - | - | - |
-| `ftbanap` train loss | | 5.991 | - | - | - | - | - | - | - |
+| `ftbanap` acc | 1 | 21.12 | 59.42 | - | - | - | - | - | - |
+| `ftbanap` train loss | | 5.991 | 4.445 | - | - | - | - | - | - |
 
 ## T4. Forward-pass write ratios at init (64 val images), per arm with a dump
 
@@ -267,6 +267,7 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | arm | last ep | block-7 probe peak (epoch) | block-7 probe at end | blocks 6-9 probe at end | block 10 / 11 probe at end | MLP write end: b0 / 1-8 / 9-11 | attn write end: b0 / 1-8 / 9-11 |
 |---|---|---|---|---|---|---|---|
 | `ftb11h` | 289 | 15.4 (29) | 1.0 | 3.5 | 42.3 / 79.9 | 1.49 / 0.44 / 0.85 | 0.56 / 0.35 / 0.38 |
+| `ftb1i` | 289 | 9.5 (19) | 0.3 | 1.6 | 31.2 / 80.4 | 0.84 / 0.32 / 0.88 | 0.63 / 0.29 / 0.53 |
 | `ftb3b` | 289 | 0.4 (159) | 0.2 | 0.4 | 58.0 / 80.0 | 1.76 / 0.38 / 1.17 | 0.50 / 0.30 / 0.37 |
 | `ftb3h` | 289 | 46.8 (39) | 18.5 | 30.6 | 74.7 / 78.9 | 1.82 / 0.43 / 0.49 | 0.55 / 0.35 / 0.29 |
 | `ftb3i` | 289 | 8.9 (19) | 0.4 | 1.0 | 33.9 / 80.0 | 0.71 / 0.29 / 1.01 | 0.54 / 0.26 / 0.56 |
@@ -278,6 +279,7 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | `ftbanab` | 189 | 42.6 (39) | 31.1 | 37.9 | 69.6 / 76.3 | 1.91 / 0.31 / 1.12 | 0.70 / 0.27 / 0.29 |
 | `ftbanaf` | 289 | 41.7 (29) | 28.4 | 35.4 | 69.9 / 76.4 | 1.71 / 0.36 / 0.92 | 0.60 / 0.32 / 0.37 |
 | `ftbanag` | 149 | 25.3 (29) | 9.3 | 19.3 | 69.1 / 77.8 | 1.96 / 0.28 / 1.50 | 0.65 / 0.30 / 0.39 |
+| `ftbcomp11` | 289 | 0.4 (139) | 0.2 | 0.2 | 5.5 / 80.6 | 1.14 / 0.29 / 1.02 | 0.58 / 0.29 / 0.53 |
 | `ftblrm` | 289 | 38.8 (29) | 13.1 | 17.4 | 67.7 / 77.7 | 0.83 / 0.60 / 1.08 | 0.38 / 0.38 / 0.35 |
 | `ftbqmlnvo` | 289 | 26.4 (29) | 1.5 | 6.7 | 64.9 / 79.9 | 1.93 / 0.41 / 1.06 | 0.56 / 0.37 / 0.39 |
 | `ftbqmlnvog` | 289 | 26.1 (29) | 2.3 | 7.0 | 64.7 / 79.5 | 1.93 / 0.40 / 1.13 | 0.56 / 0.36 / 0.42 |

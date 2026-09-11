@@ -183,7 +183,8 @@ any initialisation statistic:
 | random | 78.1 | 48% (29) | 21% |
 | late lever `ftbrho`, `ftb3b` | 79.7, 80.0 | 1.4%, 0.4% | 0.4% |
 | early lever `ftbqmlnvo`, twins | 79.9, 79.6, 80.4 | 26%, 26%, 23% | 7-9% |
-| proc prefix `ftb3i`, full proc | 80.0, 80.1 | 9%, 10% | 1%, 2% |
+| proc prefix `ftb3i`, `ftb1i` (1 seed), full proc | 80.0, 80.4, 80.1 | 9%, 10%, 10% | 1%, 2%, 2% |
+| both levers `ftbcomp11` | 80.6 | 0.4% | 0.2% (block 10 at 5.5%, block 11 at 80.6%) |
 | `ftbanag` (gains restored, epoch 149) | | 25% | 19% at 149 |
 | `ftbana`, `ftbanaf`, `ftbanab` | 76.6, 76.4, (running) | 42%, 42%, 43% | 33%, 35%, 38% |
 | `ftbrhos` | 75.1 | 44% | 39% |
@@ -193,8 +194,9 @@ any initialisation statistic:
 In a random init, block 7 becomes 48% class-decodable within 30 epochs and then loses most of that over the
 remaining 270, ending at 15%; the final readout is spread over blocks 6-11. Every scale-lever and proc-prefix
 winner suppresses this early commitment, partly (early lever) or completely (late lever), and ends with the
-readout in blocks 10-11. Every damaged arm shows the transient at full strength and ends with *more* class
-information in the middle blocks than the random init. Within the analytic family the two go together exactly:
+readout in blocks 10-11. The combined arm `ftbcomp11` is the extreme case: no transient at all, and at the end
+the class information sits in block 11 alone. Every damaged arm shows the transient at full strength and ends with
+*more* class information in the middle blocks than the random init. Within the analytic family the two go together exactly:
 `ftbana`, `ftbanaf` and `ftbanab` have the write profile and the transient; `ftbanag` has the gain vectors and
 not the transient. The one exception is the proc-suffix arm `ftb7h`, which gains +1.6 with a full transient and a
 spread readout; it is a single seed, and the suffix series has no replication.
@@ -305,6 +307,7 @@ step sizes alone, the write budgets alone, the readout position as a cause, and 
 
 ## Appendix: data status
 
-Dynamics (Section 3.2) are in the wandb cache for 25 of the arms named in this note; `ftbcomp11` and `ftb1i` were
-being fetched when this version was written and are not yet in T5. `ftbanab`, `ftbanag` and `ftbanap` are
-running (finals 2026-09-12, 04:00 / 08:00 / 18:00). Every other number is final.
+Dynamics (Section 3.2, T5) are in the wandb cache for every arm named in this note; for `ftb1i` only seed 0
+has per-block curves in wandb (the resumed seeds 1 and 2 logged none), so its dynamics row is a single seed.
+`ftbanab`, `ftbanag` and `ftbanap` are running (finals 2026-09-12, 04:00 / 08:00 / 18:00); their rows in the
+tables are read from their partial logs at the epoch stated. Every other number is final.

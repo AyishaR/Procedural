@@ -161,7 +161,7 @@ def seed_mean(arm, fam, last=289):
             if not np.all(np.isnan(v)): m[int(e)] = v
         if fam == "acc":
             es = sorted(m); m = {e: v for i, e in enumerate(es) for v in [m[e]] if not (i > 0 and e > 20 and np.nanmax(v) < 0.5 * np.nanmax(m[es[i - 1]]))}
-        per.append(m)
+        if m: per.append(m)   # seeds whose wandb runs returned no rows (ftb1i s1/s2) are skipped
     if not per: return None, None
     eps = sorted(set.union(*[set(m) for m in per])); eps = [e for e in eps if sum(e in m for m in per) >= max(1, len(per) - 1)]
     return eps, np.array([np.nanmean([m[e] for m in per if e in m], 0) for e in eps])
