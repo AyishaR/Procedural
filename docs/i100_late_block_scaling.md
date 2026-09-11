@@ -1319,6 +1319,17 @@ unchanged (`profile_ftbana{b,g}.json`, key `"ln"`; `utils.apply_analytic_profile
 are exact permutations of proc's, effective scales within 1%, forward write ratios within 2%. Readings: whichever
 arm recovers the twins' ~79.9-80.4 names the carrier; both at `ftbana`'s level => the two act jointly or the
 carrier is elsewhere (block-8 MLP transition, the 3-5 attention bump); both recover => either suffices.
+
+**`ftbanap` (launched 2026-09-11 17:40, one seed, both H200 partitions): the full checkpoint-free recipe.** `ftbana`'s
+18-number ramp plus LayerNorm gains *and* biases in blocks 0-8 drawn as Gaussians with proc's per-block mean and std
+(`"ln": {"gain": true, "bias": true, "source": "parametric"}`; 4 numbers per block, 36 in total; q/k/v and fc1
+multipliers divided by rms(gamma) as in `ftbanag`). The checkpoint contributes 54 numbers in total and no vector.
+Verified on the dump through `main.py` (`plots/verify/verify_anap.py` PASS): only LN vectors + qkv/fc1 differ from
+`ftbana_s0`, LN mean/std within 3% of proc's per block and not permutations, effective scales within 0.1% of
+`ftbana`, forward write ratios within 7%. Readings: ~79.9 => the recipe is complete (scales + LN statistics, nothing
+copied); at `ftbanag`'s level but below the twins => the exact gain multiset matters; at `ftbana`'s level while
+`ftbanag` recovers => sampling loses what permuting keeps. The earlier parametric-1-D test (`ftbqm1dpar`, 78.35 vs
+`ftbqm1d` 78.50) was in the loud-v regime and does not bear on this.
 ## 0b. Can a short run act as a proxy? Yes -- but NOT the obvious one (2026-08-31)
 
 > **THE FIT BELOW HAS FAILED TWICE — 2.4 sigma and 4.2 sigma, in OPPOSITE directions. Do not use
