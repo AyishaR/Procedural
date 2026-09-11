@@ -10,7 +10,7 @@
 # The run is expected to end in TIMEOUT; re-submitting against the same OUT rehearses
 # --auto_resume on a routed checkpoint, exactly as the chain driver does.
 #SBATCH --job-name route-smoke
-#SBATCH --partition lmbdlc2_gpu-h200
+#SBATCH --partition alldlc2_gpu-h200
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:4
 #SBATCH --time 1:20:00
