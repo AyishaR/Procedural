@@ -19,6 +19,16 @@ ARMS = {  # arm -> [(slurm_id, seed)]
     "ftb11h": [(29484978, 0)],    # random block 0, proc 1-11 (79.85)
     "ftb8h": [(29484975, 0)],     # random 0-3, proc 4-11 (79.11)
     "ftb9h": [(29484976, 0)],     # random 0-2, proc 3-11 (78.82)
+    "ftbqmlnvog": [(29538122, 0), (29538122, 1), (29538122, 2)],   # Gaussian twin
+    "ftbqmlnvot": [(29543647, 0)],                                 # Student-t twin
+    "ftbrhos": [(29538140, 0)],    # write budgets on random q/k/fc1 (75.07)
+    "ftblrm": [(29545846, 0)],     # step-size matched random (77.73)
+    "ftbana": [(29572321, 0)],     # analytic profile (76.61)
+    "ftbanaf": [(29578396, 0)],    # analytic, flat top (76.41)
+    "ftbanag": [(29581216, 0)],    # analytic + proc LN gains (running)
+    "ftbanab": [(29581214, 0)],    # analytic + proc LN biases (running)
+    "ftbcomp11": [(29472870, 0), (29472870, 1), (29472870, 2)],   # both levers combined (80.63)
+    "ftb1i": [(29469074, 0), (29472868, 1), (29472869, 2)],         # proc 0-10, random block 11 (80.37)
 }
 FAMS = ["acc", "delta_norm_ratio", "attn_entropy", "grad_norm", "blk_act_rms", "attn_delta_norm_ratio"]
 # `Epoch-wise/delta_norm_ratio_layer{l}` is logged twice per epoch and layer (engine.py:563 attention row,
