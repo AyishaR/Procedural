@@ -4,7 +4,7 @@
 #   nohup bash routing/sbatch/chain.sh > $OUT_ROOT/logs/chain.log 2>&1 &
 SLURM_ID=${SLURM_ID:-0}
 SEED=${SEED:-0}
-ROUTING_IMPL=${ROUTING_IMPL:-loop}
+ROUTING_IMPL=${ROUTING_IMPL:-buf}   # chosen by the gate: +22% vs loop +124%
 OUT_ROOT=${OUT_ROOT:-/work/dlc2workfs3/schrodi-procedural/kempfe/routing}
 SCRIPT="$(dirname "$(readlink -f "$0")")/train_route.sh"
 umask 002

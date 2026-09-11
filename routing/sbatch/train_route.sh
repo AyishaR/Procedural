@@ -22,7 +22,7 @@ echo "Running $SLURM_JOB_NAME on $SLURM_GPUS_ON_NODE gpus, JID $SLURM_JOB_ID, qu
 # the chain pins SLURM_ID to the FIRST job's id so every segment resumes into the same output dir
 if [[ -z "$SLURM_ID" ]] || [[ "$SLURM_ID" -eq 0 ]]; then SLURM_ID=$SLURM_JOB_ID; fi
 if [[ -z "$SEED" ]]; then SEED=0; fi
-if [[ -z "$ROUTING_IMPL" ]]; then ROUTING_IMPL="loop"; fi   # set from the gate's timing panel
+if [[ -z "$ROUTING_IMPL" ]]; then ROUTING_IMPL="buf"; fi   # chosen by the gate: +22% vs loop +124%
 if [[ -z "$EPOCHS" ]]; then EPOCHS=300; fi
 if [[ -z "$WARMUP" ]]; then WARMUP=50; fi
 echo "SLURM_ID $SLURM_ID  seed $SEED  routing_impl $ROUTING_IMPL  epochs $EPOCHS"
