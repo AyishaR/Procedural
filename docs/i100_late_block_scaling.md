@@ -1259,8 +1259,11 @@ vs random 5.25). A first spec with q/k at 1.45/1.64 (rms-level folding) gave log
 because proc's q/k columns are anti-correlated with gamma; corrected to 1.32/1.32. Blocks 9-11, LN,
 biases, embeddings, head bit-identical to `r_s0`.
 
-**`ftbqmlnvog` s1 final (2026-09-10 17:00, job 29577080): 80.40** (train loss 2.363). Gaussian twin seeds so
-far 79.20 / 80.40 (s2 at epoch ~207), Student-t twin 80.36, `ftbqmlnvo` 80.14 / 80.18 / 79.48.
+**Gaussian twin complete (2026-09-11 09:21, s2 job 29571925): 79.20 / 80.40 / 79.06 = 79.55 +/- 0.74 (n = 3)**,
+train loss 2.29-2.36; Student-t twin 80.36 (n = 1); `ftbqmlnvo` 79.93 +/- 0.39. The Gaussian twin is 0.38 below
+`ftbqmlnvo`, inside the 0.45 resolution, with two of three seeds on the low side; pooled over both twins the
+four seeds average 79.76. Reading: the distribution shape carries at most a few tenths; the per-slice second
+moments (with proc's LayerNorm vectors) carry the effect.
 
 **`ftbqmlnvot` s0 final (2026-09-10 16:40, job 29571923 after two L40S segments): 80.36** (train loss 2.356),
 against `ftbqmlnvo` 80.14 / 80.18 / 79.48 and the Gaussian twin s0 79.20 (s1 at 80.34 at epoch 294). The
