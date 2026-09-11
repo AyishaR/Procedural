@@ -10,7 +10,7 @@ SCRIPT="$(dirname "$(readlink -f "$0")")/train_route.sh"
 umask 002
 
 while true; do
-    EXPORT="SEED=$SEED,ROUTING_IMPL=$ROUTING_IMPL,OUT_ROOT=$OUT_ROOT"
+    EXPORT="ALL,SEED=$SEED,ROUTING_IMPL=$ROUTING_IMPL,OUT_ROOT=$OUT_ROOT"
     if [[ "$SLURM_ID" -ne 0 ]]; then EXPORT="SLURM_ID=$SLURM_ID,$EXPORT"; fi
     echo "$(date) submitting (SLURM_ID=$SLURM_ID seed=$SEED impl=$ROUTING_IMPL)"
     JOB_ID=$(sbatch --parsable --export="$EXPORT" "$SCRIPT" | awk '{print $1}' | tr -d ':')
