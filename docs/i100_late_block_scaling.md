@@ -1304,6 +1304,12 @@ zero linear biases, `ftbana` lacks exactly two things: proc's per-channel LayerN
 std 0.1 -- a 25% channel anisotropy into q/k/v/fc1; `ftbana` folds only the mean into the weights) and proc's
 LayerNorm biases (rms 0.06-0.09, max 0.3, ~20% of the gain-scaled signal; `ftbana` has none).
 
+**`ftbana` final (2026-09-11 12:44, job 29572321): 76.61**, train loss 2.209 -- *below* `r` (78.08) by 1.5 and
+fitting the train set *better* than random (2.225), i.e. on the harmful side of the fit-vs-generalisation
+line together with `ftbrhos` (75.07, 2.195). The smooth 18-number second-moment profile is not a weaker
+version of the twin, it is a different, damaging init. `ftbanaf` (flat top) at 76.41 at epoch 289, ~0.2 below
+`ftbana`, so the top/middle write contrast contributes nothing detectable on this baseline.
+
 **`ftbanab` / `ftbanag` (launched 2026-09-11 02:50, one seed each, `lmbdlc2_gpu-h200`, start when `ftbana` /
 `ftbanaf` free the cap).** `ftbanab` = `ftbana` + proc's LayerNorm *biases* in blocks 0-8 (each vector permuted
 across channels with a fixed generator, identical on every rank); `ftbanag` = `ftbana` + proc's LayerNorm *gains*
