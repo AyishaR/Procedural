@@ -105,7 +105,34 @@ accuracy source — stays schema-compatible with the already-trained base arm. T
 `routing/{mean,min,max,emb_col_mean,prev_diag_mean,readout_row_mean,n_edges}` per epoch, the full
 25x25 coefficient matrix in `routing.jsonl`, and `amp_scale`.
 
-## Smoke: the warmup, not the routing
+## Smoke: the routed model tracks the baseline exactly at init
+
+Run on the real 300/50 schedule, bounded by `--time` (job 29581444, 11 epochs), against the base
+arm at the same seed:
+
+| epoch | base loss | routed loss | delta | base acc1 | routed acc1 |
+|---|---|---|---|---|---|
+| 0 | 6.8686 | 6.8686 | -0.0000 | | |
+| 4 | 6.2265 | 6.2239 | -0.0026 | 14.140 | 14.238 |
+| 9 | 5.5949 | 5.5853 | -0.0096 | 32.350 | 33.188 |
+| 10 | 5.4691 | 5.4526 | -0.0166 | | |
+
+Epoch 0's training loss is **identical to four decimals on a real 4-GPU run** — the routed model
+is the baseline at init, as designed — and the gap then grows smoothly and monotonically as the
+coefficients move off 1. Nothing else misbehaved: `train_grad_norm` finite throughout
+(0.911 -> 1.671), zero NaN/inf, and `amp_scale` monotone *non-decreasing* (65536 -> 131072 ->
+262144), which only happens after thousands of consecutive overflow-free steps. Coefficients
+drifted gently: `routing/max` 1.004 -> 1.58 over 16 epochs.
+
+The resume rehearsal (job 29585630) restored 26 router tensors and continued without a
+discontinuity: epoch 11's loss step (-0.1249) sits among the preceding steps (-0.133, -0.153,
+-0.133) and its delta to base (-0.0098) matches the pre-resume trend. The half-precision
+`-model.pth` dump keeps its 26 router tensors in fp32 while the backbone is fp16, as intended.
+
+These early deltas are **not** a result: 11 of 300 epochs, one seed. The result is epoch-299
+test top-1.
+
+## Earlier false alarm: the warmup, not the routing
 
 The first 5-epoch smoke hit a non-finite loss in epoch 2. It had compressed warmup from 50 epochs
 to 1 while keeping `lr 2e-3`. The controlled re-run settles it: the **vanilla** arm at the same
@@ -126,6 +153,15 @@ seeds 0/1/2 at **78.284 / 78.040 / 77.912** top-1 (mean 78.08, sd 0.19). The rou
 same recipe at seed 0 with `--resid_routing true --routing_impl buf` and nothing else changed
 (`routing/sbatch/train_route.sh`). A delta needs to clear roughly ±0.4 to mean anything against a
 3-seed baseline spread of 0.19.
+
+**Run**: `route_29590809` (seed 0, `routing_impl buf`), outputs under
+`kempfe/routing/runs/route_29590809/s0`, driven by `routing/sbatch/chain.sh`. ~6 min/epoch on
+4x H200, so ~30 h over 2-3 segments.
+
+Transient-failure note: segment 1 died at epoch 21 with a `/dev/shm` allocation failure inside a
+DataLoader worker on rank 1 -- the traceback never leaves torch's collate path, so it is a node
+issue, not the model. The chain driver now retries a segment that made progress and stops only
+when a segment logs no new epochs at all.
 
 Results: *pending.*
 
