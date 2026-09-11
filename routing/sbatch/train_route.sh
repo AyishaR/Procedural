@@ -2,7 +2,7 @@
 # Residual-routing ImageNet arm: the r-arm recipe (slurm 29384839, random init, vit_base, 300
 # epochs) with --resid_routing true and nothing else changed. Submitted by routing/sbatch/chain.sh.
 #SBATCH --job-name route
-#SBATCH --partition alldlc2_gpu-h200
+#SBATCH --partition lmbdlc2_gpu-h200
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:4
 #SBATCH --time 23:29:59
