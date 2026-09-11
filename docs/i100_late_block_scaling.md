@@ -1291,6 +1291,25 @@ the blocks-1-8 mean, contrast 1.04; every other tensor and every attention ratio
 (`plots/verify/verify_anaf.py` PASS on the dump through `main.py`). Reading: ~79.9 (= `ftbana`, if that
 lands there) => the early-block effect is self-contained; a drop towards random => the top/middle write
 contrast is part of the mechanism and the two levers share it at init, not only in the dynamics.
+
+**`ftbana` is falling short (2026-09-11 02:00, epoch 158):** indistinguishable from the twins through epoch 49
+(58.8 / 67.2 vs 58.9-59.5 / 67.6-68.3), then behind by ~1 pp per 50 epochs: 76.06 at epoch 149 against
+77.5-77.9 for the twins and 76.8-77.3 for random. Heading for <= 78, the second pre-registered outcome: the
+smoothing discarded something that carries most of the effect. `ftbanaf` tracks `ftbana` (74.05 vs 74.04 at
+epoch 99). Relative to the Gaussian twin, which reproduces the effect with the same write ratios and the same
+zero linear biases, `ftbana` lacks exactly two things: proc's per-channel LayerNorm gain pattern (mean 0.4,
+std 0.1 -- a 25% channel anisotropy into q/k/v/fc1; `ftbana` folds only the mean into the weights) and proc's
+LayerNorm biases (rms 0.06-0.09, max 0.3, ~20% of the gain-scaled signal; `ftbana` has none).
+
+**`ftbanab` / `ftbanag` (launched 2026-09-11 02:50, one seed each, `lmbdlc2_gpu-h200`, start when `ftbana` /
+`ftbanaf` free the cap).** `ftbanab` = `ftbana` + proc's LayerNorm *biases* in blocks 0-8 (each vector permuted
+across channels with a fixed generator, identical on every rank); `ftbanag` = `ftbana` + proc's LayerNorm *gains*
+(permuted), with the q/k/v multipliers divided by rms(gamma1) and fc1 by rms(gamma2) so the effective scales are
+unchanged (`profile_ftbana{b,g}.json`, key `"ln"`; `utils.apply_analytic_profile`). Verified on dumps through
+`main.py` (`plots/verify/verify_anabg.py` PASS): only the intended tensors differ from `ftbana_s0`, the LN vectors
+are exact permutations of proc's, effective scales within 1%, forward write ratios within 2%. Readings: whichever
+arm recovers the twins' ~79.9-80.4 names the carrier; both at `ftbana`'s level => the two act jointly or the
+carrier is elsewhere (block-8 MLP transition, the 3-5 attention bump); both recover => either suffices.
 ## 0b. Can a short run act as a proxy? Yes -- but NOT the obvious one (2026-08-31)
 
 > **THE FIT BELOW HAS FAILED TWICE — 2.4 sigma and 4.2 sigma, in OPPOSITE directions. Do not use

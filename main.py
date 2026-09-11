@@ -1023,7 +1023,7 @@ def main(args):
             device = device,
             model = model
         )
-        _applied = utils.apply_analytic_profile(model_without_ddp, args.profile_spec, args.init_method_scaled_blocks)
+        _applied = utils.apply_analytic_profile(model_without_ddp, args.profile_spec, args.init_method_scaled_blocks, seed=args.seed)
         if utils.is_main_process():
             for _b, _m in _applied.items():
                 print(f"[analytic_profile] block {_b}: " + "  ".join(f"{k} x{v[0]} (rms/0.02 = {v[1]})" for k, v in _m.items()))

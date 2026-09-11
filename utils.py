@@ -1315,14 +1315,19 @@ def patched_last_block_forward(self, x):
     return x
 
 
-def apply_analytic_profile(model, spec, blocks, timm_std=0.02):
+def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
     """Checkpoint-free early-block init: rescale the timm random weights of `blocks` so that every
     slice (q, k, v, proj, fc1, fc2) has a prescribed rms relative to timm's trunc-normal std.
 
     `spec` is a dict {slice: {"b0": m0, "start": s, "end": e}} (or a path to such a JSON):
     block 0 (if listed) gets multiplier m0; the remaining listed blocks ramp linearly from `s`
     (first) to `e` (last). An optional key "extra": {block: {slice: multiplier}} applies fixed
-    multipliers to further blocks outside `blocks` (used by ftbanaf to flatten blocks 9-11). LayerNorm gains stay 1 and biases 0, so the multipliers are the
+    multipliers to further blocks outside `blocks` (used by ftbanaf to flatten blocks 9-11).
+    An optional key "ln": {"ckpt": path, "gain": bool, "bias": bool} copies the checkpoint's
+    LayerNorm gains and/or biases of the listed blocks, each vector permuted across channels
+    with a fixed generator (seed-dependent, identical on every rank). With "gain", the q/k/v
+    multipliers are divided by rms(gamma1) and fc1 by rms(gamma2) of that block, so the
+    *effective* scales stay those of the spec (ftbanag); "bias" leaves the multipliers alone (ftbanab). LayerNorm gains stay 1 and biases 0, so the multipliers are the
     *effective* scales rms(gamma) * rms(W) / 0.02 read off the proc checkpoint (docs 0d.11).
     Deterministic, so it is safe on every rank before or after the DDP broadcast.
     Returns {block: {slice: multiplier}} for logging / verification.
@@ -1334,12 +1339,28 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02):
     ramp = [b for b in blocks if b != 0]
     D = model.blocks[0].attn.qkv.weight.shape[1]
     applied = {}
+    ln = spec.get("ln")
+    ln_sd = None
+    if ln:
+        ck = torch.load(ln["ckpt"], map_location="cpu", weights_only=False)
+        ln_sd = ck.get("state", ck.get("model", ck))
     with torch.no_grad():
         for b in blocks:
             blk = model.blocks[b]
+            g_rms = {"1": 1.0, "2": 1.0}
+            if ln:
+                gen = torch.Generator().manual_seed(1000 + 10 * int(seed) + b)
+                for i, norm in (("1", blk.norm1), ("2", blk.norm2)):
+                    perm = torch.randperm(D, generator=gen)
+                    if ln.get("gain"):
+                        gam = ln_sd[f"blocks.{b}.norm{i}.weight"].float()
+                        norm.weight.copy_(gam[perm].to(norm.weight.dtype))
+                        g_rms[i] = float(gam.pow(2).mean().sqrt())
+                    if ln.get("bias"):
+                        norm.bias.copy_(ln_sd[f"blocks.{b}.norm{i}.bias"].float()[perm].to(norm.bias.dtype))
             mult = {}
             for s, p in spec.items():
-                if s == "extra":
+                if s in ("extra", "ln"):
                     continue
                 if b == 0:
                     m = float(p["b0"])
@@ -1347,6 +1368,11 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02):
                     i = ramp.index(b)
                     t = i / (len(ramp) - 1) if len(ramp) > 1 else 0.0
                     m = float(p["start"]) + t * (float(p["end"]) - float(p["start"]))
+                # with copied LN gains, divide the input-side multipliers so rms(gamma) * rms(W) is unchanged
+                if s in ("q", "k", "v"):
+                    m = m / g_rms["1"]
+                elif s == "fc1":
+                    m = m / g_rms["2"]
                 mult[s] = m
             W = blk.attn.qkv.weight
             for j, s in enumerate(("q", "k", "v")):
