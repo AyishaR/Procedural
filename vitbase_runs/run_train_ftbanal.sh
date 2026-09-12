@@ -76,7 +76,7 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_
     --enable_wandb true \
     --project "vit base kdyck" \
     --wandb_entity_name "procedural_pretraining" \
-    --notes "analytic profile (ftbana forward pass) with lr x rms(proc gamma) on qkv and fc1 of blocks 0-8, i.e. ftbanag's relative Adam steps without any gain change: timm random, per-slice rms multipliers (block 0 + linear ramp 1-8) from vitbase_runs/profile_ftbana.json, LN=1, biases 0, no checkpoint" \
+    --notes "ftbanap with isotropic gains (1) and per-tensor lr scales reproducing ftbanap's relative Adam steps (qkv/fc1 x rms gamma, gains x 1/rms) in blocks 0-8; sampled biases as ftbanap: timm random, per-slice rms multipliers (block 0 + linear ramp 1-8) from vitbase_runs/profile_ftbana.json, LN=1, biases 0, no checkpoint" \
     --accuracy_json "results/imnet_base/accuracy_IMNET_BASE_${SLURM_ID}_s${SEED}.json" \
     --grad_norms_json "results/imnet_base/grad_norms_IMNET_BASE_${SLURM_ID}_s${SEED}.json" \
     --procedural_data "kdyck" \
@@ -84,7 +84,7 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_
     --pr_notes "" \
     --skip_norm true \
     --init_method "analytic_profile" \
-    --profile_spec "vitbase_runs/profile_ftbana.json" \
+    --profile_spec "vitbase_runs/profile_ftbanal.json" \
     --init_method_scaled_blocks "0,1,2,3,4,5,6,7,8" \
     --lr_scale_json "vitbase_runs/lrscale_ftbanal.json" \
     --num_workers $NUM_WORKERS \

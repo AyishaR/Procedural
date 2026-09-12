@@ -1325,18 +1325,21 @@ arm and +4.1 over `ftbana`, whose only difference is that the 0.4 gain factor si
 LayerNorm gain vectors instead of being folded into the weights. `ftbanab` (biases instead of gains) is at 76.39 at
 epoch 249, on `ftbana`'s curve. The LayerNorm gain pattern is the carrier; biases are not needed.
 
-**`ftbanal` (queued 2026-09-12 20:10, one seed, `lmbdlc2_gpu-h200`, job 29609160): the step-size half of `ftbanag`
-without any gain change.** `ftbana`'s weights and forward pass exactly (LN gains 1, biases 0), plus per-tensor
-learning-rate multipliers in blocks 0-8: `attn.qkv.weight` x rms(gamma1_b) and `mlp.fc1.weight` x rms(gamma2_b) of
-proc (0.33-0.53), weight decay x the inverse so the relative decay per step is unchanged, and the LayerNorm gains
-x 1/rms(gamma) (2.0-3.0) because `ftbanag`'s gains sit at 0.4 and take steps of lr. `--lr_scale_json`,
-`optim_factory.build_lr_scaled_param_groups`. Verification: (i) analytically, lr_scale/rms(W_ana) equals
-1/rms(W_anag) for all 18 weight tensors to 1e-4 (dumps); (ii) empirically, four AdamW steps of `ftbanal` and
-`ftbanag` on identical inputs give relative weight changes ||dW||/||W|| that agree to 0.5% for every 2-D tensor in
-blocks 0-11 and to 3.5% for the gains (without the gain multiplier the gains moved 2.3x slower); (iii) a one-epoch
-run through `main.py` (job 29609137). `ftbanau` at epoch 129 sits on the random init's line (75.7 at 119 vs 75.8),
-so anisotropy alone rescues `ftbana` only to random level; `ftbanal` tests whether the slower relative steps alone
-reach `ftbanag`'s 80.7.
+**`ftbanal` (queued 2026-09-12 20:40, one seed, `lmbdlc2_gpu-h200`, job 29609180): `ftbanap` with isotropic
+gains and `ftbanap`'s relative Adam steps.** Built on the sampled recipe: `ftbana`'s weights, LayerNorm gains
+exactly 1, `ftbanap`'s sampled biases (same generator draws), and per-tensor learning-rate multipliers in blocks 0-8
+that reproduce `ftbanap`'s relative steps: `attn.qkv.weight` and `mlp.fc1.weight` x rms(gamma_b) of `ftbanap`'s
+sampled gains (0.34-0.53), weight decay x the inverse so the relative decay per step is unchanged, and the gains
+x 1/rms(gamma_b) (1.9-3.0) because `ftbanap`'s gains sit at 0.4 and take steps of the base lr
+(`profile_ftbanal.json`, `lrscale_ftbanal.json`, `--lr_scale_json`, `optim_factory.build_lr_scaled_param_groups`).
+The 2x2 is then complete: `ftbana` (neither), `ftbanau` (anisotropy only), `ftbanal` (slow steps only), `ftbanap`
+(both). Verification: (i) init: gains all 1, biases bit-identical to `ftbanap`, weights bit-identical to `ftbana`;
+(ii) four AdamW steps of `ftbanal` and `ftbanap` on identical inputs give relative weight changes ||dW||/||W|| that
+agree to 0.5% (mean) for every 2-D tensor in blocks 0-11, to 2% for the gains and 3% for the biases (without the
+gain multiplier the gains moved 2.3x slower -- caught by this check, not by the analytic one); (iii) a one-epoch
+run through `main.py` on the small ImageNet stand-in (job 29609199): 20 param groups, lr spread 0.33x-3.0x as
+specified, loss decreasing, no error in the training loop. `ftbanau` at epoch 129 sits on the random init's line
+(75.7 at 119 vs 75.8; lowest train loss of the group), so anisotropy alone rescues `ftbana` only to random level.
 
 *Why this is not `ftblrm` again.* `ftblrm` (77.73) put proc's relative step sizes on a plain random forward pass:
 lr x0.27-0.34 on qkv, x0.28-0.64 on proj, and x1.0-1.4 (faster) on fc1/fc2 in blocks 1-8, x0.3 on everything in
@@ -1344,9 +1347,9 @@ block 0 (`plots/cache/verify/lr_match_multipliers.json`). It tested whether step
 do not. `ftbanal` starts from a forward pass that already has proc's write profile, which we now know is necessary
 (`ftbrhos`, `ftbana` show the profile alone is harmful, `ftbanag` shows profile + slow steps + anisotropic gain works),
 and slows only qkv and fc1, leaving proj and fc2 at the base rate. The hypothesis it tests is the conjunction: quiet
-early writes AND early-block weights that Adam moves slowly. Readings: ~80 => step size is the missing half and the
-early lever is fully explained as profile + slow input-side steps (anisotropy irrelevant); ~78 (random level, like
-`ftbanau`) => anisotropy and slow steps are each worth ~1.5 and the effect needs both; ~76.6 => neither alone.
+early writes AND early-block weights that Adam moves slowly. Readings: ~80 => slow input-side steps are the missing half and the early lever is profile + slow steps (anisotropy
+irrelevant); ~78 (random level, like `ftbanau`) => anisotropy and slow steps are each worth ~1.5 and the effect
+needs both; ~76.6 => the two act only jointly.
 
 **`ftbanab` final (2026-09-12 11:23, job 29581214): 76.70** (train loss 2.194, test loss 1.275), 0.1 above `ftbana`:
 proc's LayerNorm biases add nothing; the gain vectors carry the whole difference to `ftbanag` (80.70).
