@@ -1325,6 +1325,19 @@ arm and +4.1 over `ftbana`, whose only difference is that the 0.4 gain factor si
 LayerNorm gain vectors instead of being folded into the weights. `ftbanab` (biases instead of gains) is at 76.39 at
 epoch 249, on `ftbana`'s curve. The LayerNorm gain pattern is the carrier; biases are not needed.
 
+**Cluster note (2026-09-12 evening): memory, not GPUs, blocks the H200 nodes.** All eight H200 nodes (shared by
+`lmbdlc2_gpu-h200`, `alldlc2_gpu-h200` and the ML group's `mldlc2_gpu-h200`, same priority tier as ours, so not
+preemptable) carry nine CPU-only 21-hour array tasks of one user at 160 GB each, 1440 of 1500 GB, with 667 more
+queued for these partitions; GPUs idle. Our run scripts request the whole node's memory (`ReqTRES mem=1500G`,
+allocated 750 GB for 4 GPUs) and actually use ~555 GB, almost all of it 48 loader workers per GPU (192 processes).
+The three pending arms were resubmitted with `--mem=300G` and `NUM_WORKERS=12` (48 workers per node, ~150-200 GB;
+12 workers x ~130 img/s covers the ~1230 img/s per GPU the H200 needs): `ftbanap` 29610951 (resume, results dir
+29592459), `ftbanai` 29610953 (results dir 29602228), both `lmbdlc2_gpu-h200`; `ftbanal` 29610955 (results dir
+29609180) on `alldlc2_gpu-h200` so that our three jobs do not take 12 of the group's 13-GPU cap. A 300 GB request
+fits into the gap left by two finishing 160 GB tasks, which a 750/1500 GB request never can. Also learned: a
+partition *list* (`lmbdlc2,alldlc2`) makes Slurm compute the job priority from the lowest tier (1065 instead of
+~61000), so never use one.
+
 **`ftbanal` (queued 2026-09-12 20:40, one seed, `lmbdlc2_gpu-h200`, job 29609180): `ftbanap` with isotropic
 gains and `ftbanap`'s relative Adam steps.** Built on the sampled recipe: `ftbana`'s weights, LayerNorm gains
 exactly 1, `ftbanap`'s sampled biases (same generator draws), and per-tensor learning-rate multipliers in blocks 0-8
