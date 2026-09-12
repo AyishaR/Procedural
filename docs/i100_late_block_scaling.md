@@ -1330,11 +1330,14 @@ epoch 249, on `ftbana`'s curve. The LayerNorm gain pattern is the carrier; biase
 preemptable) carry nine CPU-only 21-hour array tasks of one user at 160 GB each, 1440 of 1500 GB, with 667 more
 queued for these partitions; GPUs idle. Our run scripts request the whole node's memory (`ReqTRES mem=1500G`,
 allocated 750 GB for 4 GPUs) and actually use ~555 GB, almost all of it 48 loader workers per GPU (192 processes).
-The three pending arms were resubmitted with `--mem=300G` and `NUM_WORKERS=12` (48 workers per node, ~150-200 GB;
-12 workers x ~130 img/s covers the ~1230 img/s per GPU the H200 needs): `ftbanap` 29610951 (resume, results dir
-29592459), `ftbanai` 29610953 (results dir 29602228), both `lmbdlc2_gpu-h200`; `ftbanal` 29610955 (results dir
-29609180) on `alldlc2_gpu-h200` so that our three jobs do not take 12 of the group's 13-GPU cap. A 300 GB request
-fits into the gap left by two finishing 160 GB tasks, which a 750/1500 GB request never can. Also learned: a
+A 300 GB / 12-worker variant was tried and reverted the same evening: the nodes are *planned* for a higher-priority
+whole-node job of the RL group (`rldlc2_gpu-h200`, also tier 1000, priority 90907 vs our ~61000) and this cluster
+does not backfill onto planned nodes (even a 1-GPU, 1 GB, 5-minute probe was scheduled for the next morning), so
+a smaller request gains nothing and would have changed the loader configuration for no benefit. The arms are queued
+with the standard settings: `ftbanap` 29611827 (resume, results dir 29592459), `ftbanai` 29611829 (results dir
+29602228), both `lmbdlc2_gpu-h200`; `ftbanal` 29611831 (results dir 29609180) on `alldlc2_gpu-h200` so that our
+three jobs do not take 12 of the group's 13-GPU cap. Our fair-share term is ~200 against 10,000-130,000 for other
+users, which is why anything of ours on a contested node waits. Also learned: a
 partition *list* (`lmbdlc2,alldlc2`) makes Slurm compute the job priority from the lowest tier (1065 instead of
 ~61000), so never use one.
 
