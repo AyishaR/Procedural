@@ -188,8 +188,8 @@ any initialisation statistic:
 | early lever `ftbqmlnvo`, twins | 79.9, 79.6, 80.4 | 26%, 26%, 23% | 7-9% |
 | proc prefix `ftb3i`, `ftb1i` (1 seed), full proc | 80.0, 80.4, 80.1 | 9%, 10%, 10% | 1%, 2%, 2% |
 | both levers `ftbcomp11` | 80.6 | 0.4% | 0.2% (block 10 at 5.5%, block 11 at 80.6%) |
-| `ftbanag` (gains restored, epoch 149) | | 25% | 19% at 149 |
-| `ftbana`, `ftbanaf`, `ftbanab` | 76.6, 76.4, (running) | 42%, 42%, 43% | 33%, 35%, 38% |
+| `ftbanag` (gains restored) | 80.7 | 25% | 11% |
+| `ftbana`, `ftbanaf`, `ftbanab` (epoch 259) | 76.6, 76.4, 76.5 | 42%, 42%, 43% | 33%, 35%, 34% |
 | `ftbrhos` | 75.1 | 44% | 39% |
 | `ftblrm` | 77.7 | 39% | 17% |
 | proc 5-11 `ftb7h` | 79.7 | 46% | 27% |
@@ -314,6 +314,6 @@ step sizes alone, the write budgets alone, the readout position as a cause, and 
 
 Dynamics (Section 3.2, T5) are in the wandb cache for every arm named in this note; for `ftb1i` only seed 0
 has per-block curves in wandb (the resumed seeds 1 and 2 logged none), so its dynamics row is a single seed.
-`ftbanag` finished 2026-09-12 07:33 (80.70); its per-block curves beyond epoch 149 are being re-fetched. `ftbanab`
+`ftbanag` finished 2026-09-12 07:33 (80.70) and its per-block curves are complete. `ftbanab`
 (preempted once, at epoch 260) and `ftbanap` (epoch 162) are running; their rows are read from their partial logs
 at the epoch stated. Every other number is final.
