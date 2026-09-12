@@ -1325,6 +1325,9 @@ arm and +4.1 over `ftbana`, whose only difference is that the 0.4 gain factor si
 LayerNorm gain vectors instead of being folded into the weights. `ftbanab` (biases instead of gains) is at 76.39 at
 epoch 249, on `ftbana`'s curve. The LayerNorm gain pattern is the carrier; biases are not needed.
 
+**`ftbanab` final (2026-09-12 11:23, job 29581214): 76.70** (train loss 2.194, test loss 1.275), 0.1 above `ftbana`:
+proc's LayerNorm biases add nothing; the gain vectors carry the whole difference to `ftbanag` (80.70).
+
 **`ftbanau` / `ftbanai` (launched 2026-09-12 09:15, one seed each, both H200 partitions), ablations on the sampled
 recipe `ftbanap`.** `ftbanau`: LayerNorm gains drawn with mean 1 and 25% spread, weights left exactly as in `ftbana`
 (no compensation), sampled biases as in `ftbanap` -- adds channel anisotropy without changing any weight rms, so
