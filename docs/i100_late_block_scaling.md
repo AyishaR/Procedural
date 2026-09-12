@@ -1325,6 +1325,18 @@ arm and +4.1 over `ftbana`, whose only difference is that the 0.4 gain factor si
 LayerNorm gain vectors instead of being folded into the weights. `ftbanab` (biases instead of gains) is at 76.39 at
 epoch 249, on `ftbana`'s curve. The LayerNorm gain pattern is the carrier; biases are not needed.
 
+**`ftbanau` / `ftbanai` (launched 2026-09-12 09:15, one seed each, both H200 partitions), ablations on the sampled
+recipe `ftbanap`.** `ftbanau`: LayerNorm gains drawn with mean 1 and 25% spread, weights left exactly as in `ftbana`
+(no compensation), sampled biases as in `ftbanap` -- adds channel anisotropy without changing any weight rms, so
+it separates "anisotropy" from "2.5x slower relative Adam steps" as the carrier behind `ftbanag`. Reading: ~80 =>
+anisotropy alone (no gain statistic from proc needed at all); ~76.6 => the slower steps are needed (next: `ftbana`
+with lr x0.4 on q/k/v/fc1). `ftbanai`: q, k, fc1 at random effective scale, fc2 re-tuned per block so the MLP
+write matches `ftbanap` (a first version without the fc2 correction raised the blocks-1-8 MLP write 0.04 -> 0.18) --
+tests whether the input-side scales (logit sharpness 1.75x, quiet MLP pre-activations) are needed. Reading: ~80 =>
+the recipe is the write side (v, proj, fc2) plus the gain; a drop => the input side is part of the mechanism.
+`ftbanac` (`ftbanap` + blocks 9-11 amplified to write ratio 1.4, tuned in four dump iterations: attn 1.40/1.38/1.45,
+MLP 1.40/1.50/1.36) is prepared and waits for `ftbanap`'s final. All three verified by `plots/verify/verify_anauic.py`.
+
 **`ftbanap` (launched 2026-09-11 17:40, one seed, both H200 partitions): the full checkpoint-free recipe.** `ftbana`'s
 18-number ramp plus LayerNorm gains *and* biases in blocks 0-8 drawn as Gaussians with proc's per-block mean and std
 (`"ln": {"gain": true, "bias": true, "source": "parametric"}`; 4 numbers per block, 36 in total; q/k/v and fc1
