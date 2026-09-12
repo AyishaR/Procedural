@@ -1,6 +1,6 @@
 # What procedural pretraining contributes to a ViT-B, and how it turns into accuracy
 
-*Research note, 2026-09-11. All numbers are produced from the raw run records by
+*Research note, 2026-09-12. All numbers are produced from the raw run records by
 `plots/verify/gather_synthesis.py` and `plots/verify/matched_fit.py`: the construction of every arm is parsed
 from its slurm `Namespace` dump, accuracies and losses come from `results/imnet_base/*/log.txt`, init-time forward
 statistics from the init dumps, per-block training curves from wandb. The tables are in `docs/synthesis_data.md`
@@ -14,15 +14,17 @@ ImageNet-1k gives 80.1% top-1 instead of 78.1% from a random init. We asked whic
 carries the two points and how that part acts during training. Three findings.
 
 1. The benefit can be obtained without proc's weights, from either end of the network. Random weights whose
-   per-tensor scales in blocks 0-8 follow proc's, together with proc's LayerNorm gain vectors, reach 79.6-80.4
-   (the "early lever"). Random weights whose blocks 9-11 are amplified so that they write 6-10 times more into the
+   per-tensor scales in blocks 0-8 follow proc's, together with proc's LayerNorm gain vectors, reach 79.6-80.7
+   (the "early lever"); the best of them, `ftbanag`, uses 18 hand-written scale numbers and proc's permuted
+   gain vectors and nothing else from the checkpoint. Random weights whose blocks 9-11 are amplified so that they write 6-10 times more into the
    residual stream reach 79.7-80.1 (the "late lever"). Each lever alone is worth as much as proc's own prefix;
    combined they are sub-additive (best arm 80.6).
 2. What both levers change is the depth profile of how much each block writes into the residual stream: proc
    is a loud block 0, a nearly silent middle and a loud top, and every random init that ends up near 80 starts
    with part of that profile. But the profile alone is not sufficient: an init that reproduces the early lever's
-   profile with isotropic LayerNorm gains is 1.5 points *worse* than random. The per-channel gain pattern matters,
-   and its channel identity does not.
+   profile with isotropic LayerNorm gains is 1.5 points *worse* than random, and the same init with proc's
+   permuted gain vectors is the best early-lever arm (80.7). The per-channel gain pattern matters, its channel
+   identity does not, and the LayerNorm biases are not needed.
 3. The two levers reach 80 by a different route than proc's weights do. Proc's weights make the network fit the
    training set less (train loss 2.5-2.6 vs 2.2) and its test loss keeps falling to the end of training. The
    scale levers fit the training set as well as a random init does, are already ahead by epoch 150, and then
@@ -115,9 +117,9 @@ All arms below act on blocks 0-8 and leave blocks 9-11 random (T1).
 | random forward pass, proc's relative Adam step sizes | `ftblrm` | 77.73 (1) | -0.35 |
 | smooth 18-number std profile (block 0 + linear ramp), LN gains 1, biases 0 | `ftbana` | 76.61 (1) | -1.47 |
 | `ftbana` with the top blocks' MLP write flattened | `ftbanaf` | 76.41 (1) | -1.67 |
-| `ftbana` + proc's LN biases, permuted | `ftbanab` | epoch 190: on `ftbana`'s curve | |
-| `ftbana` + proc's LN gains, permuted, effective scales unchanged | `ftbanag` | epoch 150: 77.77, on the twins' curve | |
-| `ftbana` + Gaussian-sampled LN gains and biases | `ftbanap` | epoch 25, running | |
+| `ftbana` + proc's LN gains, permuted, effective scales unchanged | `ftbanag` | 80.70 (1) | +2.62 |
+| `ftbana` + proc's LN biases, permuted | `ftbanab` | epoch 259: 76.39, on `ftbana`'s curve | |
+| `ftbana` + Gaussian-sampled LN gains and biases | `ftbanap` | epoch 160: 78.11, on the twins' curve | |
 
 In decreasing order of confidence:
 
@@ -132,15 +134,16 @@ In decreasing order of confidence:
 4. **The LayerNorm gain vectors are part of the mechanism.** Removing the LN vectors from `ftbqmlnvo` loses 1.3
    points. Replacing proc's per-channel gains by their mean while keeping every effective scale identical
    (`ftbana`) does not merely lose the effect, it makes the init 1.5 points worse than random. Restoring the
-   permuted gain vectors (`ftbanag`) puts the run back on the twins' curve; restoring the biases instead
-   (`ftbanab`) does nothing. Since the gains are permuted, what matters is that the gain varies across channels
+   permuted gain vectors (`ftbanag`) gives 80.70, the best early-lever arm; restoring the biases instead
+   (`ftbanab`) leaves the run on `ftbana`'s curve to epoch 259. Since the gains are permuted, what matters is that the gain varies across channels
    (mean 0.4, std 0.1 in proc), not which channel has which gain. Adding proc's linear biases on top hurts
    (`ftbqm1dvo`, -0.8).
 5. **Two things that are individually inert.** Proc's residual-write budgets imposed on random q, k, fc1
    (`ftbrhos`, -3.0) and proc's relative Adam step sizes with an unchanged forward pass (`ftblrm`, -0.35).
 
 Not established: whether the input-side scales (q, k, fc1) are necessary, since the only evidence (`ftbrhos`) is
-confounded with the gain point; and whether the gain vectors can be sampled rather than copied (`ftbanap`).
+confounded with the gain point; and whether the gain vectors can be sampled rather than copied (`ftbanap`, on
+the twins' curve at epoch 160, final expected 2026-09-12 evening).
 
 ### 2.4 Combining the levers
 
@@ -213,7 +216,7 @@ The residual from that line separates the winners into two groups (T1):
 | group | arms | final train loss | test-loss residual | reading |
 |---|---|---|---|---|
 | proc weights in the prefix | `p`, `ftb3i`, `ftb1i`, `ftb7i`, `ftbcomp11`, `ftb4jd` | 2.47-2.64 | -0.03 to +0.04 | on the line: the whole gain comes from fitting less |
-| scale levers on random weights | `ftbrho`, `ftb3b`, `ftb2b`, `ftb5b`, `ftbqmlnvo`, twins, `ftb4e3fix`, `rattn3` | 2.23-2.36 | -0.07 to -0.10 | below the line: better test loss at the same fit |
+| scale levers on random weights | `ftbrho`, `ftb3b`, `ftb2b`, `ftb5b`, `ftbqmlnvo`, twins, `ftbanag`, `ftb4e3fix`, `rattn3` | 2.23-2.38 | -0.07 to -0.10 | below the line: better test loss at the same fit |
 | proc weights elsewhere or rescaled | `ftb11h`, `ftb4l`, `ftb4m`, `ftbcomp1`, `pds12`, `ftb9e` | 2.32-2.49 | -0.04 to -0.08 | between the two |
 | damaged | `ftbrhos`, `ftbana`, `ftbanaf`, `ftb1e`, `ftb2e`, `ftb11isfix` | 2.20-2.29 | +0.10 to +0.15 | above the line |
 | inert | `ftblrm`, `ftbqu`, `ftbqmln`, `ftbnorm`, `ftbvd`, clipped-random controls | 2.19-2.28 | -0.01 to +0.04 | on the line, next to random |
@@ -256,11 +259,12 @@ loss-overfitting they undergo:
 | `ftblrm` (inert) | 1.058 | 1.194 | +0.14 | 76.9 → 77.7 |
 | `ftbrho` / `ftb3b` (late lever) | 0.987 / 0.991 | 1.059 / 1.037 | +0.07 / +0.05 | 78.4 → 79.7 / 78.2 → 80.0 |
 | `ftbqmlnvo` / Gaussian / Student-t twin (early lever) | 1.016 / 1.003 / 0.984 | 1.033 / 1.044 / 0.983 | +0.02 / +0.04 / 0.00 | 77.8 → 79.9 / 77.7 → 79.6 / 77.9 → 80.4 |
+| `ftbanag` (analytic scales + proc gain vectors) | 1.032 | 0.988 | -0.04 | 77.8 → 80.7 |
 | `ftb3i` / `p` / `ftbcomp11` (proc weights) | 1.136 / 1.085 / 1.106 | 0.951 / 0.979 / 0.913 | -0.19 / -0.11 / -0.19 | 74.8 → 80.0 / 76.1 → 80.1 / 75.5 → 80.6 |
 | `ftbana` / `ftbrhos` (damaged) | 1.120 / 1.180 | 1.292 / 1.342 | +0.17 / +0.16 | 76.1 → 76.6 / 74.9 → 75.1 |
 
 Three regimes. The random init and the inert arms overfit in loss by 0.13-0.14 nats. The scale levers reach the
-same training loss and overfit by 0.00-0.07. The proc-weight arms never overfit: their test loss falls to the last
+same training loss and overfit by 0.00-0.07 (`ftbanag`, with a +0.16 fit deficit, does not overfit at all). The proc-weight arms never overfit: their test loss falls to the last
 epoch, and they overtake everyone in the final third. The damaged arms overfit more than random, from an earlier
 minimum (epoch 129-149), and their accuracy is flat.
 
@@ -277,14 +281,15 @@ construct but has not been shown to be necessary.
 ## 5. Open questions and the runs that would close them
 
 1. **The carrier inside the early lever: channel anisotropy or step size.** `ftbanag` restores the gain vectors and
-   the effect, but keeping the effective scales fixed made its q, k, v and fc1 matrices 2.5 times larger in rms,
+   the full effect (80.70), but keeping the effective scales fixed made its q, k, v and fc1 matrices 2.5 times larger in rms,
    so under Adam they move 2.5 times more slowly relative to their size. `ftblrm` showed that slow steps on a
    random forward pass do nothing; it did not show that fast steps on the correct forward pass are harmless. One
    arm separates the two: `ftbana` with a random gain vector of mean 1 and 25% spread (anisotropy without any
    change of weight rms). If it recovers, anisotropy is the cause; if not, `ftbana` with per-tensor learning-rate
    scales that reproduce `ftbanag`'s relative steps.
-2. **Whether the gain vectors can be sampled** (`ftbanap`, final expected 2026-09-12). If yes, the checkpoint-free
-   recipe is 54 scale numbers plus 36 LayerNorm statistics; if not, it needs the 18 vectors.
+2. **Whether the gain vectors can be sampled** (`ftbanap`, on the twins' curve at epoch 160, final expected
+   2026-09-12 evening). If yes, the checkpoint-free recipe is 18 scale numbers plus 36 LayerNorm statistics; if
+   not, it needs the 18 vectors.
 3. **The input-side scales (q, k, fc1).** Untested except through the confounded `ftbrhos`. One spec change on
    the surviving analytic arm.
 4. **Replication of the proc-suffix series.** The only counterexample to the stage-2 signature (`ftb7h`) and the
@@ -309,5 +314,6 @@ step sizes alone, the write budgets alone, the readout position as a cause, and 
 
 Dynamics (Section 3.2, T5) are in the wandb cache for every arm named in this note; for `ftb1i` only seed 0
 has per-block curves in wandb (the resumed seeds 1 and 2 logged none), so its dynamics row is a single seed.
-`ftbanab`, `ftbanag` and `ftbanap` are running (finals 2026-09-12, 04:00 / 08:00 / 18:00); their rows in the
-tables are read from their partial logs at the epoch stated. Every other number is final.
+`ftbanag` finished 2026-09-12 07:33 (80.70); its per-block curves beyond epoch 149 are being re-fetched. `ftbanab`
+(preempted once, at epoch 260) and `ftbanap` (epoch 162) are running; their rows are read from their partial logs
+at the epoch stated. Every other number is final.

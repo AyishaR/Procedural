@@ -1320,6 +1320,11 @@ are exact permutations of proc's, effective scales within 1%, forward write rati
 arm recovers the twins' ~79.9-80.4 names the carrier; both at `ftbana`'s level => the two act jointly or the
 carrier is elsewhere (block-8 MLP transition, the 3-5 attention bump); both recover => either suffices.
 
+**`ftbanag` final (2026-09-12 07:33, job 29581216): 80.70** (train loss 2.384, test loss 0.988), the best early-lever
+arm and +4.1 over `ftbana`, whose only difference is that the 0.4 gain factor sits in proc's permuted per-channel
+LayerNorm gain vectors instead of being folded into the weights. `ftbanab` (biases instead of gains) is at 76.39 at
+epoch 249, on `ftbana`'s curve. The LayerNorm gain pattern is the carrier; biases are not needed.
+
 **`ftbanap` (launched 2026-09-11 17:40, one seed, both H200 partitions): the full checkpoint-free recipe.** `ftbana`'s
 18-number ramp plus LayerNorm gains *and* biases in blocks 0-8 drawn as Gaussians with proc's per-block mean and std
 (`"ln": {"gain": true, "bias": true, "source": "parametric"}`; 4 numbers per block, 36 in total; q/k/v and fc1
