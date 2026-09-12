@@ -119,7 +119,10 @@ All arms below act on blocks 0-8 and leave blocks 9-11 random (T1).
 | `ftbana` with the top blocks' MLP write flattened | `ftbanaf` | 76.41 (1) | -1.67 |
 | `ftbana` + proc's LN gains, permuted, effective scales unchanged | `ftbanag` | 80.70 (1) | +2.62 |
 | `ftbana` + proc's LN biases, permuted | `ftbanab` | epoch 259: 76.39, on `ftbana`'s curve | |
-| `ftbana` + Gaussian-sampled LN gains and biases | `ftbanap` | epoch 160: 78.11, on the twins' curve | |
+| `ftbana` + Gaussian-sampled LN gains and biases | `ftbanap` | epoch 170: 78.23, on the twins' curve | |
+| `ftbanap` with gains ~ N(1, 0.25) and weights left as `ftbana`'s (anisotropy only) | `ftbanau` | launched 2026-09-12 | |
+| `ftbanap` with q, k, fc1 at random effective scale, MLP write matched | `ftbanai` | launched 2026-09-12 | |
+| `ftbanap` + blocks 9-11 amplified to write ratio 1.4 | `ftbanac` | prepared, waits for `ftbanap` | |
 
 In decreasing order of confidence:
 
@@ -285,13 +288,16 @@ construct but has not been shown to be necessary.
    so under Adam they move 2.5 times more slowly relative to their size. `ftblrm` showed that slow steps on a
    random forward pass do nothing; it did not show that fast steps on the correct forward pass are harmless. One
    arm separates the two: `ftbana` with a random gain vector of mean 1 and 25% spread (anisotropy without any
-   change of weight rms). If it recovers, anisotropy is the cause; if not, `ftbana` with per-tensor learning-rate
-   scales that reproduce `ftbanag`'s relative steps.
+   change of weight rms). This is `ftbanau`, launched 2026-09-12 on the sampled base. If it recovers, anisotropy
+   is the cause and no gain statistic from proc is needed; if not, the follow-up is `ftbana` with per-tensor
+   learning-rate scales that reproduce `ftbanag`'s relative steps.
 2. **Whether the gain vectors can be sampled** (`ftbanap`, on the twins' curve at epoch 160, final expected
    2026-09-12 evening). If yes, the checkpoint-free recipe is 18 scale numbers plus 36 LayerNorm statistics; if
    not, it needs the 18 vectors.
-3. **The input-side scales (q, k, fc1).** Untested except through the confounded `ftbrhos`. One spec change on
-   the surviving analytic arm.
+3. **The input-side scales (q, k, fc1).** Untested except through the confounded `ftbrhos`. `ftbanai`, launched
+   2026-09-12: q, k, fc1 at random effective scale with fc2 re-tuned so the MLP write budget stays that of
+   `ftbanap` (without that correction, removing the quiet fc1 alone raises the blocks-1-8 MLP write from 0.04 to
+   0.18, which would confound the input side with the write budget).
 4. **Replication of the proc-suffix series.** The only counterexample to the stage-2 signature (`ftb7h`) and the
    whole h- and e-series are single seeds. Proc 5-11 and proc 4-11 at three seeds would settle whether the
    counterexample is real.
@@ -303,7 +309,10 @@ construct but has not been shown to be necessary.
 6. **Why proc's own top blocks underperform the late lever** (`ftb3h` 78.9 against 79.7-80.0), while proc's own
    prefix equals the early lever. Downscaling them makes it worse (e-series, 76.4-77.0 for one to three proc blocks),
    so it is not simply loudness. No arm proposed yet.
-7. **A twin for the late lever.** The early lever has been reduced to its ingredients; the late lever has not. Is
+7. **The checkpoint-free combination.** `ftbanac`, `ftbanap` plus blocks 9-11 amplified to a write ratio of 1.4
+   (tuned to 1.40 / 1.38 / 1.45 attention, 1.40 / 1.50 / 1.36 MLP), prepared and verified; launches once `ftbanap`
+   is final. It asks whether an init with no checkpoint anywhere reaches `ftbcomp11`'s 80.6 or stays sub-additive.
+8. **A twin for the late lever.** The early lever has been reduced to its ingredients; the late lever has not. Is
    the write magnitude of v, proj, fc2 specifically required, or would amplifying q, k and fc1 as well, or scaling
    the residual branch itself, do the same? And the boundary at five amplified blocks rests on single seeds.
 
@@ -315,5 +324,6 @@ step sizes alone, the write budgets alone, the readout position as a cause, and 
 Dynamics (Section 3.2, T5) are in the wandb cache for every arm named in this note; for `ftb1i` only seed 0
 has per-block curves in wandb (the resumed seeds 1 and 2 logged none), so its dynamics row is a single seed.
 `ftbanag` finished 2026-09-12 07:33 (80.70) and its per-block curves are complete. `ftbanab`
-(preempted once, at epoch 260) and `ftbanap` (epoch 162) are running; their rows are read from their partial logs
-at the epoch stated. Every other number is final.
+(preempted once, at epoch 270) and `ftbanap` (epoch 172) are running, `ftbanau` and `ftbanai` started 2026-09-12
+09:15 (finals 2026-09-13), `ftbanac` is prepared; rows of running arms are read from their partial logs at the epoch
+stated. Every other number is final.
