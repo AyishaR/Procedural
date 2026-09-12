@@ -150,6 +150,36 @@ def build_step_matched_param_groups(model, weight_decay, ckpt_path, blocks, skip
     return list(groups.values())
 
 
+def build_lr_scaled_param_groups(model, weight_decay, spec, skip_list=()):
+    """Parameter groups with per-tensor learning-rate scales given explicitly: `spec` is
+    {parameter name: lr_scale} (or a path to such a JSON). Like build_step_matched_param_groups,
+    wd_scale = 1 / lr_scale keeps the relative decay per step unchanged; every other tensor keeps
+    lr_scale 1. Used by ftbanal: ftbana's forward pass with the relative Adam steps of ftbanag, whose
+    q/k/v/fc1 weights are 1/rms(gamma) larger, i.e. lr_scale = rms(gamma_b) on attn.qkv.weight and
+    mlp.fc1.weight of blocks 0-8 (docs 0d.11)."""
+    import json, os
+    if isinstance(spec, str):
+        spec = json.load(open(spec)) if os.path.exists(spec) else json.loads(spec)
+    groups, table = {}, []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        no_decay = len(param.shape) == 1 or name.endswith(".bias") or name in skip_list
+        lr_scale = float(spec.get(name, 1.0))
+        if name in spec:
+            table.append((name, lr_scale))
+        key = ("no_decay" if no_decay else "decay", round(lr_scale, 6))
+        if key not in groups:
+            groups[key] = {"params": [], "weight_decay": 0.0 if no_decay else weight_decay,
+                           "lr_scale": lr_scale, "wd_scale": (1.0 / lr_scale) if (not no_decay and lr_scale > 0) else 1.0}
+        groups[key]["params"].append(param)
+    print("[lr-scale] explicit per-tensor lr_scale:", flush=True)
+    for name, m in table:
+        print(f"[lr-scale]   {name:32s} lr x{m:.4f}, wd x{1/m:.3f}", flush=True)
+    print(f"[lr-scale] {len(table)} tensors scaled, {len(groups)} param groups", flush=True)
+    return list(groups.values())
+
+
 def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filter_bias_and_bn=True, skip_list=None, start_lr=None, custom_block_targets=None, custom_non_block_targets=None, custom_lr_transition_start=90, custom_lr_transition_end=110):
     opt_lower = args.opt.lower()
     weight_decay = args.weight_decay
@@ -169,6 +199,11 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
         blocks = [int(x) for x in str(args.lr_match_blocks).split(",") if x.strip() != ""]
         parameters = build_step_matched_param_groups(model, args.weight_decay, args.lr_match_ckpt, blocks,
                                                      skip_list=skip if filter_bias_and_bn else ())
+        weight_decay = 0.
+
+    if getattr(args, "lr_scale_json", ""):
+        parameters = build_lr_scaled_param_groups(model, args.weight_decay, args.lr_scale_json,
+                                                  skip_list=skip if filter_bias_and_bn else ())
         weight_decay = 0.
 
     if args.custom_lr_layer:

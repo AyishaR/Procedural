@@ -377,6 +377,10 @@ def get_args_parser():
                              'step-size half of a scale profile from its forward-pass half (docs 0d.9, ftblrm).')
     parser.add_argument('--lr_match_blocks', type=str, default="0,1,2,3,4,5,6,7,8",
                         help='Comma separated block indices for --lr_match_ckpt (default 0-8).')
+    parser.add_argument('--lr_scale_json', type=str, default="",
+                        help='JSON {parameter name: lr multiplier}: per-tensor learning-rate scales (weight decay '
+                             'scaled by the inverse so the relative decay is unchanged). ftbanal: rms(proc gamma) on '
+                             'attn.qkv.weight / mlp.fc1.weight of blocks 0-8 (docs 0d.11).')
     parser.add_argument('--profile_spec', type=str, default="",
                         help='JSON (inline or a .json path) for --init_method analytic_profile: per slice '
                              '(q,k,v,proj,fc1,fc2) {"b0": m0, "start": s, "end": e}, multipliers of the timm '
