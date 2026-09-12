@@ -1,0 +1,112 @@
+#!/bin/bash
+#SBATCH --job-name ftbanac
+#SBATCH --partition alldlc2_gpu-h200
+#SBATCH --requeue
+#SBATCH --nodes 1
+#SBATCH --gres=gpu:4
+#SBATCH --time 23:29:59
+#SBATCH -o /home/schrodi/Procedural/logs/ft_%j_%x.out
+#SBATCH -e /home/schrodi/Procedural/logs/ft_%j_%x.err # STDERR
+#SBATCH --mail-type END,FAIL
+#SBATCH --mail-user schrodi@cs.uni-freiburg.de 
+
+SECONDS=0
+
+ROOT='/home/schrodi/Procedural'
+
+cd $ROOT
+echo "Started at $(date)";
+
+echo "Running job $SLURM_JOB_NAME using $SLURM_GPUS_ON_NODE gpus per node with given JID $SLURM_JOB_ID on queue $SLURM_JOB_PARTITION";
+echo $([[ -z "$SLURM_ID" ]]);
+echo $([[ "$SLURM_ID" -eq "" ]]);
+if [[ -z "$SLURM_ID" ]] | [[ "$SLURM_ID" -eq "" ]]; then
+    SLURM_ID=$SLURM_JOB_ID
+fi
+if [[ -z "$SEED" ]] | [[ "$SEED" -eq "" ]]; then
+    SEED=0
+fi
+echo "Running with ID $SLURM_ID";
+
+export PATH="$HOME/.local/bin:$PATH"
+# 8-rank NCCL on the L40S nodes fails at the first barrier with the shared-memory transport
+# ("Error while attaching to shared memory segment /dev/shm/nccl-... (size 0)"; reproduced on
+# dlc2gpu02/08/10/34, 2026-09-08). 2 ranks work; 8 ranks work with SHM disabled (P2P over PCIe).
+if [[ "$SLURM_JOB_PARTITION" == *l40s* ]]; then export NCCL_SHM_DISABLE=1; echo "L40S partition: NCCL_SHM_DISABLE=1"; fi
+source .venv/bin/activate
+
+echo "Current working directory: $(pwd)";
+
+nvidia-smi
+echo "CUDA_VISIBLE_DEVICES = $CUDA_VISIBLE_DEVICES"
+
+TOTAL_BATCH_SIZE=4096
+BATCH_SIZE=128
+UPDATE_FREQ=$((($TOTAL_BATCH_SIZE / $SLURM_GPUS_ON_NODE) / $BATCH_SIZE))
+
+# DataLoader workers follow the CPU allocation rather than a constant.
+CPUS_PER_RANK=$(( ${SLURM_CPUS_ON_NODE:-8} / $SLURM_GPUS_ON_NODE ))
+if [[ $CPUS_PER_RANK -lt 1 ]]; then CPUS_PER_RANK=1; fi
+NUM_WORKERS=${NUM_WORKERS:-$CPUS_PER_RANK}
+echo "CPUs on node: ${SLURM_CPUS_ON_NODE:-?}, gpus: $SLURM_GPUS_ON_NODE -> num_workers=$NUM_WORKERS"
+
+# for i in 0 1 2; do
+# Transient /dev/shm exhaustion kills DataLoader workers; the chain reads the short runtime
+# as "completed too quickly" and stops. Retry in-job; auto_resume continues from the last
+# epoch checkpoint (see docs 5.7).
+MAX_RETRIES=${MAX_RETRIES:-6}
+attempt=0
+while true; do
+attempt=$((attempt+1))
+echo "=== attempt $attempt/$MAX_RETRIES at $(date) ==="
+
+# --standalone pins rendezvous to localhost:29400, which collides with any other
+# torchrun on the same node (ours or another user's) and deadlocks at the first
+# collective. Derive a unique port from the job id instead (docs 5.12).
+MASTER_PORT=$(( 20000 + (SLURM_JOB_ID % 20000) ))
+echo "rendezvous port: $MASTER_PORT"
+torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_node=$SLURM_GPUS_ON_NODE main.py \
+    --model vit_base  --warmup_epochs 50 --epochs 300 \
+    --total_batch_size $TOTAL_BATCH_SIZE \
+    --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
+    --data_path "/work/dlcsmall2/schrodi-imagenet" \
+    --data_set "IMNET" \
+    --initialize "" \
+    --output_dir "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" \
+    --enable_wandb true \
+    --project "vit base kdyck" \
+    --wandb_entity_name "procedural_pretraining" \
+    --notes "ftbanap plus blocks 9-11 v/proj/fc2 amplified to a write ratio of 1.4 (checkpoint-free early + late lever): timm random, per-slice rms multipliers (block 0 + linear ramp 1-8) from vitbase_runs/profile_ftbanac.json, LN=1, biases 0, no checkpoint" \
+    --accuracy_json "results/imnet_base/accuracy_IMNET_BASE_${SLURM_ID}_s${SEED}.json" \
+    --grad_norms_json "results/imnet_base/grad_norms_IMNET_BASE_${SLURM_ID}_s${SEED}.json" \
+    --procedural_data "kdyck" \
+    --procedural_order "standard" \
+    --pr_notes "" \
+    --skip_norm true \
+    --init_method "analytic_profile" \
+    --profile_spec "vitbase_runs/profile_ftbanac.json" \
+    --init_method_scaled_blocks "0,1,2,3,4,5,6,7,8" \
+    --num_workers $NUM_WORKERS \
+    --stage_wise_metrics true \
+    --detailed_metrics true \
+    --slurm_id $SLURM_ID \
+    --seed $SEED
+    # --skip_keys $SKIP_KEYS 
+
+#     sleep 10
+# done
+TORCH_EXIT=$?
+echo "Torchrun exited with code $TORCH_EXIT"
+if [ $TORCH_EXIT -eq 0 ]; then break; fi
+if [ $attempt -ge $MAX_RETRIES ]; then echo "giving up after $attempt attempts"; break; fi
+echo "retrying in 30s; auto_resume continues from the last epoch checkpoint"
+sleep 30
+done
+
+duration=$SECONDS
+if (( duration < 300 )); then  # 5 min = 300s
+    echo "Runtime ${duration}s too short. Stop chain."
+    exit 2
+else
+    exit $TORCH_EXIT
+fi

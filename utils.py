@@ -1358,11 +1358,15 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
                     if ln.get("gain"):
                         gam = ln_sd[f"blocks.{b}.norm{i}.weight"].float()
                         if parametric:   # Gaussian with the checkpoint vector's mean and std (2 numbers), not its values
-                            vec = torch.randn(D, generator=gen) * gam.std() + gam.mean()
+                            gs = ln.get("gain_stats")   # optional override {"mean": m, "std": s}: no checkpoint statistic at all
+                            mu, sd = (float(gs["mean"]), float(gs["std"])) if gs else (gam.mean(), gam.std())
+                            vec = torch.randn(D, generator=gen) * sd + mu
                         else:
                             vec = gam[perm]
                         norm.weight.copy_(vec.to(norm.weight.dtype))
-                        g_rms[i] = float(vec.pow(2).mean().sqrt())
+                        # "compensate" (default true): divide the input-side multipliers by rms(gamma) so the
+                        # effective scales equal the spec; false leaves the weights exactly as in ftbana
+                        g_rms[i] = float(vec.pow(2).mean().sqrt()) if ln.get("compensate", True) else 1.0
                     if ln.get("bias"):
                         bet = ln_sd[f"blocks.{b}.norm{i}.bias"].float()
                         vec = (torch.randn(D, generator=gen) * bet.std() + bet.mean()) if parametric else bet[perm]
