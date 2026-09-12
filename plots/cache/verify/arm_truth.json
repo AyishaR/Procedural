@@ -26480,7 +26480,7 @@
    "29581214"
   ],
   "starts": [
-   "2026-09-11 06:22:19"
+   "2026-09-12 06:16:37"
   ],
   "sig": {
    "initialize": "",
@@ -26537,7 +26537,7 @@
    "head_init_scale": 1.0
   },
   "output_dir": "results/imnet_base/results_IMNET_BASE_29581214/s0",
-  "first_start": "2026-09-11 06:22:19",
+  "first_start": "2026-09-12 06:16:37",
   "sig_first": {
    "initialize": "",
    "random_blocks": "",
@@ -26592,10 +26592,12 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 192,
-  "acc_last": null,
-  "acc_at": {},
-  "train_loss_last": 2.7075167438134744,
+  "max_epoch": 259,
+  "acc_last": 76.43400249023438,
+  "acc_at": {
+   "249": 76.39000224609374
+  },
+  "train_loss_last": 2.28656526740927,
   "pre_fix": false
  },
  {
@@ -26605,10 +26607,12 @@
    "ftbanag"
   ],
   "jobids": [
-   "29581216"
+   "29581216",
+   "29581217"
   ],
   "starts": [
-   "2026-09-11 09:26:54"
+   "2026-09-11 09:26:54",
+   "2026-09-12 07:33:41"
   ],
   "sig": {
    "initialize": "",
@@ -26720,10 +26724,16 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 151,
-  "acc_last": null,
-  "acc_at": {},
-  "train_loss_last": 3.076817917076345,
+  "max_epoch": 299,
+  "acc_last": 80.70400268554687,
+  "acc_at": {
+   "249": 80.2740024609375,
+   "274": 80.58800236328125,
+   "284": 80.63200245117187,
+   "289": 80.6440025,
+   "299": 80.70400268554687
+  },
+  "train_loss_last": 2.384069295098575,
   "pre_fix": false
  },
  {
@@ -26736,7 +26746,7 @@
    "29592459"
   ],
   "starts": [
-   "2026-09-11 18:49:50"
+   "2026-09-12 06:41:22"
   ],
   "sig": {
    "initialize": "",
@@ -26793,7 +26803,7 @@
    "head_init_scale": 1.0
   },
   "output_dir": "results/imnet_base/results_IMNET_BASE_29592459/s0",
-  "first_start": "2026-09-11 18:49:50",
+  "first_start": "2026-09-12 06:41:22",
   "sig_first": {
    "initialize": "",
    "random_blocks": "",
@@ -26848,10 +26858,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 23,
+  "max_epoch": 161,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 4.770883637886399,
+  "train_loss_last": 2.9935050316345997,
   "pre_fix": false
  }
 ]

@@ -6,6 +6,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 
 | arm | era | n | acc | sd | vs r | train loss | test loss | construction |
 |---|---|---|---|---|---|---|---|---|
+| `ftbanag` | clean | 1 | 80.70 | nan | +2.63 | 2.384 | 0.988 | ftbana + proc LN gains (permuted) in blocks 0-8, q/k/v/fc1 multipliers / rms(gamma) |
 | `ftbcomp11` | clean | 3 | 80.63 | 0.18 | +2.55 | 2.583 | 0.913 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 11; init_method_copied_blocks=0;1;2;3;4;5;6;7;8;9;10; target_ratio_absolute=1.4 |
 | `ftb1i` | clean | 3 | 80.37 | 0.12 | +2.29 | 2.563 | 0.943 | init=proc ckpt; random blocks 11 |
 | `ftbqmlnvot` | clean | 1 | 80.36 | nan | +2.28 | 2.356 | 0.983 | init=proc ckpt; quantile_match_target_blocks; scaled blocks 0,1,2,3,4,5,6,7,8; quantile_source=parametric; quantile_1d_mode=layernorm; quantile_qkv_mode=v_only |
@@ -130,17 +131,17 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb4n` | clean | 1 | 75.67 | nan | -2.41 | 2.306 | 1.312 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7; init_method_copied_blocks=8;9;10;11 |
 | `ftbrhos` | clean | 1 | 75.07 | nan | -3.01 | 2.195 | 1.342 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8 |
 
-## T2. Fit vs generalisation over the 112 clean arms
+## T2. Fit vs generalisation over the 113 clean arms
 
-Pearson(acc, train loss) = +0.61, Spearman = +0.71; Pearson(test loss, train loss) = -0.80; test loss = -0.66 x train loss + 2.65, residual sd 0.060.
+Pearson(acc, train loss) = +0.61, Spearman = +0.71; Pearson(test loss, train loss) = -0.80; test loss = -0.67 x train loss + 2.66, residual sd 0.060.
 
 Arms more than 2 residual sd above the line (test loss worse than their fit predicts):
 
-- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.191)
-- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.169)
+- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.192)
+- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.170)
 - `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.147)
-- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.132)
-- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.132)
+- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.133)
+- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.133)
 
 ## T3. Trajectories of representative arms (test acc / train loss at epoch)
 
@@ -194,12 +195,12 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | `ftbana` train loss | | 5.960 | 4.374 | 3.850 | 3.284 | 2.990 | 2.675 | 2.349 | 2.209 |
 | `ftbanaf` acc | 1 | 21.56 | 59.00 | 66.81 | 74.05 | 75.69 | 76.09 | 76.06 | 76.41 |
 | `ftbanaf` train loss | | 5.955 | 4.375 | 3.871 | 3.288 | 2.991 | 2.674 | 2.349 | 2.207 |
-| `ftbanab` acc | 1 | 21.57 | 59.32 | 66.98 | 74.60 | 76.09 | - | - | - |
-| `ftbanab` train loss | | 5.948 | 4.339 | 3.840 | 3.270 | 2.975 | - | - | - |
-| `ftbanag` acc | 1 | 21.38 | 59.05 | 68.22 | 75.29 | 77.77 | - | - | - |
-| `ftbanag` train loss | | 5.988 | 4.461 | 3.908 | 3.374 | 3.086 | - | - | - |
-| `ftbanap` acc | 1 | 21.12 | 59.42 | - | - | - | - | - | - |
-| `ftbanap` train loss | | 5.991 | 4.445 | - | - | - | - | - | - |
+| `ftbanab` acc | 1 | 21.57 | 59.32 | 66.98 | 74.60 | 76.09 | 76.38 | 76.39 | - |
+| `ftbanab` train loss | | 5.948 | 4.339 | 3.840 | 3.270 | 2.975 | 2.661 | 2.340 | - |
+| `ftbanag` acc | 1 | 21.38 | 59.05 | 68.22 | 75.29 | 77.77 | 78.99 | 80.27 | 80.70 |
+| `ftbanag` train loss | | 5.988 | 4.461 | 3.908 | 3.374 | 3.086 | 2.803 | 2.513 | 2.384 |
+| `ftbanap` acc | 1 | 21.12 | 59.42 | 68.56 | 75.46 | 78.11 | - | - | - |
+| `ftbanap` train loss | | 5.991 | 4.445 | 3.887 | 3.335 | 3.057 | - | - | - |
 
 ## T4. Forward-pass write ratios at init (64 val images), per arm with a dump
 
@@ -276,9 +277,7 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | `ftb8h` | 289 | 38.7 (39) | 6.0 | 9.8 | 67.2 / 79.1 | 1.99 / 0.45 / 0.77 | 0.52 / 0.37 / 0.30 |
 | `ftb9h` | 289 | 36.8 (49) | 3.5 | 6.8 | 67.1 / 78.8 | 1.95 / 0.45 / 0.86 | 0.52 / 0.37 / 0.31 |
 | `ftbana` | 289 | 41.7 (39) | 26.1 | 33.2 | 69.9 / 76.6 | 1.74 / 0.37 / 0.98 | 0.66 / 0.32 / 0.36 |
-| `ftbanab` | 189 | 42.6 (39) | 31.1 | 37.9 | 69.6 / 76.3 | 1.91 / 0.31 / 1.12 | 0.70 / 0.27 / 0.29 |
 | `ftbanaf` | 289 | 41.7 (29) | 28.4 | 35.4 | 69.9 / 76.4 | 1.71 / 0.36 / 0.92 | 0.60 / 0.32 / 0.37 |
-| `ftbanag` | 149 | 25.3 (29) | 9.3 | 19.3 | 69.1 / 77.8 | 1.96 / 0.28 / 1.50 | 0.65 / 0.30 / 0.39 |
 | `ftbcomp11` | 289 | 0.4 (139) | 0.2 | 0.2 | 5.5 / 80.6 | 1.14 / 0.29 / 1.02 | 0.58 / 0.29 / 0.53 |
 | `ftblrm` | 289 | 38.8 (29) | 13.1 | 17.4 | 67.7 / 77.7 | 0.83 / 0.60 / 1.08 | 0.38 / 0.38 / 0.35 |
 | `ftbqmlnvo` | 289 | 26.4 (29) | 1.5 | 6.7 | 64.9 / 79.9 | 1.93 / 0.41 / 1.06 | 0.56 / 0.37 / 0.39 |
@@ -418,5 +417,5 @@ Left: test loss minus r's test loss at the same train loss (negative = better ge
 | `ftblrm` | 1 | +0.002 | +0.044 | +0.039 | -0.009 | +0.014 | +0.007 | +0.010 | | +0.173 | +0.132 | +0.047 | +0.032 | +0.018 | +0.013 | +0.027 |
 | `ftbana` | 1 | +0.051 | +0.088 | +0.076 | +0.053 | +0.080 | +0.098 | - | | +0.242 | +0.137 | +0.058 | +0.029 | +0.003 | -0.017 | -0.016 |
 | `ftbanaf` | 1 | +0.049 | +0.075 | +0.089 | +0.072 | +0.085 | +0.098 | - | | +0.243 | +0.158 | +0.062 | +0.030 | +0.003 | -0.018 | -0.019 |
-| `ftbanab` | 1 | +0.072 | +0.092 | +0.066 | +0.057 | - | - | - | | +0.207 | +0.126 | +0.044 | +0.013 | - | - | - |
-| `ftbanag` | 1 | -0.037 | +0.004 | -0.008 | -0.036 | - | - | - | | +0.329 | +0.195 | +0.148 | +0.125 | - | - | - |
+| `ftbanab` | 1 | +0.072 | +0.092 | +0.066 | +0.057 | +0.071 | +0.074 | - | | +0.207 | +0.126 | +0.044 | +0.013 | -0.010 | -0.027 | - |
+| `ftbanag` | 1 | -0.037 | +0.004 | -0.008 | -0.036 | -0.089 | -0.147 | -0.166 | | +0.329 | +0.195 | +0.148 | +0.125 | +0.131 | +0.147 | +0.159 |

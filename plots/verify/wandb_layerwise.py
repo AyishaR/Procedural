@@ -27,6 +27,7 @@ ARMS = {  # arm -> [(slurm_id, seed)]
     "ftbanaf": [(29578396, 0)],    # analytic, flat top (76.41)
     "ftbanag": [(29581216, 0)],    # analytic + proc LN gains (running)
     "ftbanab": [(29581214, 0)],    # analytic + proc LN biases (running)
+    "ftbanap": [(29592459, 0)],    # analytic + sampled LN gains and biases (running)
     "ftbcomp11": [(29472870, 0), (29472870, 1), (29472870, 2)],   # both levers combined (80.63)
     "ftb1i": [(29469074, 0), (29472868, 1), (29472869, 2)],         # proc 0-10, random block 11 (80.37)
 }
