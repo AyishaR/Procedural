@@ -1333,10 +1333,11 @@ allocated 750 GB for 4 GPUs) and actually use ~555 GB, almost all of it 48 loade
 A 300 GB / 12-worker variant was tried and reverted the same evening: the nodes are *planned* for a higher-priority
 whole-node job of the RL group (`rldlc2_gpu-h200`, also tier 1000, priority 90907 vs our ~61000) and this cluster
 does not backfill onto planned nodes (even a 1-GPU, 1 GB, 5-minute probe was scheduled for the next morning), so
-a smaller request gains nothing and would have changed the loader configuration for no benefit. The arms are queued
-with the standard settings: `ftbanap` 29611827 (resume, results dir 29592459), `ftbanai` 29611829 (results dir
-29602228), both `lmbdlc2_gpu-h200`; `ftbanal` 29611831 (results dir 29609180) on `alldlc2_gpu-h200` so that our
-three jobs do not take 12 of the group's 13-GPU cap. Our fair-share term is ~200 against 10,000-130,000 for other
+a smaller request gains nothing and would have changed the loader configuration for no benefit. Final placement (2026-09-12 22:00): `ftbanap` 29611827 (resume from epoch 219, results dir 29592459) on
+`lmbdlc2_gpu-h200` with its time limit cut to 8 h so it fits the gap before the maintenance (scheduler estimate
+2026-09-14 09:43); `ftbanai` 29612349 (results dir 29602228) and `ftbanal` 29612351 (results dir 29609180) as
+4-GPU jobs on `lmbdlc2_gpu-l40s` (estimated starts 2026-09-12/13 night; ~3 epochs/h, so ~70 epochs per 23.5 h job),
+each with a continuation queued on `lmbdlc2_gpu-h200` that resumes the run there after the maintenance. Our fair-share term is ~200 against 10,000-130,000 for other
 users, which is why anything of ours on a contested node waits. Also learned: a
 partition *list* (`lmbdlc2,alldlc2`) makes Slurm compute the job priority from the lowest tier (1065 instead of
 ~61000), so never use one.
