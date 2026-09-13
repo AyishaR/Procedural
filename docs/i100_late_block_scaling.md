@@ -1368,6 +1368,9 @@ early writes AND early-block weights that Adam moves slowly. Readings: ~80 => sl
 irrelevant); ~78 (random level, like `ftbanau`) => anisotropy and slow steps are each worth ~1.5 and the effect
 needs both; ~76.6 => the two act only jointly.
 
+**`ftbanac` queued 2026-09-13 08:45** (one seed, `lmbdlc2_gpu-l40s`, 4 GPUs, three-segment chain like `ftbanai`/`ftbanal`):
+`ftbanap` + blocks 9-11 v/proj/fc2 amplified to write ratio ~1.4; the fully checkpoint-free early + late recipe.
+
 **`ftbanau` final (2026-09-13 07:15, job 29602226): 77.35** (train loss 2.204, test loss 1.238), 0.7 below random and
 0.7 above `ftbana`, on the random init's line from epoch 100 on and with the lowest training loss of the family
 (fits fastest). Channel anisotropy of the gain by itself is worth ~0.7 of the 4.1 between `ftbana` and `ftbanag`;
