@@ -327,6 +327,82 @@ construct but has not been shown to be necessary.
 Established as negative results, not missing: the distribution shape, the weights, the channel identities, the
 step sizes alone, the write budgets alone, the readout position as a cause, and the write profile by itself.
 
+## 6. The early lever after the analytic family (status 2026-09-13)
+
+The analytic family takes the early lever apart on a random init, one ingredient at a time. All arms act on
+blocks 0-8, one seed each, last-epoch top-1:
+
+| arm | what blocks 0-8 get | top-1 | train loss | test-loss residual |
+|---|---|---|---|---|
+| random init | nothing | 78.08 (3) | 2.225 | +0.01 |
+| `ftbana` | 18-number std profile in the weights; LN gains 1, biases 0 | 76.61 | 2.209 | +0.11 |
+| `ftbanaf` | `ftbana`, top blocks' MLP write flattened | 76.41 | 2.207 | +0.10 |
+| `ftbanab` | `ftbana` + proc's LN biases, permuted | 76.70 | 2.194 | +0.10 |
+| `ftbanau` | `ftbana` + gains ~ N(1, 0.25), weights unchanged | 77.35 | 2.204 | +0.05 |
+| `ftbanag` | same profile, but the 0.4 lives in proc's permuted gain vectors; q,k,v,fc1 2.5x larger | 80.70 | 2.384 | -0.08 |
+| `ftbanap` | as `ftbanag` with gains and biases sampled from proc's per-block mean and std | 80.24 | 2.364 | -0.08 |
+| `ftbanal` | `ftbanap` with isotropic gains and `ftbanap`'s relative Adam steps via lr scales | running | | |
+| `ftbanai` | `ftbanap` with q, k, fc1 at random effective scale (MLP write matched) | running | | |
+| `ftbanac` | `ftbanap` + blocks 9-11 amplified (checkpoint-free early + late) | running | | |
+
+**What this establishes.**
+
+1. *The early lever is a checkpoint-free recipe.* Eighteen scale numbers (block 0 plus a linear ramp over blocks
+   1-8 for q, k, v, proj, fc1, fc2) and thirty-six LayerNorm statistics (mean and std of the gain and bias per
+   block) reproduce the full effect: `ftbanap` 80.24 against the proc prefix 79.99 +/- 0.36, `ftbqmlnvo` 79.93
+   +/- 0.39 and the twins 79.6-80.4. Nothing is read from the checkpoint but those 54 numbers, and the 54 were
+   themselves smoothed by hand.
+2. *Where the factor 0.4 lives decides everything.* `ftbana` and `ftbanag` compute the same function at
+   initialisation to within a few percent in every block (identical effective scales, write ratios and attention
+   entropy) and end 4.1 points apart. The only difference is whether proc's average LayerNorm gain of 0.4 is
+   folded into the weight matrices or kept as a gain vector with the matrices 2.5 times larger. Any account of the
+   effect in terms of the forward pass at initialisation is therefore incomplete.
+3. *The gain vector contributes two things, and the pattern is the smaller one.* Its channel-to-channel spread
+   (`ftbanau`: anisotropy with the weights untouched) is worth 0.7 of the 4.1. Its biases are worth nothing
+   (`ftbanab`). What remains is the raw scale of the input-side matrices: under Adam the relative change of a
+   matrix per step is about lr / rms(W), so `ftbanag`'s and `ftbanap`'s q, k, v, fc1 move 2.5 times more slowly
+   relative to their size than `ftbana`'s. `ftbanal` isolates that ingredient and is on `ftbanap`'s curve at epoch
+   99 (75.5 against 74.0 for `ftbana`).
+4. *The losing and winning arms differ in the same training signature as the proc-based arms.* `ftbana`, `ftbanab`,
+   `ftbanau` show the mid-block transient at full strength (block-7 probe 42-43% at epoch 30), fit the training set
+   *better* than random (train loss 2.19-2.21) and overfit in loss by 0.15-0.17 in the last third. `ftbanag` and
+   `ftbanap` damp the transient to 25%, fit less (2.36-2.38) and their test loss does not rise. So the analytic
+   family reproduces, inside one construction, the two routes of Section 3.3.
+
+**The working hypothesis.** The early lever is the conjunction of a forward-pass profile (quiet writes in
+blocks 1-8 behind a loud block 0) and slowly moving input-side weights in those blocks. Either alone fails:
+proc's step sizes on a random forward pass do nothing (`ftblrm`, 77.7), the profile with fast steps is harmful
+(`ftbana`, 76.6). A mechanism consistent with everything measured: with quiet writes the early blocks contribute
+little to the output, but Adam normalises their gradients, so with small weights they still change as fast as in
+a random init and quickly build class-specific features that the rest of the network then fits to; with slow
+steps they stay close to their initialisation while the readout forms at the top, and the features that are
+learned in the early blocks are learned under a working readout. Proc's LayerNorm gain of 0.4 enforces both
+halves at once, which is why every proc-derived init has them together and why the coupling was only visible
+once the profile was written by hand. This is a hypothesis; `ftbanal` is its direct test.
+
+**What is still unclear.**
+
+- Whether slow input-side steps are *sufficient* given the profile (`ftbanal`, final 2026-09-14 early morning),
+  and whether the sharper logits and quiet fc1 are needed at all (`ftbanai`, same time).
+- Everything above is one seed per cell. The recipe (`ftbanap`) and whichever of `ftbanal`/`ftbanau` carries the
+  mechanism need three seeds before any of it is a claim; the twins' spread (79.2 to 80.4) shows how wide a single
+  seed can sit.
+- Whether the late lever is the same mechanism. Amplifying v, proj, fc2 of blocks 9-11 also makes those matrices
+  3 to 10 times larger, i.e. slows their relative Adam steps by the same factor. No arm has separated "louder top"
+  from "slower top". Two cheap arms would: the late lever with its learning rate raised by the amplification
+  factor on the amplified tensors (loud but not slow), and a random init with the learning rate of blocks 9-11's
+  write matrices lowered by that factor (slow but not loud). If the first loses the effect and the second gains it,
+  both levers are one mechanism, slow steps in the right place, and the depth profile is the visible side effect.
+- The step from "early blocks stay near their init" to "less overfitting in the last third" is still a story, not a
+  measurement. What would test it, on checkpoints we have: CKA between the early blocks of `ftbanap`, `ftbana`
+  and the random init at matched epochs (do the winners' early blocks compute something different, or the same
+  thing later), the effective rank of block outputs over training, and per-block attention locality.
+
+**Next runs, in order.** (i) Nothing until `ftbanal`, `ftbanai` and `ftbanac` land. (ii) Two more seeds of
+`ftbanap`, and of `ftbanal` if it holds, four runs. (iii) The two late-lever step-size arms above, one seed
+each. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
+After (ii) and (iii) the early- and late-block results are either one story or demonstrably two, at three seeds.
+
 ## Appendix: data status
 
 Dynamics (Section 3.2, T5) are in the wandb cache for every arm named in this note; for `ftb1i` only seed 0
