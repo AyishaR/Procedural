@@ -9,7 +9,7 @@
 # retried, up to MAX_RETRIES consecutive times.
 #
 # Run under nohup from the repo root:
-#   nohup env SEED=0 ROUTING_IMPL=buf OUT_ROOT=... bash routing/sbatch/chain.sh > chain.log 2>&1 &
+#   setsid nohup env SEED=0 ROUTING_IMPL=buf OUT_ROOT=... bash routing/sbatch/chain.sh > chain.log 2>&1 < /dev/null &
 SLURM_ID=${SLURM_ID:-0}
 SEED=${SEED:-0}
 ROUTING_IMPL=${ROUTING_IMPL:-buf}   # chosen by the gate: +22% vs loop +124%
@@ -17,6 +17,13 @@ OUT_ROOT=${OUT_ROOT:-/work/dlc2workfs3/schrodi-procedural/kempfe/routing}
 MAX_RETRIES=${MAX_RETRIES:-5}
 SCRIPT="$(dirname "$(readlink -f "$0")")/train_route.sh"
 umask 002
+# pidfile so liveness is checked by pid, not by grepping process lists (which matches the
+# grep itself). Launch with setsid so the driver is in its own session and survives the
+# death of whatever shell started it -- the first driver died with its parent at epoch ~116
+# and the preempted segment 2 was never resubmitted.
+PIDFILE="$OUT_ROOT/logs/chain_route_s${SEED}.pid"
+mkdir -p "$OUT_ROOT/logs"; echo $$ > "$PIDFILE"
+trap 'rm -f "$PIDFILE"' EXIT
 
 epochs_done() {   # lines in log.txt, 0 if it does not exist yet
     local log="$OUT_ROOT/runs/route_${SLURM_ID}/s$SEED/log.txt"
