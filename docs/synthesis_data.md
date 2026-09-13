@@ -115,12 +115,14 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftbcfg` | clean | 3 | 77.50 | 0.54 | -0.57 | 2.201 | 1.235 | init=none; slice_scale_qk=1.587; slice_scale_v=0.729; slice_scale_proj=2.395; custom_init_type=slice_scale |
 | `pattn2d` | old | 1 | 77.45 | nan | -0.63 | 2.274 | 1.217 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8,9; downscale_pr_match_attn_delta_norms; scaled blocks 10,11 |
 | `pattn6d` | old | 1 | 77.41 | nan | -0.66 | 2.217 | 1.218 | init=proc ckpt; random blocks 0,1,2,3,4,5; downscale_pr_match_attn_delta_norms; scaled blocks 6,7,8,9,10,11 |
+| `ftbanau` | clean | 1 | 77.35 | nan | -0.72 | 2.204 | 1.238 | init=none; analytic_profile; scaled blocks 0,1,2,3,4,5,6,7,8 |
 | `pattn5d` | old | 1 | 77.32 | nan | -0.75 | 2.283 | 1.211 | init=proc ckpt; random blocks 0,1,2,3,4,5,6; downscale_pr_match_attn_delta_norms; scaled blocks 7,8,9,10,11 |
 | `ftb4e` | old | 1 | 77.30 | nan | -0.78 | 2.282 | 1.220 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7; downscale_pr_match_delta_norms; scaled blocks 8,9,10,11 |
 | `ftb4o` | clean | 1 | 77.27 | nan | -0.80 | 2.228 | 1.227 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7 |
 | `pattn1d` | old | 1 | 77.07 | nan | -1.01 | 2.254 | 1.241 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8,9,10; downscale_pr_match_attn_delta_norms; scaled blocks 11 |
 | `ftb3es2` | clean | 1 | 77.02 | nan | -1.06 | 2.270 | 1.238 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8; downscale_pr_match_delta_norms; scaled blocks 9,10,11 |
 | `ftb2e` | old | 1 | 76.74 | nan | -1.34 | 2.265 | 1.262 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8,9; downscale_pr_match_delta_norms; scaled blocks 10,11 |
+| `ftbanab` | clean | 1 | 76.70 | nan | -1.38 | 2.194 | 1.275 | ftbana + proc LN biases (permuted) in blocks 0-8 |
 | `ftbana` | clean | 1 | 76.61 | nan | -1.47 | 2.209 | 1.292 | init=none; timm random; analytic profile: per-slice std multipliers, block 0 own + linear ramp blocks 1-8 (profile_ftbana.json), LN gains 1, biases 0 |
 | `ftb11s` | clean | 1 | 76.59 | nan | -1.49 | 2.263 | 1.257 | init=proc ckpt; random blocks 1,2,3,4,5,6,7,8,9,10,11; upscale_random_match_delta_norms; scaled blocks 0 |
 | `ftb0l` | contaminated | 1 | 76.49 | nan | -1.58 | 2.251 | 1.246 | init=proc ckpt; downscale_pr_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8,9,10,11; weight_shuffle=0;1;2;3;4;5;6;7;8;9;10;11 |
@@ -131,17 +133,17 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb4n` | clean | 1 | 75.67 | nan | -2.41 | 2.306 | 1.312 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7; init_method_copied_blocks=8;9;10;11 |
 | `ftbrhos` | clean | 1 | 75.07 | nan | -3.01 | 2.195 | 1.342 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8 |
 
-## T2. Fit vs generalisation over the 113 clean arms
+## T2. Fit vs generalisation over the 115 clean arms
 
-Pearson(acc, train loss) = +0.61, Spearman = +0.71; Pearson(test loss, train loss) = -0.80; test loss = -0.67 x train loss + 2.66, residual sd 0.060.
+Pearson(acc, train loss) = +0.62, Spearman = +0.72; Pearson(test loss, train loss) = -0.81; test loss = -0.68 x train loss + 2.68, residual sd 0.060.
 
 Arms more than 2 residual sd above the line (test loss worse than their fit predicts):
 
-- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.192)
-- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.170)
-- `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.147)
-- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.133)
-- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.133)
+- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.190)
+- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.168)
+- `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.145)
+- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.131)
+- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.131)
 
 ## T3. Trajectories of representative arms (test acc / train loss at epoch)
 
@@ -195,12 +197,12 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | `ftbana` train loss | | 5.960 | 4.374 | 3.850 | 3.284 | 2.990 | 2.675 | 2.349 | 2.209 |
 | `ftbanaf` acc | 1 | 21.56 | 59.00 | 66.81 | 74.05 | 75.69 | 76.09 | 76.06 | 76.41 |
 | `ftbanaf` train loss | | 5.955 | 4.375 | 3.871 | 3.288 | 2.991 | 2.674 | 2.349 | 2.207 |
-| `ftbanab` acc | 1 | 21.57 | 59.32 | 66.98 | 74.60 | 76.09 | 76.38 | 76.39 | - |
-| `ftbanab` train loss | | 5.948 | 4.339 | 3.840 | 3.270 | 2.975 | 2.661 | 2.340 | - |
+| `ftbanab` acc | 1 | 21.57 | 59.32 | 66.98 | 74.60 | 76.09 | 76.38 | 76.39 | 76.70 |
+| `ftbanab` train loss | | 5.948 | 4.339 | 3.840 | 3.270 | 2.975 | 2.661 | 2.340 | 2.194 |
 | `ftbanag` acc | 1 | 21.38 | 59.05 | 68.22 | 75.29 | 77.77 | 78.99 | 80.27 | 80.70 |
 | `ftbanag` train loss | | 5.988 | 4.461 | 3.908 | 3.374 | 3.086 | 2.803 | 2.513 | 2.384 |
-| `ftbanap` acc | 1 | 21.12 | 59.42 | 68.56 | 75.46 | 78.11 | - | - | - |
-| `ftbanap` train loss | | 5.991 | 4.445 | 3.887 | 3.335 | 3.057 | - | - | - |
+| `ftbanap` acc | 1 | 21.12 | 59.42 | 68.56 | 75.46 | 78.11 | 79.10 | - | - |
+| `ftbanap` train loss | | 5.991 | 4.445 | 3.887 | 3.335 | 3.057 | 2.780 | - | - |
 
 ## T4. Forward-pass write ratios at init (64 val images), per arm with a dump
 
@@ -395,3 +397,33 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | `rattn2` | 0,1,2,3,4,5,6,7,8,9 | 10,11 | 1 | 78.78 | nan | +0.70 | 2.217 |
 | `rattn1` | 0,1,2,3,4,5,6,7,8,9,10 | 11 | 1 | 78.86 | nan | +0.78 | 2.223 |
 
+
+## T7. Generalisation at matched fit over training (plots/verify/matched_fit.py)
+
+Left: test loss minus r's test loss at the same train loss (negative = better generalisation at matched fit). Right: train-loss deficit vs r at the same epoch.
+
+| arm | n | 29 | 49 | 99 | 149 | 199 | 249 | 299 | | 29 | 49 | 99 | 149 | 199 | 249 | 299 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `p` | 3 | -0.030 | +0.032 | +0.018 | -0.018 | -0.060 | -0.122 | -0.162 | | +0.998 | +0.596 | +0.316 | +0.246 | +0.237 | +0.247 | +0.243 |
+| `ftb3i` | 3 | +0.028 | +0.032 | +0.002 | -0.010 | -0.047 | -0.114 | -0.146 | | +0.790 | +0.625 | +0.478 | +0.387 | +0.379 | +0.395 | +0.400 |
+| `ftb1i` | 3 | +0.280 | +0.015 | +0.011 | -0.009 | -0.067 | -0.128 | -0.171 | | +1.588 | +0.742 | +0.440 | +0.345 | +0.330 | +0.339 | +0.337 |
+| `ftbcomp11` | 3 | +0.031 | +0.024 | -0.016 | -0.029 | -0.076 | -0.153 | -0.194 | | +1.011 | +0.719 | +0.488 | +0.364 | +0.345 | +0.358 | +0.358 |
+| `ftbqmlnvo` | 3 | -0.013 | +0.001 | -0.013 | -0.054 | -0.091 | -0.130 | -0.140 | | +0.304 | +0.172 | +0.102 | +0.082 | +0.088 | +0.100 | +0.103 |
+| `ftbqmlnvog` | 3 | -0.006 | -0.000 | -0.026 | -0.067 | -0.087 | -0.124 | -0.130 | | +0.304 | +0.167 | +0.095 | +0.082 | +0.098 | +0.096 | +0.096 |
+| `ftbqmlnvot` | 1 | -0.074 | -0.017 | -0.030 | -0.085 | -0.111 | -0.168 | -0.176 | | +0.317 | +0.207 | +0.119 | +0.104 | +0.095 | +0.113 | +0.130 |
+| `ftb4e3fix` | 3 | -0.011 | +0.007 | -0.002 | -0.040 | -0.078 | -0.106 | -0.114 | | +0.309 | +0.145 | +0.075 | +0.061 | +0.065 | +0.068 | +0.073 |
+| `ftbrho` | 3 | +0.029 | +0.011 | -0.067 | -0.074 | -0.100 | -0.122 | -0.122 | | +0.027 | +0.035 | +0.007 | +0.008 | +0.024 | +0.039 | +0.046 |
+| `ftb3b` | 3 | +0.032 | +0.009 | -0.011 | -0.077 | -0.110 | -0.133 | -0.139 | | +0.093 | +0.099 | +0.047 | +0.040 | +0.050 | +0.063 | +0.067 |
+| `ftb2b` | 3 | +0.029 | -0.007 | -0.045 | -0.070 | -0.110 | -0.124 | -0.118 | | +0.010 | +0.009 | -0.003 | +0.003 | +0.018 | +0.027 | +0.034 |
+| `ftb11h` | 1 | -0.003 | -0.013 | -0.020 | -0.051 | -0.075 | -0.124 | -0.142 | | +0.624 | +0.282 | +0.104 | +0.084 | +0.083 | +0.091 | +0.097 |
+| `ftb7h` | 1 | -0.031 | -0.028 | -0.005 | -0.050 | -0.046 | -0.090 | -0.099 | | +0.309 | +0.166 | +0.087 | +0.082 | +0.093 | +0.097 | +0.106 |
+| `ftb3h` | 1 | -0.019 | -0.006 | +0.015 | -0.008 | -0.013 | -0.045 | -0.054 | | +0.113 | +0.065 | +0.050 | +0.057 | +0.051 | +0.066 | +0.074 |
+| `ftbvd` | 3 | +0.002 | -0.020 | -0.022 | -0.010 | -0.022 | -0.040 | -0.052 | | +0.015 | +0.034 | +0.035 | +0.046 | +0.053 | +0.051 | +0.059 |
+| `ftbvu` | 3 | - | +0.018 | - | +0.001 | +0.029 | +0.037 | - | | - | -0.000 | - | -0.019 | -0.024 | -0.037 | -0.034 |
+| `ftbqmln` | 6 | +0.011 | +0.040 | +0.017 | -0.023 | -0.028 | -0.044 | -0.051 | | +0.321 | +0.171 | +0.066 | +0.048 | +0.043 | +0.039 | +0.038 |
+| `ftbrhos` | 1 | +0.056 | +0.056 | +0.085 | +0.112 | +0.178 | +0.147 | - | | +0.243 | +0.153 | +0.053 | +0.033 | -0.001 | -0.027 | -0.030 |
+| `ftblrm` | 1 | +0.002 | +0.044 | +0.039 | -0.009 | +0.014 | +0.007 | +0.010 | | +0.173 | +0.132 | +0.047 | +0.032 | +0.018 | +0.013 | +0.027 |
+| `ftbana` | 1 | +0.051 | +0.088 | +0.076 | +0.053 | +0.080 | +0.098 | - | | +0.242 | +0.137 | +0.058 | +0.029 | +0.003 | -0.017 | -0.016 |
+| `ftbanaf` | 1 | +0.049 | +0.075 | +0.089 | +0.072 | +0.085 | +0.098 | - | | +0.243 | +0.158 | +0.062 | +0.030 | +0.003 | -0.018 | -0.019 |
+| `ftbanab` | 1 | +0.072 | +0.092 | +0.066 | +0.057 | +0.071 | +0.074 | - | | +0.207 | +0.126 | +0.044 | +0.013 | -0.010 | -0.027 | -0.031 |
+| `ftbanag` | 1 | -0.037 | +0.004 | -0.008 | -0.036 | -0.089 | -0.147 | -0.166 | | +0.329 | +0.195 | +0.148 | +0.125 | +0.131 | +0.147 | +0.159 |

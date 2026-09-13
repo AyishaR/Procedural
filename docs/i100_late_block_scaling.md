@@ -1368,6 +1368,13 @@ early writes AND early-block weights that Adam moves slowly. Readings: ~80 => sl
 irrelevant); ~78 (random level, like `ftbanau`) => anisotropy and slow steps are each worth ~1.5 and the effect
 needs both; ~76.6 => the two act only jointly.
 
+**`ftbanau` final (2026-09-13 07:15, job 29602226): 77.35** (train loss 2.204, test loss 1.238), 0.7 below random and
+0.7 above `ftbana`, on the random init's line from epoch 100 on and with the lowest training loss of the family
+(fits fastest). Channel anisotropy of the gain by itself is worth ~0.7 of the 4.1 between `ftbana` and `ftbanag`;
+the rest must come from the 2.5x larger raw weights (slower relative Adam steps), which is what `ftbanal` tests.
+Running on L40S: `ftbanai` (input side removed, MLP write matched) at epoch 69 is 72.81 = the twins (72.6-72.8),
+`ftbana` 71.4; `ftbanal` at epoch 29 is 59.4 (uninformative yet).
+
 **`ftbanab` final (2026-09-12 11:23, job 29581214): 76.70** (train loss 2.194, test loss 1.275), 0.1 above `ftbana`:
 proc's LayerNorm biases add nothing; the gain vectors carry the whole difference to `ftbanag` (80.70).
 
