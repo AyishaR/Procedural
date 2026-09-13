@@ -1321,7 +1321,7 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
 
     `spec` is a dict {slice: {"b0": m0, "start": s, "end": e}} (or a path to such a JSON):
     block 0 (if listed) gets multiplier m0; the remaining listed blocks ramp linearly from `s`
-    (first) to `e` (last). An optional key "extra": {block: {slice: multiplier}} applies fixed
+    (first) to `e` (last). A slice may instead give {"per_block": {"0": m, "1": m, ...}}. An optional key "extra": {block: {slice: multiplier}} applies fixed
     multipliers to further blocks outside `blocks` (used by ftbanaf to flatten blocks 9-11).
     An optional key "ln": {"ckpt": path, "gain": bool, "bias": bool, "source": "permute"|"parametric"}
     copies the checkpoint's LayerNorm gains and/or biases of the listed blocks, each vector permuted
@@ -1375,7 +1375,9 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
             for s, p in spec.items():
                 if s in ("extra", "ln"):
                     continue
-                if b == 0:
+                if "per_block" in p:            # explicit per-block multipliers, e.g. a checkpoint's exact profile (ftbanak)
+                    m = float(p["per_block"][str(b)])
+                elif b == 0:
                     m = float(p["b0"])
                 else:
                     i = ramp.index(b)

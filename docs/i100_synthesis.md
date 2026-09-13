@@ -398,10 +398,29 @@ once the profile was written by hand. This is a hypothesis; `ftbanal` is its dir
   and the random init at matched epochs (do the winners' early blocks compute something different, or the same
   thing later), the effective rank of block outputs over training, and per-block attention locality.
 
+**Provisional reading (2026-09-13 evening, `ftbanal` at epoch 143, `ftbanai` at 172).** `ftbanal` is on
+`ftbanap`'s curve (77.4 at 139 against 76.9-77.1 for `ftbanap`/`ftbanag` at 129 and 76.1 for `ftbanau`), `ftbanai`
+has fallen to the random init's (77.0 at 169 against 78.2 for `ftbanap`, 77.3 for random) with a lower training
+loss than `ftbanap`. If both hold: (a) the carrier of the early lever is the relative Adam step size of the
+input-side matrices, with the gain's channel pattern worth the remaining 0.7 and its biases nothing, so proc's gain
+of 0.4 is a device that sets the effective scales *and* makes the matrices large enough to move slowly; (b) the
+input-side effective scales (attention logits 1.75x, fc1 at 0.36x) are part of the profile and not optional, since
+`ftbanai` removes only those, holding the MLP write and the raw matrix sizes fixed, and loses a point by
+mid-training (which of the two it is remains open); (c) the early lever is the conjunction of that profile and the
+slow input-side steps, each alone failing (`ftblrm`, `ftbana`).
+
 **Next runs, in order.** (i) Nothing until `ftbanal`, `ftbanai` and `ftbanac` land. (ii) Two more seeds of
 `ftbanap`, and of `ftbanal` if it holds, four runs. (iii) The two late-lever step-size arms above, one seed
 each. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
 After (ii) and (iii) the early- and late-block results are either one story or demonstrably two, at three seeds.
+(vi) Generality across checkpoints: the second procedural checkpoint (`pr_vitb_ksd`, whose prefix also carries the
+effect in a coworker's runs) has a *different* early profile -- loud MLPs in blocks 1-8 (fc1 0.7-2.2x, fc2 1.6-3.4x),
+quiet v only in blocks 3-8, loud attention writes, gains 0.25-0.5 -- and it is not smooth (blocks 1-2 are loud in
+v and sharp in q/k). Two candidate arms are prepared: the `ftbanap` form refitted to ksd (block 0 + linear ramp,
+sampled LN statistics; the ramp misfits v by up to 70% and the other slices by 25-40%) and the same principle with
+ksd's exact 54 per-block scales. Whichever is run logs to the "vit base kdyck shuffle" wandb project. If a
+statistics-only init from ksd reaches the ksd prefix's level, the recipe is general in principle even though its
+numbers are checkpoint-specific; the quiet middle MLP would then be a kdyck feature, not the mechanism.
 
 ## Appendix: data status
 
