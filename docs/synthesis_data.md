@@ -11,6 +11,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb1i` | clean | 3 | 80.37 | 0.12 | +2.29 | 2.563 | 0.943 | init=proc ckpt; random blocks 11 |
 | `ftbqmlnvot` | clean | 1 | 80.36 | nan | +2.28 | 2.356 | 0.983 | init=proc ckpt; quantile_match_target_blocks; scaled blocks 0,1,2,3,4,5,6,7,8; quantile_source=parametric; quantile_1d_mode=layernorm; quantile_qkv_mode=v_only |
 | `ftb2i` | clean | 1 | 80.24 | nan | +2.17 | 2.595 | 0.944 | init=proc ckpt; random blocks 10,11 |
+| `ftbanap` | clean | 1 | 80.24 | nan | +2.16 | 2.364 | 1.005 | ftbana + Gaussian-sampled LN gains and biases (proc per-block mean/std) in blocks 0-8 |
 | `pds12` | old | 1 | 80.21 | nan | +2.14 | 2.442 | 0.985 | init=proc ckpt; downscale_pr_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8,9,10,11 |
 | `ftb4e3` | contaminated | 3 | 80.16 | 0.10 | +2.08 | 2.583 | 0.952 | init=proc ckpt; random blocks 9,10,11; weight_shuffle=0[norm1.weight,norm1.bias,attn.qk.weight,attn.v.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias,norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc1.bias,mlp.fc2.weight,mlp.fc2.bias];1[norm1.weight,norm1.bias,attn.qk.weight,attn.v.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias,norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc1.bias,mlp.fc2.weight,mlp.fc2.bias];2[norm1.weight,norm1.bias,attn.qk.weight,attn.v.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias,norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc1.bias,mlp.fc2.weight,mlp.fc2.bias];3[norm1.weight,norm1.bias,attn.qk.weight,attn.v.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias,norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc1.bias,mlp.fc2.weight,mlp.fc2.bias];4[norm1.weight,norm1.bias,attn.qk.weight,attn.v.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias,norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc1.bias,mlp.fc2.weight,mlp.fc2.bias];5[norm1.weight,norm1.bias,attn.qk.weight,attn.v.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias,norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc1.bias,mlp.fc2.weight,mlp.fc2.bias];6[norm1.weight,norm1.bias,attn.qk.weight,attn.v.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias,norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc1.bias,mlp.fc2.weight,mlp.fc2.bias];7[norm1.weight,norm1.bias,attn.qk.weight,attn.v.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias,norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc1.bias,mlp.fc2.weight,mlp.fc2.bias];8[norm1.weight,norm1.bias,attn.qk.weight,attn.v.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias,norm2.weight,norm2.bias,mlp.fc1.weight,mlp.fc1.bias,mlp.fc2.weight,mlp.fc2.bias] |
 | `ftbcomp25` | clean | 3 | 80.16 | 0.12 | +2.08 | 2.491 | 0.968 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 9,10,11; init_method_copied_blocks=0;1;2;3; target_ratio_absolute=0.25 |
@@ -133,17 +134,17 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb4n` | clean | 1 | 75.67 | nan | -2.41 | 2.306 | 1.312 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7; init_method_copied_blocks=8;9;10;11 |
 | `ftbrhos` | clean | 1 | 75.07 | nan | -3.01 | 2.195 | 1.342 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8 |
 
-## T2. Fit vs generalisation over the 115 clean arms
+## T2. Fit vs generalisation over the 116 clean arms
 
-Pearson(acc, train loss) = +0.62, Spearman = +0.72; Pearson(test loss, train loss) = -0.81; test loss = -0.68 x train loss + 2.68, residual sd 0.060.
+Pearson(acc, train loss) = +0.62, Spearman = +0.72; Pearson(test loss, train loss) = -0.80; test loss = -0.68 x train loss + 2.69, residual sd 0.060.
 
 Arms more than 2 residual sd above the line (test loss worse than their fit predicts):
 
-- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.190)
-- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.168)
+- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.191)
+- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.169)
 - `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.145)
-- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.131)
-- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.131)
+- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.132)
+- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.132)
 
 ## T3. Trajectories of representative arms (test acc / train loss at epoch)
 
@@ -201,8 +202,8 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | `ftbanab` train loss | | 5.948 | 4.339 | 3.840 | 3.270 | 2.975 | 2.661 | 2.340 | 2.194 |
 | `ftbanag` acc | 1 | 21.38 | 59.05 | 68.22 | 75.29 | 77.77 | 78.99 | 80.27 | 80.70 |
 | `ftbanag` train loss | | 5.988 | 4.461 | 3.908 | 3.374 | 3.086 | 2.803 | 2.513 | 2.384 |
-| `ftbanap` acc | 1 | 21.12 | 59.42 | 68.56 | 75.46 | 78.11 | 79.10 | - | - |
-| `ftbanap` train loss | | 5.991 | 4.445 | 3.887 | 3.335 | 3.057 | 2.780 | - | - |
+| `ftbanap` acc | 1 | 21.12 | 59.42 | 68.56 | 75.46 | 78.11 | 79.10 | 80.03 | 80.24 |
+| `ftbanap` train loss | | 5.991 | 4.445 | 3.887 | 3.335 | 3.057 | 2.780 | 2.490 | 2.364 |
 
 ## T4. Forward-pass write ratios at init (64 val images), per arm with a dump
 

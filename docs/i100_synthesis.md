@@ -15,8 +15,9 @@ carries the two points and how that part acts during training. Three findings.
 
 1. The benefit can be obtained without proc's weights, from either end of the network. Random weights whose
    per-tensor scales in blocks 0-8 follow proc's, together with proc's LayerNorm gain vectors, reach 79.6-80.7
-   (the "early lever"); the best of them, `ftbanag`, uses 18 hand-written scale numbers and proc's permuted
-   gain vectors and nothing else from the checkpoint. Random weights whose blocks 9-11 are amplified so that they write 6-10 times more into the
+   (the "early lever"). The recipe needs no checkpoint at all: 18 hand-written scale numbers plus LayerNorm gains
+   and biases sampled from proc's per-block mean and std (36 numbers) give 80.2 (`ftbanap`), and proc's permuted
+   gain vectors instead of sampled ones 80.7 (`ftbanag`). Random weights whose blocks 9-11 are amplified so that they write 6-10 times more into the
    residual stream reach 79.7-80.1 (the "late lever"). Each lever alone is worth as much as proc's own prefix;
    combined they are sub-additive (best arm 80.6).
 2. What both levers change is the depth profile of how much each block writes into the residual stream: proc
@@ -119,10 +120,10 @@ All arms below act on blocks 0-8 and leave blocks 9-11 random (T1).
 | `ftbana` with the top blocks' MLP write flattened | `ftbanaf` | 76.41 (1) | -1.67 |
 | `ftbana` + proc's LN gains, permuted, effective scales unchanged | `ftbanag` | 80.70 (1) | +2.62 |
 | `ftbana` + proc's LN biases, permuted | `ftbanab` | 76.70 (1) | -1.38 |
-| `ftbana` + Gaussian-sampled LN gains and biases | `ftbanap` | epoch 170: 78.23, on the twins' curve | |
+| `ftbana` + Gaussian-sampled LN gains and biases | `ftbanap` | 80.24 (1) | +2.16 |
 | `ftbanap` with gains ~ N(1, 0.25) and weights left as `ftbana`'s (anisotropy only) | `ftbanau` | 77.35 (1) | -0.73 |
-| `ftbanap` with q, k, fc1 at random effective scale, MLP write matched | `ftbanai` | epoch 69: 72.8, on the twins' curve | |
-| `ftbanap` with isotropic gains and `ftbanap`'s relative Adam steps (slow steps only) | `ftbanal` | epoch 29, running | |
+| `ftbanap` with q, k, fc1 at random effective scale, MLP write matched | `ftbanai` | epoch 124: 76.1 (`ftbanag` 76.3, `ftbana` 74.9) | |
+| `ftbanap` with isotropic gains and `ftbanap`'s relative Adam steps (slow steps only) | `ftbanal` | epoch 99: 75.5 (= `ftbanap`, `ftbana` 74.0) | |
 | `ftbanap` + blocks 9-11 amplified to write ratio 1.4 | `ftbanac` | prepared, waits for `ftbanap` | |
 
 In decreasing order of confidence:
@@ -148,9 +149,9 @@ In decreasing order of confidence:
 5. **Two things that are individually inert.** Proc's residual-write budgets imposed on random q, k, fc1
    (`ftbrhos`, -3.0) and proc's relative Adam step sizes with an unchanged forward pass (`ftblrm`, -0.35).
 
-Not established: whether the input-side scales (q, k, fc1) are necessary, since the only evidence (`ftbrhos`) is
-confounded with the gain point; and whether the gain vectors can be sampled rather than copied (`ftbanap`, on
-the twins' curve at epoch 160, final expected 2026-09-12 evening).
+Established by `ftbanap` (80.24): the LayerNorm vectors can be sampled from two numbers per vector; the early
+lever is checkpoint-free. Not yet established: whether the input-side scales (q, k, fc1) are necessary (`ftbanai`,
+running) and whether the slow input-side steps alone suffice (`ftbanal`, running, on `ftbanap`'s curve at epoch 99).
 
 ### 2.4 Combining the levers
 
@@ -223,7 +224,7 @@ The residual from that line separates the winners into two groups (T1):
 | group | arms | final train loss | test-loss residual | reading |
 |---|---|---|---|---|
 | proc weights in the prefix | `p`, `ftb3i`, `ftb1i`, `ftb7i`, `ftbcomp11`, `ftb4jd` | 2.47-2.64 | -0.03 to +0.04 | on the line: the whole gain comes from fitting less |
-| scale levers on random weights | `ftbrho`, `ftb3b`, `ftb2b`, `ftb5b`, `ftbqmlnvo`, twins, `ftbanag`, `ftb4e3fix`, `rattn3` | 2.23-2.38 | -0.07 to -0.10 | below the line: better test loss at the same fit |
+| scale levers on random weights | `ftbrho`, `ftb3b`, `ftb2b`, `ftb5b`, `ftbqmlnvo`, twins, `ftbanag`, `ftbanap`, `ftb4e3fix`, `rattn3` | 2.23-2.38 | -0.07 to -0.10 | below the line: better test loss at the same fit |
 | proc weights elsewhere or rescaled | `ftb11h`, `ftb4l`, `ftb4m`, `ftbcomp1`, `pds12`, `ftb9e` | 2.32-2.49 | -0.04 to -0.08 | between the two |
 | damaged | `ftbrhos`, `ftbana`, `ftbanaf`, `ftbanab`, `ftbanau`, `ftb1e`, `ftb2e`, `ftb11isfix` | 2.20-2.29 | +0.10 to +0.15 | above the line |
 | inert | `ftblrm`, `ftbqu`, `ftbqmln`, `ftbnorm`, `ftbvd`, clipped-random controls | 2.19-2.28 | -0.01 to +0.04 | on the line, next to random |
@@ -267,6 +268,7 @@ loss-overfitting they undergo:
 | `ftbrho` / `ftb3b` (late lever) | 0.987 / 0.991 | 1.059 / 1.037 | +0.07 / +0.05 | 78.4 → 79.7 / 78.2 → 80.0 |
 | `ftbqmlnvo` / Gaussian / Student-t twin (early lever) | 1.016 / 1.003 / 0.984 | 1.033 / 1.044 / 0.983 | +0.02 / +0.04 / 0.00 | 77.8 → 79.9 / 77.7 → 79.6 / 77.9 → 80.4 |
 | `ftbanag` (analytic scales + proc gain vectors) | 1.032 | 0.988 | -0.04 | 77.8 → 80.7 |
+| `ftbanap` (analytic scales + sampled LN statistics) | 0.997 | 1.005 | +0.01 | 78.1 → 80.2 |
 | `ftb3i` / `p` / `ftbcomp11` (proc weights) | 1.136 / 1.085 / 1.106 | 0.951 / 0.979 / 0.913 | -0.19 / -0.11 / -0.19 | 74.8 → 80.0 / 76.1 → 80.1 / 75.5 → 80.6 |
 | `ftbana` / `ftbrhos` (damaged) | 1.120 / 1.180 | 1.292 / 1.342 | +0.17 / +0.16 | 76.1 → 76.6 / 74.9 → 75.1 |
 
@@ -297,9 +299,9 @@ construct but has not been shown to be necessary.
    reproduce `ftbanap`'s relative steps, verified to match its weight dynamics to 0.5% over four steps) is running
    on L40S; if it reaches ~80 the early lever is profile + slow input-side steps, if it lands near 78 both halves
    are needed.
-2. **Whether the gain vectors can be sampled** (`ftbanap`, on the twins' curve at epoch 160, final expected
-   2026-09-12 evening). If yes, the checkpoint-free recipe is 18 scale numbers plus 36 LayerNorm statistics; if
-   not, it needs the 18 vectors.
+2. **Whether the gain vectors can be sampled: yes.** `ftbanap` ends at 80.24 with LayerNorm gains and biases drawn
+   from proc's per-block mean and std. The checkpoint-free recipe is 18 scale numbers plus 36 LayerNorm statistics.
+   One seed; two more are the next runs.
 3. **The input-side scales (q, k, fc1).** Untested except through the confounded `ftbrhos`. `ftbanai`, launched
    2026-09-12: q, k, fc1 at random effective scale with fc2 re-tuned so the MLP write budget stays that of
    `ftbanap` (without that correction, removing the quiet fc1 alone raises the blocks-1-8 MLP write from 0.04 to
@@ -330,7 +332,6 @@ step sizes alone, the write budgets alone, the readout position as a cause, and 
 Dynamics (Section 3.2, T5) are in the wandb cache for every arm named in this note; for `ftb1i` only seed 0
 has per-block curves in wandb (the resumed seeds 1 and 2 logged none), so its dynamics row is a single seed.
 `ftbanag` finished 2026-09-12 07:33 (80.70) and its per-block curves are complete. `ftbanab` finished 2026-09-12 11:23 (76.70). `ftbanap` (epoch 219, 79.59) was preempted on the shared partition
-and is queued to resume, `ftbanau` finished 2026-09-13 07:15 (77.35); `ftbanai` and `ftbanal` run on 4x L40S since 2026-09-12 22:37
-(~7 and ~5 epochs/h) with continuations queued for the H200 nodes after the 2026-09-15 maintenance; `ftbanac` is
-prepared; rows of running arms are read from their partial logs at the epoch
+and is queued to resume, `ftbanau` finished 2026-09-13 07:15 (77.35), `ftbanap` 2026-09-13 14:39 (80.24); `ftbanai` (epoch 128) and
+`ftbanal` (epoch 101) run on the shared H200 partition, `ftbanac` (epoch 29) on 4x L40S; rows of running arms are read from their partial logs at the epoch
 stated. Every other number is final.

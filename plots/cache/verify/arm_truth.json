@@ -26749,10 +26749,14 @@
    "ftbanap"
   ],
   "jobids": [
-   "29592459"
+   "29592459",
+   "29611827",
+   "29611828"
   ],
   "starts": [
-   "2026-09-12 06:41:22"
+   "2026-09-12 06:41:22",
+   "2026-09-13 08:44:18",
+   "2026-09-13 14:39:19"
   ],
   "sig": {
    "initialize": "",
@@ -26864,10 +26868,16 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 219,
-  "acc_last": 79.59400264648437,
-  "acc_at": {},
-  "train_loss_last": 2.6638493998191106,
+  "max_epoch": 299,
+  "acc_last": 80.24200247070313,
+  "acc_at": {
+   "249": 80.02800268554688,
+   "274": 80.27800227539062,
+   "284": 80.18600247070313,
+   "289": 80.21600228515625,
+   "299": 80.24200247070313
+  },
+  "train_loss_last": 2.3638581736610296,
   "pre_fix": false
  },
  {
@@ -27012,11 +27022,13 @@
   ],
   "jobids": [
    "29602228",
-   "29612349"
+   "29612349",
+   "29621087"
   ],
   "starts": [
    "2026-09-12 11:11:00",
-   "2026-09-12 22:36:42"
+   "2026-09-12 22:36:42",
+   "2026-09-13 13:50:20"
   ],
   "sig": {
    "initialize": "",
@@ -27128,10 +27140,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 69,
-  "acc_last": 72.80600233886719,
+  "max_epoch": 127,
+  "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.5282720397704113,
+  "train_loss_last": 3.1444696531726573,
   "pre_fix": false
  },
  {
@@ -27141,10 +27153,12 @@
    "ftbanal"
   ],
   "jobids": [
-   "29612351"
+   "29612351",
+   "29621089"
   ],
   "starts": [
-   "2026-09-12 22:37:12"
+   "2026-09-12 22:37:12",
+   "2026-09-13 13:50:24"
   ],
   "sig": {
    "initialize": "",
@@ -27256,10 +27270,138 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 46,
+  "max_epoch": 100,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.9522978771143618,
+  "train_loss_last": 3.3148536862304003,
+  "pre_fix": false
+ },
+ {
+  "slurm_id": "29620684",
+  "seed": 0,
+  "jobnames": [
+   "ftbanac"
+  ],
+  "jobids": [
+   "29620684"
+  ],
+  "starts": [
+   "2026-09-13 09:10:31"
+  ],
+  "sig": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ftbanap plus blocks 9-11 v/proj/fc2 amplified to a write ratio of 1.4 (checkpoint-free early + late lever): timm random, per-slice rms multipliers (block 0 + linear ramp 1-8) from vitbase_runs/profile_ftbanac.json, LN=1, biases 0, no checkpoint",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "output_dir": "results/imnet_base/results_IMNET_BASE_29620684/s0",
+  "first_start": "2026-09-13 09:10:31",
+  "sig_first": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ftbanap plus blocks 9-11 v/proj/fc2 amplified to a write ratio of 1.4 (checkpoint-free early + late lever): timm random, per-slice rms multipliers (block 0 + linear ramp 1-8) from vitbase_runs/profile_ftbanac.json, LN=1, biases 0, no checkpoint",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "max_epoch": 28,
+  "acc_last": null,
+  "acc_at": {},
+  "train_loss_last": 4.516103630837722,
   "pre_fix": false
  }
 ]
