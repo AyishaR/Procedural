@@ -163,7 +163,25 @@ DataLoader worker on rank 1 -- the traceback never leaves torch's collate path, 
 issue, not the model. The chain driver now retries a segment that made progress and stops only
 when a segment logs no new epochs at all.
 
-Results: *pending.*
+**Interim, epoch 202 of 300 (2026-09-13).** The routed arm tracked the baseline to within
+noise through epoch ~110 (mean delta over the first 20 eval points: -0.007), then fell behind
+systematically. Every eval point since epoch 114 is negative, and the gap widens:
+
+| epoch | routed acc1 | base acc1 | delta |
+|---|---|---|---|
+| 99 | 75.04 | 75.14 | -0.10 |
+| 149 | | | -1.05 |
+| 169 | | | -1.96 |
+| 199 | 75.18 | 77.26 | **-2.08** |
+
+That is 5-6x the base arm's 3-seed spread (0.37), so it is not noise. The signature is
+**overfitting, not instability**: routed *training* loss is lower than base (2.575 vs 2.723 at
+epoch 202) while test accuracy is lower, `amp_scale` never once backed off in 202 epochs, and
+every gradient norm matched base's. The router used its freedom heavily -- `routing/max` 6.62,
+`routing/min` 0.003, embedding column mean 0.29, readout row mean 0.64 -- and the accuracy gap
+grew as the coefficients moved away from 1.
+
+Final epoch-299 numbers and heatmaps: *pending* (segment 3 running).
 
 ## Risks being watched
 
