@@ -1,0 +1,8 @@
+{
+ "blocks.9.attn.proj.weight": 0.11038,
+ "blocks.10.attn.proj.weight": 0.04726,
+ "blocks.11.attn.proj.weight": 0.01727,
+ "blocks.9.mlp.fc2.weight": 0.10616,
+ "blocks.10.mlp.fc2.weight": 0.0364,
+ "blocks.11.mlp.fc2.weight": 0.01224
+}

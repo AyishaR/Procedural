@@ -1413,6 +1413,51 @@ Verified on the dump through `main.py` (`plots/verify/verify_anap.py` PASS): onl
 copied); at `ftbanag`'s level but below the twins => the exact gain multiset matters; at `ftbana`'s level while
 `ftbanag` recovers => sampling loses what permuting keeps. The earlier parametric-1-D test (`ftbqm1dpar`, 78.35 vs
 `ftbqm1d` 78.50) was in the loud-v regime and does not bear on this.
+
+**Generality test on the second procedural checkpoint and the late-lever step-size trio (2026-09-13 night).**
+*Reference.* `pksd3i_s0` = `pr_vitb_ksd/pr_6463456_final.pth` in blocks 0-8, timm random elsewhere (the ksd analogue
+of `ftb3i`; ImageNet patch embedding is random in every case). Its write-ratio profile is the early-lever pattern
+with different numbers: block 0 attn 3.2 / MLP 18 (kdyck `ftb3i`: 3.9 / 29), blocks 1-8 attn 0.27 0.57 0.12 0.10 0.13
+0.10 0.09 0.14 and MLP 0.12 0.29 0.11 0.09 0.10 0.13 0.12 0.14 (kdyck: 0.06-0.09 / 0.01-0.03), attention entropy
+0.2-3.0 nats (sharp; kdyck's is also sharp). Absolute writes: block 0 MLP 775 on a stream of 17, blocks 1-8 ~100 per
+sublayer on a stream of 800-1000 -- the quiet middle is largely block 0's doing, as in kdyck (1457 on 17).
+*The second-moment recipe does not transfer as a profile.* `ftbanak` = the `ftbanap` procedure applied to ksd: per-slice
+effective scales (gamma folded in) fitted as block 0 + linear ramp over blocks 1-8 (q 1.02/2.04->1.05, k 0.94/2.04->1.11,
+v 0.87/1.47->0.47, proj 3.28/3.13->2.64, fc1 1.38/0.93->2.30, fc2 2.82/2.23->3.75; the ramp misfits v by up to 70%, the
+rest by 25-40%, `ftbanakx` holds the exact 54 per-block numbers) plus LN gains and biases sampled from ksd's per-block
+mean/std (gains 0.24-0.32, std 0.08-0.12; verified on the dump: means/stds match ksd to 0.01, blocks 9-11 and the
+embeddings bit-identical to `r_s0`). Its forward profile is *not* quiet: block 0 attn 0.9 / MLP 2.2, blocks 1-8 attn
+0.60 -> 0.06 and MLP 0.40 -> 0.60, i.e. louder than random init (0.23 -> 0.16 / 0.50 -> 0.28) in the middle. Random
+matrices with ksd's per-tensor scales write 5-25x less than ksd's coherent matrices in block 0 (43 vs 775) and the
+middle MLPs, with their large fc1/fc2, then dominate a small stream. For kdyck the same recipe (`ftbqmlnvo`, `ftbana`)
+happened to reproduce the quiet shape (block 0 loud 1.4/2.7, middle 0.08-0.18 / 0.03-0.05) although it, too, writes
+10-20x less than `ftb3i` in absolute terms. So "the same recipe" is ambiguous for ksd: same per-tensor scales, or same
+write profile. Both are run, one seed each, on `alldlc2_gpu-h200`, wandb project "vit base kdyck shuffle":
+- `ftbanak` (job 29626632, continuation 29626633): same procedure as `ftbanap` (scales + LN statistics of ksd), the
+  literal generality test; tests whether the input-side raw scales and gain statistics carry the effect on their own,
+  independent of the resulting write profile.
+- `ftbanakw` (`profile_ftbanakw.json`): `ftbanak` with only the writing-side multipliers proj and fc2 refitted (block
+  0 + ramp, six numbers: proj 16.3/22.0->25.5, fc2 68.8/10.8->5.3) so that the write-ratio profile matches `pksd3i`:
+  dump gives block 0 attn 4.5 / MLP 19.6 (target 3.2 / 18.0), blocks 1-8 attn 0.24 0.21 0.19 0.18 0.15 0.13 0.10 0.08
+  and MLP 0.10-0.13 (targets above; block 2's spike is unreachable by a ramp). Input side (q, k, v, fc1, LN statistics)
+  identical to `ftbanak`. Fitted with a linear write model calibrated on the `ftbanak` dump (writes are stream-norm
+  independent through LayerNorm; the stream recursion is Pythagorean, checked to 2% on the dumps).
+  Readings: `ftbanak` ~80 => the recipe generalises and the profile is a by-product; `ftbanak` ~78 and `ftbanakw` ~80
+  => the write profile is what generalises and the numbers are checkpoint-specific; both ~78 => the kdyck recipe is
+  not general in either reading.
+*Late-lever step-size trio* (kdyck project, blocks 9-11 only, timm random elsewhere). `ftbrho` (79.69, n=3) scales v,
+proj and fc2; v sits inside the fused qkv tensor, so its Adam step cannot be rescaled without touching q and k. The
+trio therefore uses a proj/fc2-only base: `ftbrhop` (`profile_ftbrhop.json`, `"extra"` multipliers proj 9.06/21.16/
+57.91 and fc2 9.42/27.47/81.71 = `ftbrho`'s v*proj and fc2 products, read off `ftbrho_s0`; dump: attn 1.38/1.39/1.40,
+MLP 1.43/1.42/1.42 vs `ftbrho` 1.38/1.40/1.40 and 1.44/1.41/1.42; a first uniform guess 9.0/5.7 gave 1.37/0.79/0.58).
+`ftbrhopl` = `ftbrhop` + `lrscale_ftbrhopl.json` (lr x multiplier, wd / multiplier on the six scaled tensors: loud writes
+with random-init relative steps). `ftbrhosl` = timm random + `lrscale_ftbrhosl.json` (lr / multiplier: random writes
+with `ftbrhop`'s slow relative steps). Smoke test (1 epoch, small stand-in, `results/init_dumps/dump_ksd4.sbatch`):
+6 tensors scaled, 8 param groups, loss falls normally; the end-of-run analysis then fails on the absent
+checkpoint-0 (save_ckpt false), which is the known harmless artefact. Readings: `ftbrhopl` ~79.7 => the late lever is
+the loud write; `ftbrhosl` ~79.7 => it is the slow step; both random-level while `ftbrhop` reaches 79.7 => the conjunction.
+Jobs (all `alldlc2_gpu-h200`, 4 GPUs, one continuation each): `ftbanak` 29626632, `ftbrhop` 29626634, `ftbrhopl` 29626864, `ftbrhosl` 29626866, `ftbanakw` 29626868; all five running by 2026-09-13 23:40 (dlc2gpu19-22). Late-lever arms log to "vit base kdyck", ksd arms to "vit base kdyck shuffle".
+
 ## 0b. Can a short run act as a proxy? Yes -- but NOT the obvious one (2026-08-31)
 
 > **THE FIT BELOW HAS FAILED TWICE — 2.4 sigma and 4.2 sigma, in OPPOSITE directions. Do not use

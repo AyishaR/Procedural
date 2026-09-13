@@ -1,0 +1,38 @@
+{
+  "q": {
+    "b0": 1.02,
+    "start": 2.037,
+    "end": 1.052
+  },
+  "k": {
+    "b0": 0.943,
+    "start": 2.035,
+    "end": 1.11
+  },
+  "v": {
+    "b0": 0.874,
+    "start": 1.466,
+    "end": 0.47
+  },
+  "proj": {
+    "b0": 16.259,
+    "start": 21.976,
+    "end": 25.503
+  },
+  "fc1": {
+    "b0": 1.379,
+    "start": 0.928,
+    "end": 2.3
+  },
+  "fc2": {
+    "b0": 68.822,
+    "start": 10.829,
+    "end": 5.309
+  },
+  "ln": {
+    "ckpt": "results/pr_vitb_ksd/pr_6463456_final.pth",
+    "gain": true,
+    "bias": true,
+    "source": "parametric"
+  }
+}

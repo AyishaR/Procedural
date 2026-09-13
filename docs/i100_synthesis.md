@@ -410,17 +410,20 @@ mid-training (which of the two it is remains open); (c) the early lever is the c
 slow input-side steps, each alone failing (`ftblrm`, `ftbana`).
 
 **Next runs, in order.** (i) Nothing until `ftbanal`, `ftbanai` and `ftbanac` land. (ii) Two more seeds of
-`ftbanap`, and of `ftbanal` if it holds, four runs. (iii) The two late-lever step-size arms above, one seed
-each. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
+`ftbanap`, and of `ftbanal` if it holds, four runs. (iii) The late-lever step-size trio, launched 2026-09-13 on `alldlc2_gpu-h200`: `ftbrhop` (proj/fc2-only base with `ftbrho`'s
+write ratio 1.4; multipliers proj 9.1/21.2/57.9, fc2 9.4/27.5/81.7), `ftbrhopl` (same weights, lr x multiplier: loud not slow),
+`ftbrhosl` (random weights, lr / multiplier: slow not loud), one seed each. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
 After (ii) and (iii) the early- and late-block results are either one story or demonstrably two, at three seeds.
-(vi) Generality across checkpoints: the second procedural checkpoint (`pr_vitb_ksd`, whose prefix also carries the
-effect in a coworker's runs) has a *different* early profile -- loud MLPs in blocks 1-8 (fc1 0.7-2.2x, fc2 1.6-3.4x),
-quiet v only in blocks 3-8, loud attention writes, gains 0.25-0.5 -- and it is not smooth (blocks 1-2 are loud in
-v and sharp in q/k). Two candidate arms are prepared: the `ftbanap` form refitted to ksd (block 0 + linear ramp,
-sampled LN statistics; the ramp misfits v by up to 70% and the other slices by 25-40%) and the same principle with
-ksd's exact 54 per-block scales. Whichever is run logs to the "vit base kdyck shuffle" wandb project. If a
-statistics-only init from ksd reaches the ksd prefix's level, the recipe is general in principle even though its
-numbers are checkpoint-specific; the quiet middle MLP would then be a kdyck feature, not the mechanism.
+(vi) Generality across checkpoints, launched 2026-09-13 on `alldlc2_gpu-h200`, wandb project "vit base kdyck shuffle"
+(docs/i100_late_block_scaling.md 0d.11, "Generality test"). The second procedural checkpoint (`pr_vitb_ksd`) has the
+early-lever *write profile* (block 0 attn 3.2 / MLP 18, blocks 1-8 ~0.1-0.3) but different per-tensor scales (loud
+fc1/fc2 in blocks 1-8, gains 0.25-0.3), and for it the two readings of "the same recipe" come apart: random matrices
+with ksd's per-tensor scales do not reproduce its quiet middle (blocks 1-8 come out louder than random init), whereas
+for kdyck they did. Two arms, one seed each: `ftbanak` = the `ftbanap` procedure applied verbatim (ksd's 18 ramp
+numbers and 36 LN statistics), `ftbanakw` = the same input side with proj/fc2 refitted so the write profile matches
+ksd's (block 0 4.5 / 19.6, blocks 1-8 0.08-0.24 / 0.10-0.13). `ftbanak` at ~80 says the scale-and-statistics recipe is
+general and the profile a by-product; `ftbanak` at ~78 with `ftbanakw` at ~80 says the write profile is what
+generalises; both at ~78 says the recipe is kdyck-specific.
 
 ## Appendix: data status
 
