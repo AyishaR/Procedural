@@ -114,7 +114,7 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
             samples, targets = mixup_fn(samples, targets)
 
         if use_amp:
-            with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast(dtype=utils.AMP_DTYPE):
                 output = model(samples)
                 loss = criterion(output, targets)
         else: # full precision
@@ -317,7 +317,7 @@ def evaluate(data_loader, model, device, use_amp=False):
 
         # compute output
         if use_amp:
-            with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast(dtype=utils.AMP_DTYPE):
                 output = model(images)
                 loss = criterion(output, target)
         else:
@@ -423,7 +423,7 @@ def model_analyse(
         target = target.to(device, non_blocking=True)
 
         if args.use_amp:
-            with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast(dtype=utils.AMP_DTYPE):
                 with utils.HookCollector(model) as acts:
                     with torch.no_grad():
                         output = model(images)
@@ -827,7 +827,7 @@ def calculate_rank_final(dataset_train, device, args, model=None):
         images = batch[0].to(device, non_blocking=True)
 
         if args.use_amp:
-            with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast(dtype=utils.AMP_DTYPE):
                 with utils.HookCollector(model) as acts:
                     model(images)
         else:
@@ -954,7 +954,7 @@ def calculate_cka_final(dataset_train, device, args, model=None):
         images = batch[0].to(device, non_blocking=True)
 
         if args.use_amp:
-            with torch.cuda.amp.autocast():
+            with torch.cuda.amp.autocast(dtype=utils.AMP_DTYPE):
                 with utils.HookCollector(model) as acts:
                     model(images)
         else:
@@ -1217,7 +1217,7 @@ def cka_calculate_self(model_A, data_loader, device, args, mask_function=None):
         target = target.to(device, non_blocking=True)
 
         if args.use_amp:
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda', dtype=utils.AMP_DTYPE):
                 with utils.HookCollector(model_A) as acts_A:
                     with torch.no_grad():
                         output = model_A(images)
@@ -1300,7 +1300,7 @@ def cka_calculate(model_A, model_B, data_loader, device, args, procedural_data_l
                             cka_feats_pr[str(i-0.5)].append(acts_pr[int(i)]['attn'])
 
         if args.use_amp:
-            with torch.amp.autocast('cuda'):
+            with torch.amp.autocast('cuda', dtype=utils.AMP_DTYPE):
                 with utils.HookCollector(model_A) as acts_A:
                     with torch.no_grad():
                         output = model_A(images)

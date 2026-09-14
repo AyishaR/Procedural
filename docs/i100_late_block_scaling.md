@@ -1414,6 +1414,14 @@ copied); at `ftbanag`'s level but below the twins => the exact gain multiset mat
 `ftbanag` recovers => sampling loses what permuting keeps. The earlier parametric-1-D test (`ftbqm1dpar`, 78.35 vs
 `ftbqm1d` 78.50) was in the loud-v regime and does not bear on this.
 
+**`ftbanal` FINAL 79.78, `ftbanai` FINAL 78.11 (2026-09-14, one seed each, group H200).** `ftbanal` (gains 1,
+`ftbanap`'s relative Adam steps via `lrscale_ftbanal.json`): train loss 2.364 = `ftbanap`'s, test loss 1.028 (1.005),
+0.46 below `ftbanap`, 1.7 above random -- the slow input-side steps are the main carrier, anisotropy at most ~0.5.
+`ftbanai` (input-side effective scales reset to timm's, MLP write and raw sizes kept): 78.11 = random (78.08), train loss
+2.314 < `ftbanap`'s -- removing the effective-scale profile removes the whole effect even though the slow steps stay.
+With `ftbana` (76.61) and `ftblrm` (77.73) the 2x2 is complete: profile alone harmful, slow steps alone harmful, both
++1.7 to +2.2. Synthesis §6 carries the reading. The `ftbanal` continuation (29624095) was a no-op and was cancelled.
+
 **Generality test on the second procedural checkpoint and the late-lever step-size trio (2026-09-13 night).**
 *Reference.* `pksd3i_s0` = `pr_vitb_ksd/pr_6463456_final.pth` in blocks 0-8, timm random elsewhere (the ksd analogue
 of `ftb3i`; ImageNet patch embedding is random in every case). Its write-ratio profile is the early-lever pattern
@@ -1456,7 +1464,16 @@ with `ftbrhop`'s slow relative steps). Smoke test (1 epoch, small stand-in, `res
 6 tensors scaled, 8 param groups, loss falls normally; the end-of-run analysis then fails on the absent
 checkpoint-0 (save_ckpt false), which is the known harmless artefact. Readings: `ftbrhopl` ~79.7 => the late lever is
 the loud write; `ftbrhosl` ~79.7 => it is the slow step; both random-level while `ftbrhop` reaches 79.7 => the conjunction.
-Jobs (all `alldlc2_gpu-h200`, 4 GPUs, one continuation each): `ftbanak` 29626632, `ftbrhop` 29626634, `ftbrhopl` 29626864, `ftbrhosl` 29626866, `ftbanakw` 29626868; all five running by 2026-09-13 23:40 (dlc2gpu19-22). Late-lever arms log to "vit base kdyck", ksd arms to "vit base kdyck shuffle".
+*`ftbrhopl` overflows fp16 (2026-09-14).* The fp16 run trained normally to epoch 43 (preempted once and resumed), then
+every retry from checkpoint-43 hit `grad_norm: nan` from iteration ~1000 of epoch 44 (lr 0.146 on the x81.7 fc2 of block
+11, six attempts, exit 1). Checkpoint-43 in fp32 on 8 val images: the scaled matrices have grown 3-4x as random-init
+matrices do under the same relative step (block 11 proj rms 4.8, fc2 rms 5.8), and the block-11 fc2 output and residual
+stream reach 3.5e4, at fp16's 65504 ceiling; under augmentation they cross it. Not a bug of the arm's logic but of its
+range: loud writes with random-init step sizes are 4x louder than `ftbrhop` by mid-warmup. Fix: `--amp_dtype bfloat16`
+(new flag; autocast dtype set through `utils.AMP_DTYPE`, the GradScaler disabled for bf16, default float16 unchanged
+for every other run). Relaunched as job 29632673 (bf16 smoke test 29632672). Caveat for the comparison: `ftbrhopl` runs
+in bf16 (8-bit mantissa) while `ftbrhop`/`ftbrhosl` run in fp16; if it matters it would show as a small uniform offset.
+Jobs (all `alldlc2_gpu-h200`, 4 GPUs, one continuation each): `ftbanak` 29626632, `ftbrhop` 29626634, `ftbrhopl` 29626864 (fp16, failed; bf16 relaunch 29632673 with a 21 h limit to fit before the maintenance window, continuation 29632674), `ftbrhosl` 29626866, `ftbanakw` 29626868 (preempted once on dlc2gpu22, requeued on dlc2gpu24 at 04:00 and resumed from its checkpoint); all five running from 2026-09-13 ~19:30 CEST (dlc2gpu19-22). Late-lever arms log to "vit base kdyck", ksd arms to "vit base kdyck shuffle".
 
 ## 0b. Can a short run act as a proxy? Yes -- but NOT the obvious one (2026-08-31)
 

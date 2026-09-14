@@ -390,11 +390,15 @@ def load_state_dict(model, state_dict, prefix='', ignore_missing="relative_posit
         print('\n'.join(error_msgs))
 
 
+# autocast dtype for training/eval under --use_amp; set from --amp_dtype in main (fp16 default, bf16 needs no loss scaling)
+AMP_DTYPE = torch.float16
+
+
 class NativeScalerWithGradNormCount:
     state_dict_key = "amp_scaler"
 
     def __init__(self):
-        self._scaler = torch.cuda.amp.GradScaler()
+        self._scaler = torch.cuda.amp.GradScaler(enabled=(AMP_DTYPE == torch.float16))
 
     @staticmethod
     def get_layer_grad_norms(parameters, norm_type=2.0, group_levels=[None, 6]):

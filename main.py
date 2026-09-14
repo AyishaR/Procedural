@@ -348,6 +348,8 @@ def get_args_parser():
 
     parser.add_argument('--use_amp', type=str2bool, default=False, 
                         help="Use PyTorch's AMP (Automatic Mixed Precision) or not")
+    parser.add_argument('--amp_dtype', default='float16', choices=['float16', 'bfloat16'],
+                        help="autocast dtype under --use_amp; bfloat16 has fp32 range (no loss scaling), for arms whose activations exceed fp16")
 
     # Weights and Biases arguments
     parser.add_argument('--enable_wandb', type=str2bool, default=False,
@@ -1427,6 +1429,8 @@ def main(args):
         cka_compare(data_loader_val, device, args)
         return
 
+    utils.AMP_DTYPE = torch.bfloat16 if getattr(args, 'amp_dtype', 'float16') == 'bfloat16' else torch.float16
+    if args.use_amp: print(f"AMP dtype: {utils.AMP_DTYPE}")
     loss_scaler = NativeScaler() # if args.use_amp is False, this won't be used
 
     print("Use Cosine LR scheduler")

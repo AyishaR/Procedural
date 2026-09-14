@@ -47,6 +47,15 @@ OVERRIDE = {  # arms whose defining flags are not in arm_truth's KEYS (verified 
     "ftbanab": "ftbana + proc LN biases (permuted) in blocks 0-8",
     "ftbanag": "ftbana + proc LN gains (permuted) in blocks 0-8, q/k/v/fc1 multipliers / rms(gamma)",
     "ftbanap": "ftbana + Gaussian-sampled LN gains and biases (proc per-block mean/std) in blocks 0-8",
+    "ftbanau": "ftbana weights + isotropic-statistics gains N(1, 0.25) in blocks 0-8: anisotropy only",
+    "ftbanal": "ftbanap with gains 1 and per-tensor lr scales reproducing its relative Adam steps (slow steps, no anisotropy)",
+    "ftbanai": "ftbanap with the input-side effective scales (q/k/v/fc1 x gamma) reset to timm's; MLP write and raw sizes kept",
+    "ftbanac": "ftbanap + blocks 9-11 amplified to write ratio 1.4 (early + late lever)",
+    "ftbanak": "ftbanap procedure applied to the ksd checkpoint (18 ramp numbers + 36 LN statistics)",
+    "ftbanakw": "ftbanak with proj/fc2 refitted so the write profile matches the ksd checkpoint",
+    "ftbrhop": "blocks 9-11 proj/fc2 only scaled to write ratio 1.4 (ftbrho's v*proj and fc2 products): loud and slow",
+    "ftbrhopl": "ftbrhop + lr x multiplier on the scaled tensors (loud, not slow; bf16)",
+    "ftbrhosl": "random + lr / multiplier on proj/fc2 of blocks 9-11 (slow, not loud)",
 }
 
 # ---------------------------------------------------------------- per-run last-epoch numbers
@@ -120,7 +129,7 @@ for t, rz in zip(clean, resid):
 
 # ---------------------------------------------------------------- trajectories for the representative arms
 REP = ["r", "p", "ftb3i", "ftb1i", "ftbqmlnvo", "ftbqmlnvog", "ftbqmlnvot", "ftbrho", "ftb3b", "ftbcomp11", "ftb4o",
-       "ftb3h", "ftb7h", "ftb11h", "ftb4e3fix", "ftbvd", "ftbvu", "ftbqu", "ftbqmln", "ftbnorm", "ftbrhos", "ftblrm", "ftbana", "ftbanaf", "ftbanab", "ftbanag", "ftbanap"]
+       "ftb3h", "ftb7h", "ftb11h", "ftb4e3fix", "ftbvd", "ftbvu", "ftbqu", "ftbqmln", "ftbnorm", "ftbrhos", "ftblrm", "ftbana", "ftbanaf", "ftbanab", "ftbanag", "ftbanap", "ftbanau", "ftbanal", "ftbanai"]
 EPS = [9, 29, 49, 99, 149, 199, 249, 299]
 traj = {}
 for name in REP:

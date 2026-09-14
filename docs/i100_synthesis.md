@@ -398,18 +398,22 @@ once the profile was written by hand. This is a hypothesis; `ftbanal` is its dir
   and the random init at matched epochs (do the winners' early blocks compute something different, or the same
   thing later), the effective rank of block outputs over training, and per-block attention locality.
 
-**Provisional reading (2026-09-13 evening, `ftbanal` at epoch 143, `ftbanai` at 172).** `ftbanal` is on
-`ftbanap`'s curve (77.4 at 139 against 76.9-77.1 for `ftbanap`/`ftbanag` at 129 and 76.1 for `ftbanau`), `ftbanai`
-has fallen to the random init's (77.0 at 169 against 78.2 for `ftbanap`, 77.3 for random) with a lower training
-loss than `ftbanap`. If both hold: (a) the carrier of the early lever is the relative Adam step size of the
-input-side matrices, with the gain's channel pattern worth the remaining 0.7 and its biases nothing, so proc's gain
-of 0.4 is a device that sets the effective scales *and* makes the matrices large enough to move slowly; (b) the
-input-side effective scales (attention logits 1.75x, fc1 at 0.36x) are part of the profile and not optional, since
-`ftbanai` removes only those, holding the MLP write and the raw matrix sizes fixed, and loses a point by
-mid-training (which of the two it is remains open); (c) the early lever is the conjunction of that profile and the
-slow input-side steps, each alone failing (`ftblrm`, `ftbana`).
+**Final reading (2026-09-14; `ftbanal` 79.78, `ftbanai` 78.11, one seed each).** `ftbanal` (isotropic gains, `ftbanap`'s
+relative Adam steps through per-tensor lr scales) ends 0.46 below `ftbanap` (80.24) with the identical final training
+loss (2.364) and a slightly higher test loss (1.028 vs 1.005): the slow input-side steps carry most of the early lever
+(+1.7 of +2.2; the remainder is within one seed resolution of the gain's channel pattern's 0.7 in `ftbanau`).
+`ftbanai` (input-side effective scales reset to timm's, MLP write and raw matrix sizes kept) ends at the random init's
+level (78.11 vs 78.08) with a *lower* training loss (2.314): it fits better and generalises worse, off the fit line on
+random's side. Together with `ftbana` (profile without slow steps, 76.61) and `ftblrm` (slow steps without profile,
+77.73) the four arms close the decomposition: the early lever is the conjunction of the input-side effective-scale
+profile (attention logits 1.75x, fc1 pre-activations 0.36x) and slow relative Adam steps on the same matrices; either
+alone is harmful, the pair is worth +1.7, and the gain's anisotropy adds at most 0.5 on top. Proc's LayerNorm gain of
+~0.4 is the device that provides both at once (it sets the effective scales while the raw matrices stay 2.5x larger).
+What remains open is *why* slow steps on a sharp-logit, quiet-MLP input side generalise better; the measurements in §5
+(CKA, effective rank, attention locality over training) are the next step, and `ftbanac` (early + late lever) is at
+epoch 110.
 
-**Next runs, in order.** (i) Nothing until `ftbanal`, `ftbanai` and `ftbanac` land. (ii) Two more seeds of
+**Next runs, in order.** (i) `ftbanal` and `ftbanai` have landed (above); `ftbanac` is at epoch 110 on L40S. (ii) Two more seeds of
 `ftbanap`, and of `ftbanal` if it holds, four runs. (iii) The late-lever step-size trio, launched 2026-09-13 on `alldlc2_gpu-h200`: `ftbrhop` (proj/fc2-only base with `ftbrho`'s
 write ratio 1.4; multipliers proj 9.1/21.2/57.9, fc2 9.4/27.5/81.7), `ftbrhopl` (same weights, lr x multiplier: loud not slow),
 `ftbrhosl` (random weights, lr / multiplier: slow not loud), one seed each. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
