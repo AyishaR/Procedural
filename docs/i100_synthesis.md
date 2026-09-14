@@ -414,20 +414,27 @@ What remains open is *why* slow steps on a sharp-logit, quiet-MLP input side gen
 epoch 110.
 
 **Next runs, in order.** (i) `ftbanal` and `ftbanai` have landed (above); `ftbanac` is at epoch 110 on L40S. (ii) Two more seeds of
-`ftbanap`, and of `ftbanal` if it holds, four runs. (iii) The late-lever step-size trio, launched 2026-09-13 on `alldlc2_gpu-h200`: `ftbrhop` (proj/fc2-only base with `ftbrho`'s
-write ratio 1.4; multipliers proj 9.1/21.2/57.9, fc2 9.4/27.5/81.7), `ftbrhopl` (same weights, lr x multiplier: loud not slow),
-`ftbrhosl` (random weights, lr / multiplier: slow not loud), one seed each. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
+`ftbanap`, and of `ftbanal` if it holds, four runs. (iii) The late-lever step-size trio (2026-09-13/14): `ftbrhop` (proj/fc2-only base at `ftbrho`'s per-tensor products,
+write ratio 1.4) FINAL 79.93 against `ftbrho` 79.69 +/- 0.30: the late lever is the two writing matrices, v is not
+needed. `ftbrhosl` (random weights, lr / multiplier: slow not loud) is at random's level at epoch 274 (78.31 vs 78.0),
+final tonight. `ftbrhopl` (scaled weights, lr x multiplier: loud not slow; bf16 because the compensated steps push the
+top-block activations past fp16) is on `ftbrho`'s curve at epoch 144 (78.51 vs 78.36 at 149), final 2026-09-15 evening.
+If it holds, the late lever is the loud write itself and the step size is irrelevant -- the mirror image of the early
+lever, where the slow steps carry the effect and the scale profile alone is harmful. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
 After (ii) and (iii) the early- and late-block results are either one story or demonstrably two, at three seeds.
-(vi) Generality across checkpoints, launched 2026-09-13 on `alldlc2_gpu-h200`, wandb project "vit base kdyck shuffle"
-(docs/i100_late_block_scaling.md 0d.11, "Generality test"). The second procedural checkpoint (`pr_vitb_ksd`) has the
-early-lever *write profile* (block 0 attn 3.2 / MLP 18, blocks 1-8 ~0.1-0.3) but different per-tensor scales (loud
-fc1/fc2 in blocks 1-8, gains 0.25-0.3), and for it the two readings of "the same recipe" come apart: random matrices
-with ksd's per-tensor scales do not reproduce its quiet middle (blocks 1-8 come out louder than random init), whereas
-for kdyck they did. Two arms, one seed each: `ftbanak` = the `ftbanap` procedure applied verbatim (ksd's 18 ramp
-numbers and 36 LN statistics), `ftbanakw` = the same input side with proj/fc2 refitted so the write profile matches
-ksd's (block 0 4.5 / 19.6, blocks 1-8 0.08-0.24 / 0.10-0.13). `ftbanak` at ~80 says the scale-and-statistics recipe is
-general and the profile a by-product; `ftbanak` at ~78 with `ftbanakw` at ~80 says the write profile is what
-generalises; both at ~78 says the recipe is kdyck-specific.
+(vi) Generality across checkpoints (wandb project "vit base kdyck shuffle"; docs/i100_late_block_scaling.md 0d.11,
+"Generality test"). The second procedural checkpoint (`pr_vitb_ksd`) has the early-lever *write profile* (block 0 attn
+3.2 / MLP 18, blocks 1-8 ~0.1-0.3; its prefix arms `ftb4i` 80.05 and `ftb4` 80.21 carry the +2) but different per-tensor
+scales (loud fc1/fc2 in blocks 1-8, gains 0.25-0.3), and for it the two readings of "the same recipe" come apart:
+random matrices with ksd's per-tensor scales do not reproduce its quiet middle. `ftbanak`, the `ftbanap` procedure
+applied verbatim (ksd's 18 ramp numbers and 36 LN statistics), FINAL 77.86 = random: the kdyck recipe's procedure does
+not transfer. `ftbanakw` (proj/fc2 refitted so the write profile matches ksd's) is 1.5 below random at epoch 239 and
+will not reach the prefix either. Two arms launched 2026-09-14 decide what is missing: `ftbqmlnvok` (the kdyck
+Gaussian-twin recipe applied to ksd: per-matrix empirical quantiles, LN vectors kept) and `ftbanakg` (ksd's exact 54
+per-block scales + ksd's permuted LN vectors, the `ftbanag` analogue). Twin at ~80 => the ramp-and-sampling
+simplification loses something ksd needs and the second-moment story survives; both at ~78 => the ksd prefix's benefit
+lives in weight structure no second-moment recipe reproduces (coherent block-0 writes, attention entropy 0.2-0.4 nats
+in blocks 1-2), and "second moments suffice" is a kdyck property that the paper must state as such.
 
 ## Appendix: data status
 

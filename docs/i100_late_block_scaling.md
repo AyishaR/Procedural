@@ -1422,6 +1422,25 @@ copied); at `ftbanag`'s level but below the twins => the exact gain multiset mat
 With `ftbana` (76.61) and `ftblrm` (77.73) the 2x2 is complete: profile alone harmful, slow steps alone harmful, both
 +1.7 to +2.2. Synthesis §6 carries the reading. The `ftbanal` continuation (29624095) was a no-op and was cancelled.
 
+**`ftbanak` FINAL 77.86, `ftbrhop` FINAL 79.93 (2026-09-14 18:00, one seed each).** `ftbanak` (the `ftbanap`
+procedure applied verbatim to the ksd checkpoint: 18 ramp numbers + 36 sampled LN statistics, blocks 0-8) ends at the
+random init's level (78.08 +/- 0.19; -0.2), train loss 2.192 (random 2.225), test loss 1.217 -- on random's side of
+the fit line, 2.2 below the ksd prefix arms (`ftb4i` 80.05, `ftb4` 80.21) whose signature (train loss 2.50 at the
+end, i.e. a fit deficit converting late) it never showed: it tracked random in accuracy and loss from epoch 150 on.
+The kdyck recipe's *procedure* does not transfer to ksd. `ftbanakw` (write profile matched) at epoch 239 is 76.45,
+1.5 below random at that epoch, final ~23:00; `ftbqmlnvok` and `ftbanakg` (the twin recipe and exact scales +
+permuted LN vectors, launched 12:50 on the shared partition) are the arms that decide between "the ramp/sampling
+simplification broke it" and "the ksd effect is structural". `ftbrhop` (blocks 9-11 proj/fc2 only at `ftbrho`'s
+products, everything else random) ends 79.93 (train 2.294, test loss 1.044) against `ftbrho`'s 79.69 +/- 0.30 (n=3,
+train 2.271): scaling the two writing matrices alone is the whole late lever; v is not needed. Its trajectory was on
+`ftbrho`'s curve throughout (79.50 vs 79.50 at 249). Both no-op continuations cancelled.
+*Operational, 2026-09-14 afternoon:* `ftbrhosl` was preempted at epoch 222 and `ftbrhop` at 219 on the shared
+partition; both were resubmitted on `lmbdlc2_gpu-h200` with limits fitting before the maintenance window (14 h /
+16.5 h) and resumed from their checkpoints. The `ftbrhosl` resubmission landed on dlc2gpu19 and *preempted our own*
+`ftbanak` there (group-tier jobs preempt shared-tier jobs regardless of owner): `ftbanak` lost 40 min, restarted at
+14:37 with a 14 h limit. Rule: before resubmitting on the group partition, check that a free 4-GPU slot exists on a
+node that does not carry one of our shared-partition runs, or accept the swap.
+
 **Generality test on the second procedural checkpoint and the late-lever step-size trio (2026-09-13 night).**
 *Reference.* `pksd3i_s0` = `pr_vitb_ksd/pr_6463456_final.pth` in blocks 0-8, timm random elsewhere (the ksd analogue
 of `ftb3i`; ImageNet patch embedding is random in every case). Its write-ratio profile is the early-lever pattern

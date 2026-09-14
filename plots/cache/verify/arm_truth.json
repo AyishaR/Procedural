@@ -27301,10 +27301,12 @@
    "ftbanac"
   ],
   "jobids": [
-   "29620684"
+   "29620684",
+   "29620685"
   ],
   "starts": [
-   "2026-09-13 09:10:31"
+   "2026-09-13 09:10:31",
+   "2026-09-14 08:41:01"
   ],
   "sig": {
    "initialize": "",
@@ -27416,10 +27418,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 110,
+  "max_epoch": 166,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.258083727580901,
+  "train_loss_last": 2.9492092320385077,
   "pre_fix": false
  },
  {
@@ -27432,7 +27434,7 @@
    "29626632"
   ],
   "starts": [
-   "2026-09-13 19:28:20"
+   "2026-09-14 14:36:45"
   ],
   "sig": {
    "initialize": "",
@@ -27489,7 +27491,7 @@
    "head_init_scale": 1.0
   },
   "output_dir": "results/imnet_base/results_IMNET_BASE_29626632/s0",
-  "first_start": "2026-09-13 19:28:20",
+  "first_start": "2026-09-14 14:36:45",
   "sig_first": {
    "initialize": "",
    "random_blocks": "",
@@ -27544,10 +27546,16 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 159,
-  "acc_last": 77.28400248046874,
-  "acc_at": {},
-  "train_loss_last": 2.884977227064948,
+  "max_epoch": 299,
+  "acc_last": 77.85600250976563,
+  "acc_at": {
+   "249": 77.6320025,
+   "274": 77.80200244628907,
+   "284": 77.83400237792969,
+   "289": 77.85000244628907,
+   "299": 77.85600250976563
+  },
+  "train_loss_last": 2.191989205037363,
   "pre_fix": false
  },
  {
@@ -27557,10 +27565,12 @@
    "ftbrhop"
   ],
   "jobids": [
-   "29626634"
+   "29626634",
+   "29634699"
   ],
   "starts": [
-   "2026-09-13 19:28:20"
+   "2026-09-13 19:28:20",
+   "2026-09-14 12:00:21"
   ],
   "sig": {
    "initialize": "",
@@ -27672,10 +27682,16 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 158,
-  "acc_last": null,
-  "acc_at": {},
-  "train_loss_last": 2.938490493629032,
+  "max_epoch": 299,
+  "acc_last": 79.9280023046875,
+  "acc_at": {
+   "249": 79.7720025,
+   "274": 79.81800251953125,
+   "284": 79.88600265136719,
+   "289": 79.87600256835937,
+   "299": 79.9280023046875
+  },
+  "train_loss_last": 2.2944192219501693,
   "pre_fix": false
  },
  {
@@ -27813,10 +27829,12 @@
    "ftbrhosl"
   ],
   "jobids": [
-   "29626866"
+   "29626866",
+   "29635749"
   ],
   "starts": [
-   "2026-09-14 00:10:33"
+   "2026-09-14 00:10:33",
+   "2026-09-14 14:22:58"
   ],
   "sig": {
    "initialize": "",
@@ -27928,10 +27946,13 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 143,
+  "max_epoch": 277,
   "acc_last": null,
-  "acc_at": {},
-  "train_loss_last": 3.1493999625627813,
+  "acc_at": {
+   "249": 78.06600272949218,
+   "274": 78.30600256835938
+  },
+  "train_loss_last": 2.4443487684863308,
   "pre_fix": false
  },
  {
@@ -27941,10 +27962,12 @@
    "ftbanakw"
   ],
   "jobids": [
-   "29626868"
+   "29626868",
+   "29633238"
   ],
   "starts": [
-   "2026-09-14 04:00:38"
+   "2026-09-14 04:00:38",
+   "2026-09-14 09:06:39"
   ],
   "sig": {
    "initialize": "",
@@ -28056,10 +28079,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 92,
-  "acc_last": null,
+  "max_epoch": 244,
+  "acc_last": 76.558002578125,
   "acc_at": {},
-  "train_loss_last": 3.4318743516476107,
+  "train_loss_last": 2.3746911429871735,
   "pre_fix": false
  },
  {
@@ -28184,9 +28207,266 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": null,
+  "max_epoch": 144,
+  "acc_last": 78.51000242675781,
+  "acc_at": {},
+  "train_loss_last": 3.0046590885314615,
+  "pre_fix": false
+ },
+ {
+  "slurm_id": "29634995",
+  "seed": 0,
+  "jobnames": [
+   "ftbqmlnvok"
+  ],
+  "jobids": [
+   "29634995"
+  ],
+  "starts": [
+   "2026-09-14 12:51:59"
+  ],
+  "sig": {
+   "initialize": "results/pr_vitb_ksd/pr_6463456_final.pth",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "quantile_match_target_blocks",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "layernorm",
+   "quantile_qkv_mode": "v_only",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ftbqmlnvo recipe applied to the ksd checkpoint (pr_vitb_ksd): per-matrix empirical quantile match in blocks 0-8 (v slice against its own distribution, q/k pooled), LayerNorm 1-D tensors matched; blocks 9-11 random",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "output_dir": "results/imnet_base/results_IMNET_BASE_29634995/s0",
+  "first_start": "2026-09-14 12:51:59",
+  "sig_first": {
+   "initialize": "results/pr_vitb_ksd/pr_6463456_final.pth",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "quantile_match_target_blocks",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "layernorm",
+   "quantile_qkv_mode": "v_only",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ftbqmlnvo recipe applied to the ksd checkpoint (pr_vitb_ksd): per-matrix empirical quantile match in blocks 0-8 (v slice against its own distribution, q/k pooled), LayerNorm 1-D tensors matched; blocks 9-11 random",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "max_epoch": 72,
   "acc_last": null,
   "acc_at": {},
+  "train_loss_last": 3.406812941512236,
+  "pre_fix": false
+ },
+ {
+  "slurm_id": "29634997",
+  "seed": 0,
+  "jobnames": [
+   "ftbanakg"
+  ],
+  "jobids": [
+   "29634997"
+  ],
+  "starts": [
+   "2026-09-14 14:22:40"
+  ],
+  "sig": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ksd analogue of ftbanag: timm random with ksd's exact per-block effective scales (54 numbers, q/k/v/fc1 divided by rms gamma) and ksd's LayerNorm gain and bias vectors permuted across channels, blocks 0-8; blocks 9-11 random, no other checkpoint content",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "output_dir": "results/imnet_base/results_IMNET_BASE_29634997/s0",
+  "first_start": "2026-09-14 14:22:40",
+  "sig_first": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ksd analogue of ftbanag: timm random with ksd's exact per-block effective scales (54 numbers, q/k/v/fc1 divided by rms gamma) and ksd's LayerNorm gain and bias vectors permuted across channels, blocks 0-8; blocks 9-11 random, no other checkpoint content",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "max_epoch": 53,
+  "acc_last": null,
+  "acc_at": {},
+  "train_loss_last": 3.7345287593272634,
   "pre_fix": false
  }
 ]
