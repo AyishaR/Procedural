@@ -416,8 +416,8 @@ epoch 110.
 **Next runs, in order.** (i) `ftbanal` and `ftbanai` have landed (above); `ftbanac` is at epoch 110 on L40S. (ii) Two more seeds of
 `ftbanap`, and of `ftbanal` if it holds, four runs. (iii) The late-lever step-size trio (2026-09-13/14): `ftbrhop` (proj/fc2-only base at `ftbrho`'s per-tensor products,
 write ratio 1.4) FINAL 79.93 against `ftbrho` 79.69 +/- 0.30: the late lever is the two writing matrices, v is not
-needed. `ftbrhosl` (random weights, lr / multiplier: slow not loud) is at random's level at epoch 274 (78.31 vs 78.0),
-final tonight. `ftbrhopl` (scaled weights, lr x multiplier: loud not slow; bf16 because the compensated steps push the
+needed. `ftbrhosl` (random weights, lr / multiplier: slow not loud) FINAL 78.31 = random (78.08): slow steps on the writing
+matrices alone do nothing. `ftbrhopl` (scaled weights, lr x multiplier: loud not slow; bf16 because the compensated steps push the
 top-block activations past fp16) is on `ftbrho`'s curve at epoch 144 (78.51 vs 78.36 at 149), final 2026-09-15 evening.
 If it holds, the late lever is the loud write itself and the step size is irrelevant -- the mirror image of the early
 lever, where the slow steps carry the effect and the scale profile alone is harmful. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.

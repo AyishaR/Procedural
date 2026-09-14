@@ -1441,6 +1441,12 @@ partition; both were resubmitted on `lmbdlc2_gpu-h200` with limits fitting befor
 14:37 with a 14 h limit. Rule: before resubmitting on the group partition, check that a free 4-GPU slot exists on a
 node that does not carry one of our shared-partition runs, or accept the swap.
 
+**`ftbrhosl` FINAL 78.31 (2026-09-14 20:20, one seed).** Random weights with `ftbrhop`'s per-tensor lr divisors on proj/fc2 of
+blocks 9-11 (slow steps, random-scale writes): 78.31 vs random 78.08 +/- 0.19, train loss 2.424, test loss 1.131 -- on
+random's line. Slowing the two writing matrices without making them loud is not the late lever. With `ftbrhop` 79.93
+the trio's third arm `ftbrhopl` (loud, not slow; 79.32 at epoch 194 vs `ftbrho` 79.27 at 199) decides tomorrow whether
+the loud write alone is the whole lever.
+
 **The input side at the function level: both prefixes silence the middle MLPs through structure (2026-09-14 evening;
 `plots/verify/input_side_profile.py`, 16 val images at init, blocks 1-8).**
 
