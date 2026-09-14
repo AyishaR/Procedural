@@ -163,27 +163,75 @@ DataLoader worker on rank 1 -- the traceback never leaves torch's collate path, 
 issue, not the model. The chain driver now retries a segment that made progress and stops only
 when a segment logs no new epochs at all.
 
-**Interim, epoch 202 of 300 (2026-09-13).** The routed arm tracked the baseline to within
-noise through epoch ~110 (mean delta over the first 20 eval points: -0.007), then fell behind
-systematically. Every eval point since epoch 114 is negative, and the gap widens:
+## Result (2026-09-14): routing costs ~1.9 points of ImageNet top-1
 
-| epoch | routed acc1 | base acc1 | delta |
+Last-epoch (299) test top-1, the repo convention:
+
+| arm | top-1 | top-5 | train loss |
 |---|---|---|---|
-| 99 | 75.04 | 75.14 | -0.10 |
-| 149 | | | -1.05 |
-| 169 | | | -1.96 |
-| 199 | 75.18 | 77.26 | **-2.08** |
+| **routed s0** (`route_29590809`) | **76.144** | 91.602 | 2.129 |
+| base r_s0 | 78.284 | 93.478 | 2.289 |
+| base r_s1 | 78.040 | 92.428 | 2.192 |
+| base r_s2 | 77.912 | 92.706 | 2.195 |
+| base mean ± sd | 78.079 ± 0.189 | | |
 
-That is 5-6x the base arm's 3-seed spread (0.37), so it is not noise. The signature is
-**overfitting, not instability**: routed *training* loss is lower than base (2.575 vs 2.723 at
-epoch 202) while test accuracy is lower, `amp_scale` never once backed off in 202 epochs, and
-every gradient norm matched base's. The router used its freedom heavily -- `routing/max` 6.62,
-`routing/min` 0.003, embedding column mean 0.29, readout row mean 0.64 -- and the accuracy gap
-grew as the coefficients moved away from 1.
+**Delta: −1.94 (−2.14 vs the same seed), about 10 base-seed standard deviations.** Single routed
+seed, but the base spread is tight enough and the gap large enough that this is not in doubt.
 
-Final epoch-299 numbers and heatmaps: *pending* (segment 3 running).
+Figures: `kempfe/routing/figures/routing_curves.png` and `routing_heatmaps.png`
+(`python routing/curves.py --run <run dir> --out <fig dir>`).
 
-## Risks being watched
+### What happened, in order
+
+1. **Epochs 0–110: indistinguishable.** The gap at matched eval epochs stays inside the base
+   arm's ±0.19 seed band (mean over the first 20 eval points −0.007). The routed model *is* the
+   baseline at init and stays functionally close while the coefficients are near 1.
+2. **Epochs 110–200: the gap opens** — every eval point negative, descending steadily to −2.1.
+   Onset coincides with `routing/max` passing ~4–5 and the embedding column falling below ~0.4,
+   i.e. with the router having moved far from the vanilla solution.
+3. **Epochs 200–299: plateau at −2.1 ± 0.2** as the cosine LR decays and the coefficients slow.
+
+### It is overfitting, not instability
+
+Routed *training* loss is **lower** than every base seed (2.129 vs 2.19–2.29) throughout the
+second half, while test accuracy is lower: the extra freedom was spent fitting the training set.
+There is no numerical story — `amp_scale` backed off exactly once in 300 epochs (min 32768,
+one overflow in ~75k micro-steps of the last segment), every loss and gradient norm was finite,
+and gradient norms matched base's at matched epochs.
+
+### What the router learned
+
+The final coefficient matrix is strongly **local**. Along the diagonal — each consumer's
+immediately preceding branch — coefficients grew to 2.8 on average (max 7.4). The embedding
+column fell to 0.27, early branch outputs are suppressed by every late consumer (`attn_11` reads
+several early sources at ~0.004), and the readout row sits at 0.56. The vanilla residual stream
+is the opposite: weight exactly 1 on every source, i.e. a uniform average over depth. The router
+traded that depth-wide averaging for "read your neighbours, forget the input", which fit the
+training set better and generalised worse. Read literally, the uniform residual sum is acting as
+a regulariser here, and letting the model relax it is a net loss at this scale.
+
+### An optimizer artifact worth knowing about
+
+The top-left cell (`attn_0 ← emb`) ends at **0.004**. That edge is structurally degenerate:
+consumer 1 has a single source, so its coefficient only rescales the input of `norm1`, and
+LayerNorm is scale-invariant — its gradient is ~0 (recorded in the tests). It moved 250x anyway
+because Adam is scale-free per parameter: a tiny but consistently-signed gradient (leaking through
+the LN eps) becomes full-size steps, and with the thetas in the `no_decay` group nothing pulls it
+back. At 0.004 the LN eps is no longer negligible, so this is a small genuine functional change
+driven purely by the optimizer. Any follow-up should mask that edge (`router.set_edge_mask(1, 0,
+…)` is a no-op functionally) or give the thetas weight decay toward `THETA_ONE`.
+
+### Caveats
+
+* One routed seed. The verdict does not hinge on it (10 sd), but the *size* of the gap does.
+* This repo trains without gradient clipping; the reference GPT runs clip at 1.0. Unbounded
+  softplus coefficients under Adam with no clipping and no decay drift a long way (max 7.4).
+  `--routing_bound` (e.g. 2.0) is the pre-registered variant if the question is "does *mild*
+  routing help" rather than "does *free* routing help".
+* The routed arm has no `blk_acc`/`ece`/block-norm diagnostics (structurally undefined under
+  routing) and no `probes/` features yet (`extract_features.py` assumes the vanilla block loop).
+
+## Risks that were watched during the run (kept for the record)
 
 * **Unbounded coefficient drift.** The reference repo clips gradients at 1.0; this repo runs with
   `--clip_grad None`, and the thetas sit in the `no_decay` group, so nothing pulls them back
