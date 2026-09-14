@@ -1377,7 +1377,7 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
                         norm.bias.copy_(vec.to(norm.bias.dtype))
             mult = {}
             for s, p in spec.items():
-                if s in ("extra", "ln"):
+                if s in ("extra", "ln", "fc1_bias"):
                     continue
                 if "per_block" in p:            # explicit per-block multipliers, e.g. a checkpoint's exact profile (ftbanak)
                     m = float(p["per_block"][str(b)])
@@ -1418,4 +1418,11 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
             got = {"q": W[:D], "k": W[D:2 * D], "v": W[2 * D:], "proj": blk.attn.proj.weight,
                    "fc1": blk.mlp.fc1.weight, "fc2": blk.mlp.fc2.weight}
             applied[b] = {s: (round(float(mult.get(s, 1.0)), 3), round(float(got[s].pow(2).mean().sqrt()) / timm_std, 3)) for s in got}
+        # "fc1_bias": {block: value} -- one constant per block written into the (zero) fc1 bias, shifting every MLP
+        # pre-activation by the same amount. Both procedural prefixes have their fc1 pre-activations shifted to a mean
+        # of -2 to -3 rms through an alignment of the fc1 rows with the normalised stream (GELU mostly off); the shift is
+        # the checkpoint-free stand-in for that alignment (ftbanakb, docs 0d.11 "Generality test").
+        for b_str, val in spec.get("fc1_bias", {}).items():
+            b = int(b_str); model.blocks[b].mlp.fc1.bias.fill_(float(val))
+            applied.setdefault(b, {})["fc1_bias"] = (round(float(val), 3), round(float(val), 3))
     return applied

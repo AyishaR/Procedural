@@ -1441,6 +1441,37 @@ partition; both were resubmitted on `lmbdlc2_gpu-h200` with limits fitting befor
 14:37 with a 14 h limit. Rule: before resubmitting on the group partition, check that a free 4-GPU slot exists on a
 node that does not carry one of our shared-partition runs, or accept the swap.
 
+**The input side at the function level: both prefixes silence the middle MLPs through structure (2026-09-14 evening;
+`plots/verify/input_side_profile.py`, 16 val images at init, blocks 1-8).**
+
+| init | attention logit std | fc1 pre-activation rms | fraction of positive pre-activations | GELU output rms |
+|---|---|---|---|---|
+| random | 0.31 | 0.56 | 0.50 | 0.33 |
+| kdyck prefix (`ftb3i`, 79.99) | 35-84 | 2.0-2.8 | 0.000 | 0.02-0.06 |
+| ksd prefix (`pksd3i`; `ftb4i` 80.05) | 12-500 | 2.7-4.4 | 0.06-0.16 | 0.3-0.8 |
+| `ftbanap` (80.24) | 0.55 | 0.17-0.24 | 0.50 | 0.09-0.13 |
+| `ftbanai` (78.11) | 0.31 | 0.56 | 0.50 | 0.33 |
+| `ftbanak` (77.86) | 0.4-1.3 | 0.55-1.3 | 0.50 | 0.33-0.88 |
+| `ftbanakw`, `ftbqmlnvok`, `ftbanakg` | 0.4-1.8 | 0.4-1.3 | 0.50 | 0.3-0.9 |
+
+In both procedural prefixes the fc1 pre-activations are large but almost all negative: their mean is -2 to -3 (kdyck
+-2.0 to -2.7, ksd -1.8 to -3.2), the GELU is off. The shift is not the fc1 bias (mean -0.01 to -0.07 in both
+checkpoints) and only partly the norm2 bias (ksd: -0.7 to -2.2 of it survives with the LN bias removed; kdyck: all of
+it): it is the fc1 rows being anti-aligned with the common direction of the normalised stream -- a rank-one relation
+between two tensors that no per-tensor statistic carries. Attention is also two orders of magnitude sharper than any
+random q/k pair gives. *Why the kdyck recipe worked regardless:* kdyck's fc1 effective scale is 0.36x timm, so random
+matrices at that scale give small pre-activations, and small pre-activations silence the GELU as well as negative
+ones (`ftbanap` GELU rms 0.09-0.13 vs `ftb3i` 0.02-0.06); the alignment was redundant. ksd's fc1 is loud (0.9-2.3x),
+so every second-moment copy of it produces a loud, half-on MLP -- the state `ftbanai` was in (78.11). `ftbanak`'s
+failure and `ftbanakw`'s are what the kdyck decomposition predicts. **Registered prediction (2026-09-14 19:30):**
+`ftbqmlnvok` and `ftbanakg`, which have the GELU half-on (0.50) and logits below 2, end near random.
+*The decisive cheap test, `ftbanakb`:* `ftbanak` plus one fc1 bias per block 1-8 (8 numbers: -0.88 -0.64 -0.91 -1.13
+-1.18 -1.18 -1.38 -1.29 = rms(pre-activation of `ftbanak_s0`) x Phi^-1(ksd's fraction positive)), shifting the
+pre-activations so the fraction of positive units matches the ksd prefix (0.06-0.16); no checkpoint vector. New
+spec key `"fc1_bias": {block: value}` in `utils.apply_analytic_profile`. At ~80 => the ksd effect is second moments
+plus an MLP gate, and "scales + gate" is the general checkpoint-free form; at ~78 => something beyond, most likely the
+attention alignment, carries ksd. Dump-verified 19:45 (only the eight fc1 biases differ from `ftbanak_s0`; fraction positive 0.057/0.163/0.115/0.096/0.112/0.134/0.123/0.156 vs ksd 0.056/0.160/0.115/0.098/0.111/0.131/0.126/0.155; GELU output rms 0.14-0.33 vs `ftbanak`'s 0.33-0.88; logits, values, attention entropy unchanged). Launched as job 29637998 on `lmbdlc2_gpu-h200` (8 h, dependent on `ftbrhosl`'s slot, continuation 29637999 after the maintenance window).
+
 **Generality test on the second procedural checkpoint and the late-lever step-size trio (2026-09-13 night).**
 *Reference.* `pksd3i_s0` = `pr_vitb_ksd/pr_6463456_final.pth` in blocks 0-8, timm random elsewhere (the ksd analogue
 of `ftb3i`; ImageNet patch embedding is random in every case). Its write-ratio profile is the early-lever pattern

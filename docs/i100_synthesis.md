@@ -423,18 +423,21 @@ If it holds, the late lever is the loud write itself and the step size is irrele
 lever, where the slow steps carry the effect and the scale profile alone is harmful. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
 After (ii) and (iii) the early- and late-block results are either one story or demonstrably two, at three seeds.
 (vi) Generality across checkpoints (wandb project "vit base kdyck shuffle"; docs/i100_late_block_scaling.md 0d.11,
-"Generality test"). The second procedural checkpoint (`pr_vitb_ksd`) has the early-lever *write profile* (block 0 attn
-3.2 / MLP 18, blocks 1-8 ~0.1-0.3; its prefix arms `ftb4i` 80.05 and `ftb4` 80.21 carry the +2) but different per-tensor
-scales (loud fc1/fc2 in blocks 1-8, gains 0.25-0.3), and for it the two readings of "the same recipe" come apart:
-random matrices with ksd's per-tensor scales do not reproduce its quiet middle. `ftbanak`, the `ftbanap` procedure
-applied verbatim (ksd's 18 ramp numbers and 36 LN statistics), FINAL 77.86 = random: the kdyck recipe's procedure does
-not transfer. `ftbanakw` (proj/fc2 refitted so the write profile matches ksd's) is 1.5 below random at epoch 239 and
-will not reach the prefix either. Two arms launched 2026-09-14 decide what is missing: `ftbqmlnvok` (the kdyck
-Gaussian-twin recipe applied to ksd: per-matrix empirical quantiles, LN vectors kept) and `ftbanakg` (ksd's exact 54
-per-block scales + ksd's permuted LN vectors, the `ftbanag` analogue). Twin at ~80 => the ramp-and-sampling
-simplification loses something ksd needs and the second-moment story survives; both at ~78 => the ksd prefix's benefit
-lives in weight structure no second-moment recipe reproduces (coherent block-0 writes, attention entropy 0.2-0.4 nats
-in blocks 1-2), and "second moments suffice" is a kdyck property that the paper must state as such.
+"Generality test" and "The input side at the function level"). The second procedural checkpoint (`pr_vitb_ksd`; prefix
+arms `ftb4i` 80.05, `ftb4` 80.21) shares the early-lever *functional* state with kdyck -- block 0 loud, middle attention
+sharp (logit std 12-500 vs random 0.31), middle MLP effectively silent (fc1 pre-activations shifted to a mean of -2 to -3
+rms so the GELU is off), large input-side matrices that Adam moves slowly -- but reaches it through structure: the fc1
+rows are anti-aligned with the normalised stream, a rank-one relation no per-tensor statistic carries. kdyck's recipe
+worked because kdyck's fc1 is small (0.36x), so random matrices at that scale silence the GELU by scale instead; ksd's
+fc1 is loud (0.9-2.3x), so every second-moment copy gives a loud, half-on MLP, the `ftbanai` state. Accordingly
+`ftbanak` (the `ftbanap` procedure applied verbatim to ksd) FINAL 77.86 = random, and `ftbanakw` (write ratios matched,
+GELU still on) is below random at epoch 239. Registered prediction: `ftbqmlnvok` (twin recipe) and `ftbanakg` (exact
+scales + permuted LN vectors) also end near random. Consequences: the functional mechanism generalises across the two
+checkpoints and ksd confirms it; the parametric extraction procedure ("read 54 second moments off the checkpoint")
+does not, and the paper must state the lever as the functional state with `ftbanap` as one checkpoint-free
+instantiation. The late lever is untouched (a single number, never read off a checkpoint). Decisive test launched
+2026-09-14: `ftbanakb` = `ftbanak` + one fc1 bias per block (8 numbers) gating the MLP to ksd's fraction of positive
+pre-activations; ~80 => "scales + gate" is the general checkpoint-free form.
 
 ## Appendix: data status
 
