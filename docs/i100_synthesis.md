@@ -420,8 +420,10 @@ needed. `ftbrhosl` (random weights, lr / multiplier: slow not loud) FINAL 78.31 
 matrices alone do nothing. `ftbrhopl` (scaled weights, lr x multiplier: loud not slow; bf16 because the compensated steps push the top-block
 activations past fp16) FINAL 80.13. The late lever is the loud write itself and the step size is irrelevant -- the
 mirror image of the early lever, where the slow steps carry the effect and the scale profile alone is harmful. The two
-levers therefore act through different channels (optimiser vs forward pass) and share only their phenotype, the fit
-deficit that converts into test accuracy late in training; `ftbanac` (both levers, 80.44 at epoch 259 vs `ftbanap`
+levers act through different channels (optimiser vs forward pass) and, per the dynamics table
+(docs/dynamics_consistency.md), do not even share the phenotype: the early lever has a mid-training fit deficit and a lead
+that appears after epoch ~120, the late lever has no deficit and leads from epoch ~100; the late lever's near-zero block-7
+head-probe is a head-direction artefact, so fig18(c) must not be read as a shared delayed readout; `ftbanac` (both levers, 80.44 at epoch 259 vs `ftbanap`
 80.03 at 249) will say whether they add. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
 After (ii) and (iii) the early- and late-block results are either one story or demonstrably two, at three seeds.
 (vi) Generality across checkpoints (wandb project "vit base kdyck shuffle"; docs/i100_late_block_scaling.md 0d.11,
@@ -439,7 +441,14 @@ checkpoints and ksd confirms it; the parametric extraction procedure ("read 54 s
 does not, and the paper must state the lever as the functional state with `ftbanap` as one checkpoint-free
 instantiation. The late lever is untouched (a single number, never read off a checkpoint). Decisive test launched
 2026-09-14: `ftbanakb` = `ftbanak` + one fc1 bias per block (8 numbers) gating the MLP to ksd's fraction of positive
-pre-activations; ~80 => "scales + gate" is the general checkpoint-free form.
+pre-activations; ~80 => "scales + gate" is the general checkpoint-free form. **Dynamics (2026-09-15, docs/dynamics_consistency.md):** the ksd prefix arms `ftb4`/`ftb4i` show the
+identical training signature to the kdyck prefix (`p`/`ftb3i`): block-7 head-probe transient suppressed to 7 (random 48),
+fit deficit +0.2 at epoch 149, sink attention (entropy 1.6-1.7) persisting through epoch 9. So the mechanism is the same in
+ksd. Every ksd second-moment recipe (`ftbanak`, `ftbanakg`, `ftbqmlnvok`, `ftbanakw`, `ftbanakb`) sits in the class of the
+kdyck arms that lose the profile early: random-like transient (32-40), no fit deficit, attention entropy 3.8-4.1 at epoch
+9. The feature every winner shares in the first ~20 epochs is a middle without token-specific computation (uniform or
+sink attention, quiet MLPs); ksd's second moments randomised give token-mixing attention instead, because sharpness that
+is common-mode with structure is token-specific without it.
 
 ## Appendix: data status
 

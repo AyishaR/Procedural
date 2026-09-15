@@ -1447,6 +1447,52 @@ random's line. Slowing the two writing matrices without making them loud is not 
 the trio's third arm `ftbrhopl` (loud, not slow; 79.32 at epoch 194 vs `ftbrho` 79.27 at 199) decides tomorrow whether
 the loud write alone is the whole lever.
 
+**Consistency of the mechanism across all arms at the level of training dynamics (2026-09-15 22:30;
+`plots/verify/dynamics_consistency.py`, full table in `docs/dynamics_consistency.md`; per-layer traces from wandb for
+every arm incl. the ksd ones, run logs for the losses).** Three quantities per arm: the head-probe accuracy of block
+7's output over training (its peak = the mid-block readout transient), the training-loss deficit vs random at epoch
+149, and the mean attention entropy / write ratios of blocks 1-8 at epoch 9.
+
+| arm (final vs random) | block-7 probe peak | loss deficit @149 | acc gap @99 / @149 | attn entropy @9 | attn / MLP write @9 |
+|---|---|---|---|---|---|
+| random (78.08) | 47.8 | 0 | 0 / 0 | 4.06 | 0.32 / 0.31 |
+| p (+2.0), ftb3i (+1.9) | 10.3, 8.9 | +0.25, +0.39 | -2.9 / -1.0, -5.1 / -2.3 | 0.63, 0.90 (sink) | 0.08 / 0.01, 0.09 / 0.03 |
+| ftb4 (+2.1), ftb4i (+2.0), ksd | 6.9, 7.5 | +0.19, +0.24 | -2.0 / -0.4, -2.7 / -0.6 | 1.62, 1.73 (sink) | 0.15 / 0.26, 0.17 / 0.25 |
+| twins ftbqmlnvo/g/t (+1.5..2.3) | 23-26 | +0.08..0.10 | -0.1..-0.5 / +0.6..0.8 | 4.3 | 0.21 / 0.13 |
+| ftbanag (+2.6), ftbanap (+2.2), ftbanal (+1.7) | 25, 28.5, 28.6 | +0.13, +0.10, +0.10 | -0.2..-0.4 / +0.7..1.0 | 4.4-4.6 | 0.20 / 0.11-0.12 |
+| ftbanai (0.0) | 34.9 | +0.08 | -0.8 / -0.3 | 4.57 | 0.21 / 0.16 |
+| ftblrm (-0.4) | 38.8 | +0.03 | -0.7 / -0.2 | 4.51 | 0.22 / 0.45 |
+| ftbanau/ab/af/ana (-0.7..-1.7), ftbrhos (-3.0) | 41-44 | +0.005..0.03 (negative later) | -1..-3 / -0.7..-2 | 3.8-3.9 | 0.25 / 0.14 |
+| ftbanak (-0.2), ftbanakg, ftbqmlnvok, ftbanakw (-1.4) | 39.6, 38.1, 33.4, 39.2 | -0.03 (all) | +0.2..0.4 / +0.1..0.4 | 3.9-4.1 | 0.27-0.32 / 0.42-0.45 |
+| ftbanakb (running) | 32.4 | -0.035 | +0.4 / +0.6 | 3.83 | 0.31 / 0.32 |
+| ftbrho/rhop/rhopl/3b (+1.6..2.1) | 0.4-1.4 (see caveat) | +0.01..0.04 | +0.6..0.8 / +1.1..1.4 | 3.1-3.2 | 0.30 / 0.33 |
+| ftbrhosl (+0.2), ftb4h (-0.2) | 62.8, 49.7 | +0.15, +0.07 | -1.1 / -0.6, -0.6 / -0.5 | 4.15, 3.56 | random-like |
+
+*Reading.* (i) Every early-block arm that gains has a suppressed mid-block readout transient (block-7 head-probe peak
+<= 29 against random's 48) together with a mid-training fit deficit and a lead that appears only after epoch ~120; every
+early-block arm at or below random has a random-like transient (>= 33). The relation is monotone through the border
+(ftbanap 28.5 -> +2.2, ftbanakb 32.4 -> ?, ftbanai 34.9 -> 0, ftblrm 38.8 -> -0.4, ftbana 41.7 -> -1.5). (ii) The ksd
+prefix arms `ftb4`/`ftb4i` have the identical signature to `p`/`ftb3i` -- transient 7, deficit +0.2, sink attention
+persisting through epoch 9 (entropy 1.6-1.7) with half of random's attention write -- so the mechanism *is* the same in
+ksd. (iii) Every ksd second-moment recipe sits in the random-like class: transient 33-40, no deficit (they fit better
+than random from epoch 99 on), attention entropy 3.9-4.1 and attention write 0.27-0.32 at epoch 9 = random's, MLP write
+0.42-0.45 = louder than random. `ftbanakb`'s gate is gone by epoch 9 (MLP write 0.32 vs 0.45 without it, vs random's
+0.31); its transient (32.4) sits between `ftbanap` and `ftbanai`, so expect ~78.3-78.8, not 80. (iv) What the winners
+share in the first ~20 epochs is a middle that performs no token-specific computation: attention either uniform (the
+kdyck recipes, entropy 4.3-4.6, kept diffuse by slow q/k) or a persistent sink (both prefixes, entropy < 2, every query
+reading the same token: at init the most-attended key receives 70-82% of the mass in `ftb3i` and 31-71% in `pksd3i`,
+not the CLS token, not the diagonal), and MLPs quiet or moderate. Random-like sharpening (entropy 3.8-4.1 at epoch 9:
+the kdyck losers with fast q/k steps and all ksd recipes, whose q/k start 2x sharper) means token-specific mixing has
+begun, the middle forms a readout, and the gain is gone. Second moments cannot be checkpoint-general because the same
+sharpness is common-mode with structure and token-specific without it. (v) A fit deficit without the suppressed
+transient is worthless (`ftbanai`, `ftbrhosl`, `ftb4h`: slowed or handicapped blocks, transient 35-63). (vi) **The late
+lever has a different dynamical signature**: no mid-training deficit (+0.01-0.04), a lead already at epoch 99
+(+0.6-0.8) and 149 (+1.1-1.4). Its block-7 head-probe of ~0 is an artefact -- the head reads the direction written by
+the loud top blocks, so the middle is unreadable *by the head* regardless of what it encodes -- and fig18 panel (c)
+should not compare the two levers with the head probe; a trained per-block linear probe is needed for the late lever.
+Consequence for the synthesis: the two levers share neither the fit-deficit phenotype nor (demonstrably) the readout
+phenotype; they are two mechanisms with one endpoint.
+
 **`ftbrhopl` FINAL 80.13 (2026-09-15 20:30, one seed, bf16).** `ftbrhop`'s weights (blocks 9-11 proj/fc2 at write ratio
 1.4) with the per-tensor lr multiplied back so those six matrices take random-init relative Adam steps: 80.13, train
 loss 2.316, test loss 1.001 -- at `ftbrhop`'s level (79.93) and `ftbrho`'s (79.69 +/- 0.30), 2.0 above random. The

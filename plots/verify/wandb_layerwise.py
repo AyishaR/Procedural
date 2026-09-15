@@ -6,6 +6,7 @@ Output: plots/cache/verify/wandb_layerwise.json  {arm: {seed: {epoch: {metric_la
 import json, os, sys, time, wandb
 OUT = "/home/schrodi/Procedural/plots/cache/verify/wandb_layerwise.json"
 PROJECT = "procedural_pretraining/vit base kdyck"
+SHUF = "procedural_pretraining/vit base kdyck shuffle"
 ARMS = {  # arm -> [(slurm_id, seed)]
     "r": [(29384839, 0), (29384839, 1), (29384839, 2)],
     "p": [(29377576, 0), (29377576, 1), (29377576, 2)],
@@ -30,8 +31,24 @@ ARMS = {  # arm -> [(slurm_id, seed)]
     "ftbanap": [(29592459, 0)],    # analytic + sampled LN gains and biases (running)
     "ftbcomp11": [(29472870, 0), (29472870, 1), (29472870, 2)],   # both levers combined (80.63)
     "ftb1i": [(29469074, 0), (29472868, 1), (29472869, 2)],         # proc 0-10, random block 11 (80.37)
+    # 2026-09-15: the decomposition arms and the ksd generality arms (third tuple element = wandb project when not the default)
+    "ftbanau": [(29602226, 0)],    # ftbana weights + isotropic-statistics gains (77.35)
+    "ftbanal": [(29609180, 0)],    # slow steps without anisotropy (79.78)
+    "ftbanai": [(29602228, 0)],    # input side removed (78.11)
+    "ftbanac": [(29620684, 0)],    # early + late lever
+    "ftbrhop": [(29626634, 0)],    # late lever via proj/fc2 only (79.93)
+    "ftbrhopl": [(29632673, 0)],   # loud not slow, bf16 (80.13)
+    "ftbrhosl": [(29626866, 0)],   # slow not loud (78.31)
+    "ftb4": [(29547831, 0, SHUF)],       # ksd all blocks (80.21)
+    "ftb4i": [(29547835, 0, SHUF)],      # ksd blocks 0-7, random 8-11 (80.05)
+    "ftb4h": [(29547834, 0, SHUF)],      # random 0-7, ksd 8-11 (77.88)
+    "ftbanak": [(29626632, 0, SHUF)],    # ksd second-moment recipe (77.86)
+    "ftbanakw": [(29626868, 0, SHUF)],   # write profile matched (76.65)
+    "ftbanakb": [(29637998, 0, SHUF)],   # + MLP gate
+    "ftbanakg": [(29634997, 0, SHUF)],   # exact scales + permuted LN vectors
+    "ftbqmlnvok": [(29634995, 0, SHUF)], # twin recipe on ksd
 }
-FAMS = ["acc", "delta_norm_ratio", "attn_entropy", "grad_norm", "blk_act_rms", "attn_delta_norm_ratio"]
+FAMS = ["acc", "delta_norm_ratio", "attn_entropy", "attn_delta_norm_ratio"] + ([] if os.environ.get("FAST") else ["grad_norm", "blk_act_rms"])
 # `Epoch-wise/delta_norm_ratio_layer{l}` is logged twice per epoch and layer (engine.py:563 attention row,
 # engine.py:599 MLP row, same key). The last row wins in `delta_norm_ratio` (= MLP write ratio); the
 # family `attn_delta_norm_ratio` re-reads the same key and keeps the FIRST row per epoch (= attention).
@@ -39,12 +56,13 @@ WANDB_KEY = {"attn_delta_norm_ratio": "delta_norm_ratio"}
 api = wandb.Api(timeout=120)
 cache = json.load(open(OUT)) if os.path.exists(OUT) else {}
 for arm, ids in ARMS.items():
-    for sid, seed in ids:
+    for entry in ids:
+        sid, seed = entry[0], entry[1]; project = entry[2] if len(entry) > 2 else PROJECT
         have = cache.get(arm, {}).get(str(seed), {})
         missing = [f for f in FAMS if not any(k.startswith(f + "_layer") for e in have.values() for k in e)]
         if not missing:
             continue
-        runs = sorted(api.runs(PROJECT, filters={"config.slurm_id": sid, "config.seed": seed, "display_name": "GPU 0"}),
+        runs = sorted(api.runs(project, filters={"config.slurm_id": sid, "config.seed": seed, "display_name": "GPU 0"}),
                       key=lambda r: r.created_at)
         merged = dict(have)
         t0 = time.time()
