@@ -1495,7 +1495,12 @@ each affected job got a *retry-continuation* -- the run script itself with `--ex
 (same results dir, so auto_resume picks up whatever exists, up to ~1 h of retries) -- chained `afterany`, and the k-bias
 wrapper re-chained behind that (the original wrappers cancelled to avoid two jobs training in one directory). Retry jobs:
 ftbanaks 29720299, ftbanaksg 29720301, ftbanakbs 29720303, ftbanakd 29720306; wrappers 29720300/29720302/29720304/29720307.
-Rule: after a power-saving reboot, expect Error 802 for the first 10-30 min; submit with MAX_RETRIES=60 or exclude the node.
+Diagnosis 22:57 from inside the allocation: dlc2gpu24 had been up for 10 h (booted during the maintenance) and
+`systemctl is-active nvidia-fabricmanager` = inactive -- the fabric manager is simply not running on 23/24 (admin issue,
+not a warm-up delay). The retry jobs were therefore cancelled at 22:58 so that the wrappers (ExcNodeList=dlc2gpu23,24,25) queue
+for healthy nodes right away: the first two take dlc2gpu22 when ftbanac/ftbqmlnvok finish (~00:30), the third the slot
+ftbanakg frees on dlc2gpu21 (~02:30); an extra wrapper is chained behind each as a safety link. Rule: after a maintenance
+reboot check `systemctl is-active nvidia-fabricmanager` on H200 nodes before trusting them; CUDA error 802 = fabric manager down.
 
 **Consistency of the mechanism across all arms at the level of training dynamics (2026-09-15 22:30;
 `plots/verify/dynamics_consistency.py`, full table in `docs/dynamics_consistency.md`; per-layer traces from wandb for
