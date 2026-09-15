@@ -1485,7 +1485,7 @@ Per block the dumps hit the calibration: ftbanaks entropy 0.37/0.17/1.33/0.80/1.
 max |logit| 46; the gates' fraction positive within 0.003 of the prefix's in all three gated arms, GELU rms 0.14-0.33 vs
 ftbanak's 0.33-0.88; ftbanakd logit std 0.55 in every block (entropy 5.2). 1-epoch fp16 smoke trainings of all five (test
 partition, small stand-in): loss 7.03 -> 6.92, no non-finite values, the gated arms report 8 lr-scaled tensors in 3 groups
-with the gate group at lr x0.02. Launched 22:45: ftbanaks 29720201 (cont 29720202) on lmbdlc2_gpu-h200; ftbanaksw 29720203 (cont 29720204),
+with the gate group at lr x0.02. Launched 22:45: ftbanaks 29720235 (cont 29720236) on alldlc2_gpu-h200 (the group partition's CPU cap was full); ftbanaksw 29720203 (cont 29720204),
 ftbanaksg 29720205 (cont 29720206), ftbanakbs 29720207 (cont 29720208), ftbanakd 29720209 (cont 29720210) on alldlc2_gpu-h200; wandb project
 "vit base kdyck shuffle".
 
