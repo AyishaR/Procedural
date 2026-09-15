@@ -1447,6 +1447,14 @@ random's line. Slowing the two writing matrices without making them loud is not 
 the trio's third arm `ftbrhopl` (loud, not slow; 79.32 at epoch 194 vs `ftbrho` 79.27 at 199) decides tomorrow whether
 the loud write alone is the whole lever.
 
+**`ftbrhopl` FINAL 80.13 (2026-09-15 20:30, one seed, bf16).** `ftbrhop`'s weights (blocks 9-11 proj/fc2 at write ratio
+1.4) with the per-tensor lr multiplied back so those six matrices take random-init relative Adam steps: 80.13, train
+loss 2.316, test loss 1.001 -- at `ftbrhop`'s level (79.93) and `ftbrho`'s (79.69 +/- 0.30), 2.0 above random. The
+trio is complete: loud-and-slow 79.93, loud-not-slow 80.13, slow-not-loud 78.31. **The late lever is the loud write
+itself; the step size is irrelevant.** This is the mirror image of the early lever, where `ftbanal`/`ftbanai`/`ftbana`/
+`ftblrm` made the slow input-side steps the carrier and the write profile alone harmful. Caveat: bf16 vs fp16 for the
+other two (no visible offset: the run tracked `ftbrho`'s fp16 curve within 0.2 throughout).
+
 **`ftbanakw` FINAL 76.65 (2026-09-14 22:35, one seed).** The write-profile-matched ksd recipe ends 1.4 *below* random
 (78.08), train loss 2.212, test loss 1.262: matching the write ratios while the MLP gate stays half-on and the input
 side loud is the `ftbanai` state, and it costs accuracy the way `ftbana` did. Both ksd second-moment arms are now in:

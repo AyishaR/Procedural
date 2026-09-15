@@ -417,10 +417,12 @@ epoch 110.
 `ftbanap`, and of `ftbanal` if it holds, four runs. (iii) The late-lever step-size trio (2026-09-13/14): `ftbrhop` (proj/fc2-only base at `ftbrho`'s per-tensor products,
 write ratio 1.4) FINAL 79.93 against `ftbrho` 79.69 +/- 0.30: the late lever is the two writing matrices, v is not
 needed. `ftbrhosl` (random weights, lr / multiplier: slow not loud) FINAL 78.31 = random (78.08): slow steps on the writing
-matrices alone do nothing. `ftbrhopl` (scaled weights, lr x multiplier: loud not slow; bf16 because the compensated steps push the
-top-block activations past fp16) is on `ftbrho`'s curve at epoch 144 (78.51 vs 78.36 at 149), final 2026-09-15 evening.
-If it holds, the late lever is the loud write itself and the step size is irrelevant -- the mirror image of the early
-lever, where the slow steps carry the effect and the scale profile alone is harmful. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
+matrices alone do nothing. `ftbrhopl` (scaled weights, lr x multiplier: loud not slow; bf16 because the compensated steps push the top-block
+activations past fp16) FINAL 80.13. The late lever is the loud write itself and the step size is irrelevant -- the
+mirror image of the early lever, where the slow steps carry the effect and the scale profile alone is harmful. The two
+levers therefore act through different channels (optimiser vs forward pass) and share only their phenotype, the fit
+deficit that converts into test accuracy late in training; `ftbanac` (both levers, 80.44 at epoch 259 vs `ftbanap`
+80.03 at 249) will say whether they add. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
 After (ii) and (iii) the early- and late-block results are either one story or demonstrably two, at three seeds.
 (vi) Generality across checkpoints (wandb project "vit base kdyck shuffle"; docs/i100_late_block_scaling.md 0d.11,
 "Generality test" and "The input side at the function level"). The second procedural checkpoint (`pr_vitb_ksd`; prefix

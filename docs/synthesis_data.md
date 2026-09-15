@@ -17,6 +17,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftbcomp25` | clean | 3 | 80.16 | 0.12 | +2.08 | 2.491 | 0.968 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 9,10,11; init_method_copied_blocks=0;1;2;3; target_ratio_absolute=0.25 |
 | `pds2` | old | 1 | 80.15 | nan | +2.08 | 2.474 | 0.979 | init=proc ckpt; downscale_pr_match_delta_norms; scaled blocks 10,11 |
 | `ftb9e` | clean | 1 | 80.14 | nan | +2.06 | 2.412 | 1.012 | init=proc ckpt; random blocks 0,1,2; downscale_pr_match_delta_norms; scaled blocks 3,4,5,6,7,8,9,10,11 |
+| `ftbrhopl` | clean | 1 | 80.13 | nan | +2.06 | 2.316 | 1.001 | ftbrhop + lr x multiplier on the scaled tensors (loud, not slow; bf16) |
 | `ftb4jd` | clean | 3 | 80.11 | 0.04 | +2.03 | 2.640 | 0.942 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 8,9,10,11; init_method_copied_blocks=0;1;2;3;4;5;6;7; target_ratio_scale=0.5 |
 | `ftb5b` | old | 1 | 80.10 | nan | +2.02 | 2.326 | 1.017 | init=proc ckpt; random blocks 0,1,2,3,4,5,6; upscale_random_match_delta_norms; scaled blocks 7,8,9,10,11 |
 | `p` | old | 3 | 80.09 | 0.12 | +2.01 | 2.469 | 0.979 | init=proc ckpt;  |
@@ -140,17 +141,17 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb4n` | clean | 1 | 75.67 | nan | -2.41 | 2.306 | 1.312 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7; init_method_copied_blocks=8;9;10;11 |
 | `ftbrhos` | clean | 1 | 75.07 | nan | -3.01 | 2.195 | 1.342 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8 |
 
-## T2. Fit vs generalisation over the 122 clean arms
+## T2. Fit vs generalisation over the 123 clean arms
 
 Pearson(acc, train loss) = +0.61, Spearman = +0.72; Pearson(test loss, train loss) = -0.80; test loss = -0.68 x train loss + 2.69, residual sd 0.061.
 
 Arms more than 2 residual sd above the line (test loss worse than their fit predicts):
 
-- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.190)
-- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.168)
-- `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.144)
-- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.131)
-- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.131)
+- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.191)
+- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.169)
+- `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.145)
+- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.132)
+- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.132)
 
 ## T3. Trajectories of representative arms (test acc / train loss at epoch)
 
