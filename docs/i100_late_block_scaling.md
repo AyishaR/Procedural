@@ -1453,7 +1453,7 @@ side loud is the `ftbanai` state, and it costs accuracy the way `ftbana` did. Bo
 77.86 and 76.65 against the prefix's 80.05.
 *Maintenance 2026-09-15 05:00-18:00.* The five unfinished runs timed out at 04:14-04:52 as planned (`ftbrhopl` 269,
 `ftbanac` 217, `ftbqmlnvok` 209, `ftbanakg` 184, `ftbanakb` 135 epochs). Their queued continuations were started by
-slurm at 14:02-14:10 *during* the window with /home unmounted and failed in 3 s (exit 127, "run script: No such
+slurm at 14:02-14:10 *during* the window while the home directory was being moved (fixed from another session) and failed in 3 s (exit 127, "run script: No such
 file"); the wrapper found no checkpoint and would have started from scratch had the script been readable -- it now
 refuses to run without the results dir. Checkpoints intact (no `orig_kbias` files, latest epochs as above). Resubmitted
 17:50: `ftbanakb`, `ftbanakg`, `ftbanac` (moved from L40S to H200) on `lmbdlc2_gpu-h200`; `ftbrhopl`, `ftbqmlnvok` on
