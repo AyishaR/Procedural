@@ -1,0 +1,10 @@
+{
+ "blocks.1.mlp.fc1.bias": 0.02,
+ "blocks.2.mlp.fc1.bias": 0.02,
+ "blocks.3.mlp.fc1.bias": 0.02,
+ "blocks.4.mlp.fc1.bias": 0.02,
+ "blocks.5.mlp.fc1.bias": 0.02,
+ "blocks.6.mlp.fc1.bias": 0.02,
+ "blocks.7.mlp.fc1.bias": 0.02,
+ "blocks.8.mlp.fc1.bias": 0.02
+}

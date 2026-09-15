@@ -1377,7 +1377,7 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
                         norm.bias.copy_(vec.to(norm.bias.dtype))
             mult = {}
             for s, p in spec.items():
-                if s in ("extra", "ln", "fc1_bias"):
+                if s in ("extra", "ln", "fc1_bias", "q_sink"):
                     continue
                 if "per_block" in p:            # explicit per-block multipliers, e.g. a checkpoint's exact profile (ftbanak)
                     m = float(p["per_block"][str(b)])
@@ -1425,4 +1425,21 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
         for b_str, val in spec.get("fc1_bias", {}).items():
             b = int(b_str); model.blocks[b].mlp.fc1.bias.fill_(float(val))
             applied.setdefault(b, {})["fc1_bias"] = (round(float(val), 3), round(float(val), 3))
+        # "q_sink": {block: B} -- attention sink: the q part of the (zero) qkv bias of every head is set to a random unit
+        # direction (seeded) of norm B. logits_ij += (b_h . k_j) / sqrt(d), the same key ranking for every query, so all
+        # queries of a head read one key: a common-mode attention write, as in both procedural prefixes at init (the
+        # most-attended key receives 30-80% of the mass). One number per block (ftbanaks, docs 0d.11 "Generality test").
+        for b_str, B in spec.get("q_sink", {}).items():
+            b = int(b_str); blk = model.blocks[b]; H = blk.attn.num_heads; dh = D // H
+            dirs = sink_directions(H, dh, seed, b)
+            blk.attn.qkv.bias[:D].copy_((dirs * float(B)).reshape(-1).to(blk.attn.qkv.bias.dtype))
+            applied.setdefault(b, {})["q_sink"] = (round(float(B), 3), round(float(blk.attn.qkv.bias[:D].reshape(H, dh).norm(dim=1).mean()), 3))
     return applied
+
+
+def sink_directions(num_heads, head_dim, seed, block):
+    """Per-head random unit directions for the attention-sink q bias, fixed by (seed, block) so that a dump through
+    main.py and an offline calibration agree bit for bit."""
+    gen = torch.Generator().manual_seed(2000 + 10 * seed + block)
+    d = torch.randn(num_heads, head_dim, generator=gen)
+    return d / d.norm(dim=1, keepdim=True)

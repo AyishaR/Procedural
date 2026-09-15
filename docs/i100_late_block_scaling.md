@@ -1447,6 +1447,48 @@ random's line. Slowing the two writing matrices without making them loud is not 
 the trio's third arm `ftbrhopl` (loud, not slow; 79.32 at epoch 194 vs `ftbrho` 79.27 at 199) decides tomorrow whether
 the loud write alone is the whole lever.
 
+**ksd structural arms (2026-09-15 night): reproduce the prefix's early state without a checkpoint vector.** The dynamics table
+says the ksd second-moment recipes fail because their middle attention mixes tokens from the start (entropy 3.9-4.1 at
+epoch 9) and their MLPs are loud; the prefix keeps a *sink* (every query reads one key, entropy 1.6-1.7 through epoch 9) and a
+mildly gated MLP. Five arms, all built on `ftbanak` (ksd's 18 ramp numbers + 36 sampled LN statistics), calibrated block
+by block on 16 val images from the `ftbanak_s0` dump (`plots/verify/calibrate_ksd_arms.py`; block b tuned with blocks < b
+already set), verified through `main.py` dumps (`plots/verify/verify_ksd_struct.py`) and 1-epoch fp16 smoke trainings:
+- `ftbanaks` -- **sink**: new spec key `"q_sink": {block: B}`: the q part of the (zero) qkv bias of each head is a seeded random
+  unit direction (`utils.sink_directions`) of norm B_b, so logits_ij += (b_h . k_j)/sqrt(d) is the same key ranking for every
+  query. B_b (8 numbers: 251, 528, 113, 178, 112, 109, 89, 91) hits the ksd prefix's per-block entropy at init (0.37, 0.17,
+  1.33, 0.80, 1.75, 2.10, 2.71, 2.97); resulting most-attended-key share 0.86/0.94/0.61/0.74/0.53/0.45/0.34/0.29 (prefix
+  0.47/0.49/0.45/0.71/0.48/0.44/0.35/0.31), attention rows of different queries cosine 0.98-1.00 (common-mode), max |logit|
+  269 (fp16 headroom), attention write ratio 0.79 -> 0.06 (a single key's value is louder than the mean of values:
+  `ftbanak` 0.60 -> 0.06, prefix 0.27 -> 0.14). The bias norm makes its own Adam relative step ~1e-5: the sink can only be
+  dissolved through W_k (raw 6x timm) or the norm1 statistics.
+- `ftbanaksw` -- **weak sink**: B_b (55, 65, 88, 88, 110, 125, 131, 149) for a flat 1.7 nats in blocks 1-8 (the prefix's mean at
+  epoch 9, after its sink has begun to relax); key share 0.50-0.54, max |logit| 46. Hedge against a sink of init strength
+  that never relaxes.
+- `ftbanaksg` -- **sink + persistent gate**: sink as `ftbanaks` (re-tuned with the gates present: B 251-536), plus the fc1 bias gate
+  per block (-0.88, -0.65, -0.91, -1.13, -1.18, -1.18, -1.36, -1.29; fraction positive = prefix's 0.056-0.160 to +-0.001) with
+  the gate biases at lr x0.02 (`lrscale_slowgate.json`; `ftbanakb`'s gate at lr x1 was gone by epoch 9). The full structural
+  state of the prefix in 16 numbers.
+- `ftbanakbs` -- **persistent gate only**: `ftbanakb`'s spec with the gate biases at lr x0.02. Control for the gate without a sink.
+- `ftbanakd` -- **diffuse route**: q,k rows of blocks 1-8 scaled by 0.65-1.15 so the logit std at init is the kdyck recipe's 0.55
+  (entropy 5.2), plus the persistent gate. The kdyck route (uniform, slowly evolving attention + quiet MLP) on ksd's other
+  numbers; tests whether ksd's 2x-sharper q,k are what breaks the recipe when randomised.
+Readings: `ftbanaks`/`ftbanaksw` ~80 => the sink (common-mode attention) is the missing structure and a 8-number amendment
+makes the ksd recipe work; only `ftbanaksg` ~80 => sink and gate are both needed; `ftbanakd` ~80 with the sink arms at ~78
+=> either route works but not ksd's sharp random attention; all ~78 => the prefix's early state is not reproducible by
+these means and the generality claim stays at the functional/dynamical level (prefix evidence only). The training traces
+will show directly whether each construction persists (entropy, MLP write, block-7 transient at epochs 9-49).
+*Verification (2026-09-15 22:40, dumps through main.py, plots/verify/verify_ksd_struct.py: PASS for all five).* Exactly the
+intended tensors differ from ftbanak_s0 (qkv.bias q-part for the sinks, k/v parts zero; fc1.bias for the gates; q,k rows of
+qkv.weight for ftbanakd with v rows identical), blocks 9-11, embeddings and head bit-identical to r_s0, forward finite.
+Per block the dumps hit the calibration: ftbanaks entropy 0.37/0.17/1.33/0.80/1.75/2.10/2.71/2.97 = the prefix's, key share
+0.86/0.94/0.61/0.74/0.53/0.45/0.34/0.29, row cosine 0.98-1.00, max |logit| 269; ftbanaksw 1.70 in every block, share 0.50-0.54,
+max |logit| 46; the gates' fraction positive within 0.003 of the prefix's in all three gated arms, GELU rms 0.14-0.33 vs
+ftbanak's 0.33-0.88; ftbanakd logit std 0.55 in every block (entropy 5.2). 1-epoch fp16 smoke trainings of all five (test
+partition, small stand-in): loss 7.03 -> 6.92, no non-finite values, the gated arms report 8 lr-scaled tensors in 3 groups
+with the gate group at lr x0.02. Launched 22:45: ftbanaks 29720201 (cont 29720202) on lmbdlc2_gpu-h200; ftbanaksw 29720203 (cont 29720204),
+ftbanaksg 29720205 (cont 29720206), ftbanakbs 29720207 (cont 29720208), ftbanakd 29720209 (cont 29720210) on alldlc2_gpu-h200; wandb project
+"vit base kdyck shuffle".
+
 **Consistency of the mechanism across all arms at the level of training dynamics (2026-09-15 22:30;
 `plots/verify/dynamics_consistency.py`, full table in `docs/dynamics_consistency.md`; per-layer traces from wandb for
 every arm incl. the ksd ones, run logs for the losses).** Three quantities per arm: the head-probe accuracy of block

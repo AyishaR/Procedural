@@ -448,7 +448,9 @@ ksd. Every ksd second-moment recipe (`ftbanak`, `ftbanakg`, `ftbqmlnvok`, `ftban
 kdyck arms that lose the profile early: random-like transient (32-40), no fit deficit, attention entropy 3.8-4.1 at epoch
 9. The feature every winner shares in the first ~20 epochs is a middle without token-specific computation (uniform or
 sink attention, quiet MLPs); ksd's second moments randomised give token-mixing attention instead, because sharpness that
-is common-mode with structure is token-specific without it.
+is common-mode with structure is token-specific without it. **Structural arms launched 2026-09-15 night** (run log 0d.11 "ksd structural arms"): ftbanaks (attention sink, 8
+numbers), ftbanaksw (weaker sink), ftbanaksg (sink + persistent MLP gate, 16 numbers), ftbanakbs (persistent gate only), ftbanakd
+(diffuse q/k + persistent gate: the kdyck route on ksd's other numbers); finals 2026-09-16 evening.
 
 ## Appendix: data status
 
