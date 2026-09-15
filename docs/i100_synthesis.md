@@ -431,7 +431,7 @@ rows are anti-aligned with the normalised stream, a rank-one relation no per-ten
 worked because kdyck's fc1 is small (0.36x), so random matrices at that scale silence the GELU by scale instead; ksd's
 fc1 is loud (0.9-2.3x), so every second-moment copy gives a loud, half-on MLP, the `ftbanai` state. Accordingly
 `ftbanak` (the `ftbanap` procedure applied verbatim to ksd) FINAL 77.86 = random, and `ftbanakw` (write ratios matched,
-GELU still on) is below random at epoch 239. Registered prediction: `ftbqmlnvok` (twin recipe) and `ftbanakg` (exact
+GELU still on) FINAL 76.65, 1.4 below random. Registered prediction: `ftbqmlnvok` (twin recipe) and `ftbanakg` (exact
 scales + permuted LN vectors) also end near random. Consequences: the functional mechanism generalises across the two
 checkpoints and ksd confirms it; the parametric extraction procedure ("read 54 second moments off the checkpoint")
 does not, and the paper must state the lever as the functional state with `ftbanap` as one checkpoint-free

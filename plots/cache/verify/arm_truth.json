@@ -27418,10 +27418,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 186,
+  "max_epoch": 217,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 2.830994142088084,
+  "train_loss_last": 2.6535967874627273,
   "pre_fix": false
  },
  {
@@ -28082,15 +28082,16 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 296,
-  "acc_last": null,
+  "max_epoch": 299,
+  "acc_last": 76.6460025390625,
   "acc_at": {
    "249": 76.50800249023438,
    "274": 76.62200258300781,
    "284": 76.62200264648438,
-   "289": 76.66600247070312
+   "289": 76.66600247070312,
+   "299": 76.6460025390625
   },
-  "train_loss_last": 2.210766778184244,
+  "train_loss_last": 2.2118040749039025,
   "pre_fix": false
  },
  {
@@ -28215,10 +28216,12 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 195,
+  "max_epoch": 270,
   "acc_last": null,
-  "acc_at": {},
-  "train_loss_last": 2.7508852032777398,
+  "acc_at": {
+   "249": 79.98600249023437
+  },
+  "train_loss_last": 2.3588646746909196,
   "pre_fix": false
  },
  {
@@ -28343,10 +28346,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 125,
+  "max_epoch": 212,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.0733314549120574,
+  "train_loss_last": 2.5582688697852576,
   "pre_fix": false
  },
  {
@@ -28471,10 +28474,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 105,
+  "max_epoch": 187,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.179799475719054,
+  "train_loss_last": 2.7203235600788434,
   "pre_fix": false
  },
  {
@@ -28599,10 +28602,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 47,
+  "max_epoch": 135,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.7538186164142995,
+  "train_loss_last": 3.0060292865292957,
   "pre_fix": false
  }
 ]

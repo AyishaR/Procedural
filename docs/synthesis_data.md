@@ -129,6 +129,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb3es2` | clean | 1 | 77.02 | nan | -1.06 | 2.270 | 1.238 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8; downscale_pr_match_delta_norms; scaled blocks 9,10,11 |
 | `ftb2e` | old | 1 | 76.74 | nan | -1.34 | 2.265 | 1.262 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8,9; downscale_pr_match_delta_norms; scaled blocks 10,11 |
 | `ftbanab` | clean | 1 | 76.70 | nan | -1.38 | 2.194 | 1.275 | ftbana + proc LN biases (permuted) in blocks 0-8 |
+| `ftbanakw` | clean | 1 | 76.65 | nan | -1.43 | 2.212 | 1.262 | ftbanak with proj/fc2 refitted so the write profile matches the ksd checkpoint |
 | `ftbana` | clean | 1 | 76.61 | nan | -1.47 | 2.209 | 1.292 | init=none; timm random; analytic profile: per-slice std multipliers, block 0 own + linear ramp blocks 1-8 (profile_ftbana.json), LN gains 1, biases 0 |
 | `ftb11s` | clean | 1 | 76.59 | nan | -1.49 | 2.263 | 1.257 | init=proc ckpt; random blocks 1,2,3,4,5,6,7,8,9,10,11; upscale_random_match_delta_norms; scaled blocks 0 |
 | `ftb0l` | contaminated | 1 | 76.49 | nan | -1.58 | 2.251 | 1.246 | init=proc ckpt; downscale_pr_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8,9,10,11; weight_shuffle=0;1;2;3;4;5;6;7;8;9;10;11 |
@@ -139,17 +140,17 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb4n` | clean | 1 | 75.67 | nan | -2.41 | 2.306 | 1.312 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7; init_method_copied_blocks=8;9;10;11 |
 | `ftbrhos` | clean | 1 | 75.07 | nan | -3.01 | 2.195 | 1.342 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8 |
 
-## T2. Fit vs generalisation over the 121 clean arms
+## T2. Fit vs generalisation over the 122 clean arms
 
-Pearson(acc, train loss) = +0.61, Spearman = +0.71; Pearson(test loss, train loss) = -0.80; test loss = -0.68 x train loss + 2.68, residual sd 0.060.
+Pearson(acc, train loss) = +0.61, Spearman = +0.72; Pearson(test loss, train loss) = -0.80; test loss = -0.68 x train loss + 2.69, residual sd 0.061.
 
 Arms more than 2 residual sd above the line (test loss worse than their fit predicts):
 
-- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.191)
-- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.169)
-- `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.146)
-- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.132)
-- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.132)
+- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.190)
+- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.168)
+- `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.144)
+- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.131)
+- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.131)
 
 ## T3. Trajectories of representative arms (test acc / train loss at epoch)
 

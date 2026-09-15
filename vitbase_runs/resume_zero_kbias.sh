@@ -28,6 +28,9 @@ cd $ROOT
 ARM=${ARM:-$SLURM_JOB_NAME}
 SEED=${SEED:-0}
 if [[ -z "$SLURM_ID" ]]; then echo "SLURM_ID (results id) must be exported"; exit 1; fi
+# During the 2026-09-15 maintenance the continuations ran while /home was unmounted: the wrapper found no checkpoint
+# and would have started the run script from scratch had it been readable. Never start without the results dir.
+if [[ ! -d "results/imnet_base/results_IMNET_BASE_$SLURM_ID/s$SEED" ]]; then echo "results dir for $SLURM_ID/s$SEED not found (filesystem unmounted?), refusing to start"; exit 1; fi
 
 d=results/imnet_base/results_IMNET_BASE_${SLURM_ID}/s${SEED}
 latest=$(ls $d 2>/dev/null | grep -E '^checkpoint-[0-9]+\.pth$' | sed -E 's/checkpoint-([0-9]+)\.pth/\1/' | sort -n | tail -1)

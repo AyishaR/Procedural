@@ -1447,6 +1447,18 @@ random's line. Slowing the two writing matrices without making them loud is not 
 the trio's third arm `ftbrhopl` (loud, not slow; 79.32 at epoch 194 vs `ftbrho` 79.27 at 199) decides tomorrow whether
 the loud write alone is the whole lever.
 
+**`ftbanakw` FINAL 76.65 (2026-09-14 22:35, one seed).** The write-profile-matched ksd recipe ends 1.4 *below* random
+(78.08), train loss 2.212, test loss 1.262: matching the write ratios while the MLP gate stays half-on and the input
+side loud is the `ftbanai` state, and it costs accuracy the way `ftbana` did. Both ksd second-moment arms are now in:
+77.86 and 76.65 against the prefix's 80.05.
+*Maintenance 2026-09-15 05:00-18:00.* The five unfinished runs timed out at 04:14-04:52 as planned (`ftbrhopl` 269,
+`ftbanac` 217, `ftbqmlnvok` 209, `ftbanakg` 184, `ftbanakb` 135 epochs). Their queued continuations were started by
+slurm at 14:02-14:10 *during* the window with /home unmounted and failed in 3 s (exit 127, "run script: No such
+file"); the wrapper found no checkpoint and would have started from scratch had the script been readable -- it now
+refuses to run without the results dir. Checkpoints intact (no `orig_kbias` files, latest epochs as above). Resubmitted
+17:50: `ftbanakb`, `ftbanakg`, `ftbanac` (moved from L40S to H200) on `lmbdlc2_gpu-h200`; `ftbrhopl`, `ftbqmlnvok` on
+`alldlc2_gpu-h200`; each with one continuation.
+
 **The input side at the function level: both prefixes silence the middle MLPs through structure (2026-09-14 evening;
 `plots/verify/input_side_profile.py`, 16 val images at init, blocks 1-8).**
 
