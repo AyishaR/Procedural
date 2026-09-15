@@ -1488,6 +1488,14 @@ partition, small stand-in): loss 7.03 -> 6.92, no non-finite values, the gated a
 with the gate group at lr x0.02. Launched 22:45: ftbanaks 29720235 (cont 29720236) on alldlc2_gpu-h200 (the group partition's CPU cap was full); ftbanaksw 29720203 (cont 29720204),
 ftbanaksg 29720205 (cont 29720206), ftbanakbs 29720207 (cont 29720208), ftbanakd 29720209 (cont 29720210) on alldlc2_gpu-h200; wandb project
 "vit base kdyck shuffle".
+*Rebooted-node incident (22:39-22:50).* dlc2gpu23/24/25 had been powered down over the maintenance; the four arms placed on
+23/24 failed every attempt with `cudaGetDeviceCount ... Error 802: system not yet initialized` (the NVSwitch fabric manager
+was not up yet; nvidia-smi listed the GPUs) and exhausted the 6 in-job retries in ~10 min. Fix without losing the slots:
+each affected job got a *retry-continuation* -- the run script itself with `--export=SLURM_ID=<first id>,SEED=0,MAX_RETRIES=60`
+(same results dir, so auto_resume picks up whatever exists, up to ~1 h of retries) -- chained `afterany`, and the k-bias
+wrapper re-chained behind that (the original wrappers cancelled to avoid two jobs training in one directory). Retry jobs:
+ftbanaks 29720299, ftbanaksg 29720301, ftbanakbs 29720303, ftbanakd 29720306; wrappers 29720300/29720302/29720304/29720307.
+Rule: after a power-saving reboot, expect Error 802 for the first 10-30 min; submit with MAX_RETRIES=60 or exclude the node.
 
 **Consistency of the mechanism across all arms at the level of training dynamics (2026-09-15 22:30;
 `plots/verify/dynamics_consistency.py`, full table in `docs/dynamics_consistency.md`; per-layer traces from wandb for
