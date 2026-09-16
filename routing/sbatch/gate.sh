@@ -19,4 +19,4 @@ source "${SLURM_SUBMIT_DIR:-$(pwd)}/probes/sbatch/common.sh" 2>/dev/null || {
   echo "host $(hostname) job ${SLURM_JOB_ID:-none} root $ROOT venv $VENV commit $(git rev-parse --short HEAD)"
   nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 }
-python routing/gate.py "$@"
+python "${GATE_SCRIPT:-routing/gate.py}" "$@"

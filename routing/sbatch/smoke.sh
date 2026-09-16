@@ -23,10 +23,12 @@ EPOCHS=${EPOCHS:-300}
 WARMUP=${WARMUP:-50}     # must be <= EPOCHS (cosine_scheduler asserts on the length)
 ROUTED=${ROUTED:-true}   # false = the vanilla control at the identical config
 ROUTING_IMPL=${ROUTING_IMPL:-buf}
+READOUT=${READOUT:-off}  # a --readout_routing mode replaces the routing flags (readout-only arms)
+if [[ "$READOUT" != "off" ]]; then ARM_FLAGS=(--readout_routing "$READOUT"); else ARM_FLAGS=(--resid_routing "$ROUTED" --routing_impl "$ROUTING_IMPL"); fi
 cd "$ROOT" || exit 1
 umask 002
 source /work/dlc2workfs3/schrodi-procedural/kempfe/.venv/bin/activate
-echo "host $(hostname) job $SLURM_JOB_ID root $ROOT commit $(git rev-parse --short HEAD) epochs $EPOCHS warmup $WARMUP routed $ROUTED impl $ROUTING_IMPL"
+echo "host $(hostname) job $SLURM_JOB_ID root $ROOT commit $(git rev-parse --short HEAD) epochs $EPOCHS warmup $WARMUP readout $READOUT routed $ROUTED impl $ROUTING_IMPL arm flags ${ARM_FLAGS[*]}"
 nvidia-smi --query-gpu=name --format=csv,noheader
 
 TOTAL_BATCH_SIZE=4096
@@ -46,6 +48,5 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT \
     --enable_wandb false \
     --slurm_id 1 \
     --seed 0 \
-    --resid_routing "$ROUTED" \
-    --routing_impl "$ROUTING_IMPL"
+    "${ARM_FLAGS[@]}"
 echo "exit $?"

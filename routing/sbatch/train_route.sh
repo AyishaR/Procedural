@@ -1,6 +1,9 @@
 #!/bin/bash
 # Residual-routing ImageNet arm: the r-arm recipe (slurm 29384839, random init, vit_base, 300
 # epochs) with --resid_routing true and nothing else changed. Submitted by routing/sbatch/chain.sh.
+# READOUT=<fixed_last4|learn_last4|learn_ones> switches the arm to --readout_routing (readout-only
+# routing, models/readout_routing.py) with no routing flags; RUN_PREFIX names the output dir
+# ($OUT_ROOT/runs/${RUN_PREFIX}_${SLURM_ID}/s$SEED), default route / readout_$READOUT.
 #SBATCH --job-name route
 #SBATCH --partition alldlc2_gpu-h200
 #SBATCH --nodes 1
@@ -25,7 +28,15 @@ if [[ -z "$SEED" ]]; then SEED=0; fi
 if [[ -z "$ROUTING_IMPL" ]]; then ROUTING_IMPL="buf"; fi   # chosen by the gate: +22% vs loop +124%
 if [[ -z "$EPOCHS" ]]; then EPOCHS=300; fi
 if [[ -z "$WARMUP" ]]; then WARMUP=50; fi
-echo "SLURM_ID $SLURM_ID  seed $SEED  routing_impl $ROUTING_IMPL  epochs $EPOCHS"
+READOUT=${READOUT:-off}
+if [[ "$READOUT" != "off" ]]; then
+    ARM_FLAGS=(--readout_routing "$READOUT")
+    RUN_PREFIX=${RUN_PREFIX:-readout_$READOUT}
+else
+    ARM_FLAGS=(--resid_routing true --routing_impl "$ROUTING_IMPL")
+    RUN_PREFIX=${RUN_PREFIX:-route}
+fi
+echo "SLURM_ID $SLURM_ID  seed $SEED  readout $READOUT  routing_impl $ROUTING_IMPL  epochs $EPOCHS  run_prefix $RUN_PREFIX  arm flags ${ARM_FLAGS[*]}"
 
 source /work/dlc2workfs3/schrodi-procedural/kempfe/.venv/bin/activate
 echo "cwd $(pwd)  commit $(git rev-parse --short HEAD)"
@@ -48,15 +59,15 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT \
     --batch_size $BATCH_SIZE --lr 2e-3 --update_freq $UPDATE_FREQ --use_amp true \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
-    --output_dir "$OUT_ROOT/runs/route_${SLURM_ID}/s$SEED" \
-    --accuracy_json "$OUT_ROOT/runs/accuracy_route_${SLURM_ID}.json" \
+    --output_dir "$OUT_ROOT/runs/${RUN_PREFIX}_${SLURM_ID}/s$SEED" \
+    --accuracy_json "$OUT_ROOT/runs/accuracy_${RUN_PREFIX}_${SLURM_ID}.json" \
     --enable_wandb true \
     --project "vit base routing" \
     --wandb_entity_name "procedural_pretraining" \
+    --notes "$RUN_PREFIX" \
     --slurm_id $SLURM_ID \
     --seed $SEED \
-    --resid_routing true \
-    --routing_impl "$ROUTING_IMPL"
+    "${ARM_FLAGS[@]}"
 TORCH_EXIT=$?
 echo "Torchrun exited with code $TORCH_EXIT"
 
