@@ -37,7 +37,7 @@ def eff(sd, b):
     return np.array([g1 * r(W[:E]), g1 * r(W[E:2 * E]), g1 * r(W[2 * E:]), r(sd[f"blocks.{b}.attn.proj.weight"]), g2 * r(sd[f"blocks.{b}.mlp.fc1.weight"]), r(sd[f"blocks.{b}.mlp.fc2.weight"])])
 def ramp(sl, b): return sl["b0"] if b == 0 else sl["start"] + (sl["end"] - sl["start"]) * (b - 1) / 7
 def load_dump(n): sd = torch.load(f"{D}/{n}.pth", map_location="cpu"); sd = sd.get("model", sd); m = utils.build_model(args); m.load_state_dict(sd, strict=False); m.eval(); return m
-CASES = [("kdyck", f"{ROOT}/results/pr_vitb_n/pr_6066174_final.pth", ["--qk_flat", "1.32", "--fc2_end", "0.95"], "ftbanap_s0", "ftbanap"),
+CASES = [("kdyck", f"{ROOT}/results/pr_vitb_n/pr_6066174_final.pth", ["--query_key_flat", "1.32", "--fc2_end", "0.95"], "ftbanap_s0", "ftbanap"),
          ("ksd", f"{ROOT}/results/pr_vitb_ksd/pr_6463456_final.pth", [], "ftbanak_s0", "ftbanak")]
 ok_all = True
 for name, ck, flags, dump, arm in CASES:

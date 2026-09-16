@@ -1473,6 +1473,12 @@ recipe; comparisons arm-vs-reference on the same images stay valid (all our veri
 statements do not. The calibration script now defaults to training images (`CALIB_SPLIT=val` reproduces the launched
 arms). No validation label was used anywhere; the 16-64 val images entered only through second-order statistics of the
 forward pass at initialisation.
+*Re-derivation on training images (2026-09-16 15:10).* The q/k correction re-derived from the uncorrected least-squares spec
+against the quantile twin: implied flat value (geometric mean of q and k) 1.325 / 1.327 on two draws of 32 training images vs
+1.322 / 1.332 on validation images -- identical to the 1.32 in use within 0.5%; `ftbanap`'s logit std is 1.00 x the twin's
+on both splits. The fc2 end is not a twin calibration at all: matching the twin's block-8 MLP write would give 1.31 on both
+splits; 0.95 holds the ramp at block 7's level because block 8 of the checkpoint already turns toward the loud top (design
+decision, documented at the time). Consequence: the corrections do not depend on the split, and no result changes.
 
 **Structural arms, first traces (2026-09-16 07:30; `plots/verify/wandb_layerwise.py` FAST, dynamics rows).** Block-7 head-probe
 at epochs 9/19/29/49, attention entropy and MLP write ratio of blocks 1-8 at 9/19/49, accuracy/train loss at 94:
