@@ -295,6 +295,9 @@ def validate_arguments(parser, arguments):
     first, last = parse_block_range(parser, arguments.blocks)
     if not arguments.exact and last - first < 1:
         parser.error("the linear form needs at least two blocks (block 0 plus one to fit)")
+    if not arguments.exact and first != 0:
+        parser.error("the linear form anchors on block 0 (utils.apply_analytic_profile treats block 0 literally as 'b0' "
+                     "and ramps over the other listed blocks); use --blocks 0-N or --exact")
     if arguments.query_key == "pooled" and arguments.query_key_flat is not None:
         parser.error("--query_key pooled derives the q/k value; do not combine it with --query_key_flat")
     if arguments.exact and (arguments.query_key_flat is not None or arguments.fc2_end is not None):
