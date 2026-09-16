@@ -1458,6 +1458,22 @@ prediction held; the `ftbanag`-analogue does not transfer either, so it is not t
 worth ~0.4 over `ftbanak` and no more, as predicted from its epoch-9 traces (gate gone) and its block-7 transient (32).
 `ftbqmlnvok` (twin recipe on ksd) at 77.83 at epoch 294, final 07:25. All three continuations cancelled.
 
+**Protocol audit of the checkpoint-free derivations (2026-09-16 14:45).** (i) The weight-statistics recipe (`ftbanap`,
+`extract_profile.py`) is deterministic and data-independent: 18 effective scales + 36 LayerNorm statistics read off the
+checkpoint. Its two corrections (q/k flat 1.32, fc2 end 0.95) were calibrated on forward passes over 64 *validation* images
+(label-free, init only) against the quantile twin; they are flags in the script and should be re-derived on training images
+or dropped in a control run. (ii) The late lever (`ftbrho`, `--target_ratio_absolute 1.4`) is calibrated inside `main.py` on
+5000 *training* images (`dataset_ref_loader`): clean. (iii) The structural ksd arms were calibrated on 16 validation images
+(`calibrate_ksd_arms.py`, label-free). Recalibrating the sink on 16 *training* images (training transform) gives B = 440,
+1208, 139, 290, 126, 111, 94, 96 against the val-calibrated 251, 528, 113, 178, 112, 109, 89, 91 in use: 2.3x in the
+near-one-hot blocks 1-2, 60% at block 4, 5-13% in blocks 5-8. Entropy targets below ~1 nat sit on the saturated end of the
+softmax where B is ill-conditioned and the pixel statistics of the transform dominate; the weak sink (1.7 nats) is in the
+well-conditioned regime. Consequences: the sink strength is a data- and transform-dependent quantity, not a constant of the
+recipe; comparisons arm-vs-reference on the same images stay valid (all our verifications are of that form), absolute
+statements do not. The calibration script now defaults to training images (`CALIB_SPLIT=val` reproduces the launched
+arms). No validation label was used anywhere; the 16-64 val images entered only through second-order statistics of the
+forward pass at initialisation.
+
 **Structural arms, first traces (2026-09-16 07:30; `plots/verify/wandb_layerwise.py` FAST, dynamics rows).** Block-7 head-probe
 at epochs 9/19/29/49, attention entropy and MLP write ratio of blocks 1-8 at 9/19/49, accuracy/train loss at 94:
 | arm | block-7 probe 9/19/29/49 | entropy 9/19/49 | MLP write 9/19/49 | acc / loss at 94 |

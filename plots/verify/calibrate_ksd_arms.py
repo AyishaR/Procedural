@@ -4,14 +4,14 @@
   ftbanakd  : q,k rows rescaled so the logit std is the kdyck recipe's (0.55, diffuse) + fc1 bias gate
 Sequential: block b is calibrated with blocks < b already set (the stream feeding block b is the final one).
 Writes vitbase_runs/profile_ftbanaks.json, profile_ftbanaksg.json, profile_ftbanakd.json."""
-import sys, json, math, torch, numpy as np; sys.path.insert(0, "/home/schrodi/Procedural")
+import sys, os, json, math, torch, numpy as np; sys.path.insert(0, "/home/schrodi/Procedural")
 import main as M, utils
 from datasets import build_dataset
 from statistics import NormalDist
 torch.set_num_threads(32)
 ROOT = "/home/schrodi/Procedural"; D = f"{ROOT}/results/init_dumps"; E = 768; H = 12; DH = 64
 args = M.get_args_parser().parse_args(["--model", "vit_base", "--data_set", "IMNET", "--data_path", "/data/datasets/ILSVRC2012", "--input_size", "224", "--nb_classes", "1000"]); args.nb_classes = 1000
-ds, _ = build_dataset(is_train=False, args=args); g = torch.Generator().manual_seed(0)
+ds, _ = build_dataset(is_train=os.environ.get("CALIB_SPLIT", "train") == "train", args=args); g = torch.Generator().manual_seed(0)   # default: training images with the training transform (the arms launched 2026-09-15 were calibrated on 16 val images, CALIB_SPLIT=val)
 x = torch.stack([ds[i][0] for i in torch.randperm(len(ds), generator=g)[:16].tolist()])
 ENT_T = {1: 0.37, 2: 0.17, 3: 1.33, 4: 0.80, 5: 1.75, 6: 2.10, 7: 2.71, 8: 2.97}          # pksd3i attention entropy at init
 FRAC_T = {1: 0.056, 2: 0.160, 3: 0.115, 4: 0.098, 5: 0.111, 6: 0.131, 7: 0.126, 8: 0.155}  # pksd3i fraction of positive fc1 pre-activations
