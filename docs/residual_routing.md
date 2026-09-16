@@ -343,3 +343,59 @@ function, not the model.
 | fp16 step | one `NativeScalerWithGradNormCount` step: GradScaler scale 65536 on all arms; C vs base 1.3e-03 (fp16 noise band) |
 | collectors | `utils.HookCollector` on arm C: 12 blocks, block activations `torch.equal` to base's, no hooks left behind |
 | cost | base 77.0 ms / 17.1 GB; **A +1.6%, B +2.1%, C +1.9%**, +0.8 GB |
+
+## Smoke (jobs 29725000 / 29725001, real 300/50 schedule bounded by `--time 1:20`, 4x H200)
+
+Arms C and A against base `r_s0` at the same seed (`kempfe/routing/smoke_readout_{C,A}`):
+
+| epoch | base loss | C loss | C − base | A loss | A − base | base acc1 | C acc1 | A acc1 |
+|---|---|---|---|---|---|---|---|---|
+| 0 | 6.8686 | 6.8690 | +0.0004 | 6.8653 | −0.0032 | | | |
+| 4 | 6.2265 | 6.2268 | +0.0003 | 6.1996 | −0.0268 | 14.140 | 13.388 | 14.842 |
+| 7 | 5.8820 | 5.8846 | +0.0026 | 5.8036 | −0.0785 | | | |
+| 9 | 5.5949 | 5.6037 | +0.0088 | | | 32.350 | 32.926 | |
+| 13 | 5.1365 | 5.1383 | +0.0018 | | | | | |
+
+(base seeds at epoch 4: 13.64 / 13.97 / 14.14; at epoch 9: 32.35 / 33.78 / 33.14.)
+
+**C tracks base** within +0.013 train loss at every epoch. The routed smoke matched epoch 0 to
+four decimals; C is +0.0004 because its readout row moves from the first step — after epoch 0
+its 25 deviations from 1 have *exactly the sign pattern* of the free router's readout row at its
+epoch 0, at 1.6x the size (linear vs. softplus slope 0.63 at 1): the mixer sees the signal the
+router saw. Nothing else misbehaved: `train_grad_norm` 0.909 at epoch 0 (routed 0.911, base 0.853
+— the extra weight gradient), zero non-finite steps, `amp_scale` monotone non-decreasing
+(65536 -> 131072 -> 262144). The `blk_acc` / `ece` / block-norm rows appear at epoch 4 exactly as
+for the base run (`HookCollector` on the mixed model; layer-11 lens 13.42 ≈ test 13.39).
+
+**A runs clean and is ahead early**: train loss below base and diverging (−0.08 at epoch 7),
+14.84 top-1 at epoch 4 against 13.64–14.14 for the three base seeds. Whether "the head on blocks
+8–11's deltas" keeps that to epoch 299 or turns into the routed run's overfitting is the result.
+
+**What C's readout row did in 14 epochs** (`readout.jsonl`): the embedding weight did not move
+(0.984; sign consistency 0.51 = coin flip, i.e. no consistent gradient on it), late MLP outputs
+went up (mlp_8..11 at 1.28–1.53), attention outputs down everywhere (attn_8..11 at 0.59–0.77, early
+attn 0.72–0.76), early MLPs 0.58–0.94. Per-epoch sign consistency of the moving weights is
+0.55–0.65 — with 312 optimizer steps per epoch chance is 0.50 ± 0.03, so these are weak but real
+signals, not Adam random walks. Early data; the run decides.
+
+**Resume rehearsal** (job 29725154, C resubmitted against the same OUT after TIMEOUT at epoch 13):
+`[readout] restored 1 mixer tensors` from `checkpoint-13.pth` with optimizer and scaler; epoch
+14's loss step (−0.1005) sits among the preceding steps (−0.125 / −0.090 / −0.121), its delta to
+base (+0.013) continues the pre-resume trend, the readout row moved 0.056 (0.059 the epoch before)
+and `amp_scale` continued at 262144. The `-model.pth` analysis dump keeps the mixer fp32.
+
+## The runs
+
+Three chains launched 2026-09-17 01:02 from the stable clone at `cbfd7ae`
+(`routing/sbatch/chain.sh` with `READOUT=<mode> RUN_PREFIX=readout_<arm>`, one segment of
+`--time 23:29:59` at a time, resubmit on TIMEOUT, retry transient failures):
+
+| arm | first job | output |
+|---|---|---|
+| A `fixed_last4` | 29725255 | `kempfe/routing/runs/readout_A_29725255/s0` |
+| B `learn_last4` | 29725256 | `kempfe/routing/runs/readout_B_29725256/s0` |
+| C `learn_ones`  | 29725257 | `kempfe/routing/runs/readout_C_29725257/s0` |
+
+Drivers: `kempfe/routing/logs/chain_readout_<arm>.log`, pidfiles `chain_readout_<arm>_s0.pid`.
+The result is epoch-299 `test_acc1` in each `log.txt` against 78.079 ± 0.189; figures via
+`python routing/readout_curves.py --run A=<dir> --run B=<dir> --run C=<dir> --out kempfe/routing/figures`.
