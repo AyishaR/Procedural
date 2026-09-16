@@ -1458,6 +1458,12 @@ prediction held; the `ftbanag`-analogue does not transfer either, so it is not t
 worth ~0.4 over `ftbanak` and no more, as predicted from its epoch-9 traces (gate gone) and its block-7 transient (32).
 `ftbqmlnvok` (twin recipe on ksd) at 77.83 at epoch 294, final 07:25. All three continuations cancelled.
 
+**`ftbqmlnvok` FINAL 77.83 (2026-09-16 15:00, one seed).** The `ftbqmlnvo` twin recipe applied to the ksd checkpoint
+(per-matrix empirical quantiles, v against its own distribution, LayerNorm vectors matched): 77.83 = random (78.08),
+train loss 2.198 (random 2.225) -- the registered prediction held. The ksd second-moment set is now complete except for
+`ftbanakx` (exact scales + sampled LN statistics, running): `ftbanak` 77.86, `ftbqmlnvok` 77.83, `ftbanakg` 77.64,
+`ftbanakw` 76.65, `ftbanakb` 78.25. No ksd second-moment recipe reaches the prefix's 80.05.
+
 **Protocol audit of the checkpoint-free derivations (2026-09-16 14:45).** (i) The weight-statistics recipe (`ftbanap`,
 `extract_profile.py`) is deterministic and data-independent: 18 effective scales + 36 LayerNorm statistics read off the
 checkpoint. Its two corrections (q/k flat 1.32, fc2 end 0.95) were calibrated on forward passes over 64 *validation* images

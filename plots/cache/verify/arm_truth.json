@@ -28247,10 +28247,14 @@
    "ftbqmlnvok"
   ],
   "jobids": [
-   "29634995"
+   "29634995",
+   "29722335",
+   "29722336"
   ],
   "starts": [
-   "2026-09-14 12:51:59"
+   "2026-09-14 12:51:59",
+   "2026-09-16 14:32:13",
+   "2026-09-16 14:59:11"
   ],
   "sig": {
    "initialize": "results/pr_vitb_ksd/pr_6463456_final.pth",
@@ -28362,15 +28366,16 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 296,
-  "acc_last": null,
+  "max_epoch": 299,
+  "acc_last": 77.83000254882812,
   "acc_at": {
    "249": 77.70800242675782,
    "274": 77.78200276367187,
    "284": 77.87400241699218,
-   "289": 77.84800275878906
+   "289": 77.84800275878906,
+   "299": 77.83000254882812
   },
-  "train_loss_last": 2.200481147935184,
+  "train_loss_last": 2.198083116255032,
   "pre_fix": false
  },
  {
@@ -28652,10 +28657,12 @@
    "ftbanaksw"
   ],
   "jobids": [
-   "29720203"
+   "29720203",
+   "29722347"
   ],
   "starts": [
-   "2026-09-15 22:34:26"
+   "2026-09-15 22:34:26",
+   "2026-09-16 07:09:04"
   ],
   "sig": {
    "initialize": "",
@@ -28767,10 +28774,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 112,
+  "max_epoch": 227,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.3548746385659354,
+  "train_loss_last": 2.593867198552172,
   "pre_fix": false
  },
  {
@@ -28780,10 +28787,12 @@
    "ftbanaks"
   ],
   "jobids": [
-   "29720300"
+   "29720300",
+   "29722352"
   ],
   "starts": [
-   "2026-09-15 23:53:38"
+   "2026-09-15 23:53:38",
+   "2026-09-16 07:10:02"
   ],
   "sig": {
    "initialize": "",
@@ -28895,10 +28904,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 94,
-  "acc_last": 69.70400208984375,
+  "max_epoch": 208,
+  "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.765139293546478,
+  "train_loss_last": 2.921057242888193,
   "pre_fix": false
  },
  {
@@ -29023,10 +29032,138 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 14,
-  "acc_last": 21.32600057800293,
+  "max_epoch": 129,
+  "acc_last": 74.67400251464844,
   "acc_at": {},
-  "train_loss_last": 5.956738270293826,
+  "train_loss_last": 3.391981074729791,
+  "pre_fix": false
+ },
+ {
+  "slurm_id": "29720207",
+  "seed": 0,
+  "jobnames": [
+   "ftbanakbs"
+  ],
+  "jobids": [
+   "29720304"
+  ],
+  "starts": [
+   "2026-09-16 09:22:30"
+  ],
+  "sig": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ftbanakb (ksd recipe + fc1 bias gate) with the gate biases at lr x0.02 (lrscale_slowgate.json): the persistent-gate control without a sink",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "output_dir": "results/imnet_base/results_IMNET_BASE_29720207/s0",
+  "first_start": "2026-09-16 09:22:30",
+  "sig_first": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ftbanakb (ksd recipe + fc1 bias gate) with the gate biases at lr x0.02 (lrscale_slowgate.json): the persistent-gate control without a sink",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "max_epoch": 81,
+  "acc_last": null,
+  "acc_at": {},
+  "train_loss_last": 3.3078282784837754,
   "pre_fix": false
  },
  {
@@ -29151,10 +29288,138 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 110,
+  "max_epoch": 224,
+  "acc_last": 77.68800240722656,
+  "acc_at": {},
+  "train_loss_last": 2.486376509368897,
+  "pre_fix": false
+ },
+ {
+  "slurm_id": "29723431",
+  "seed": 0,
+  "jobnames": [
+   "ftbanakx"
+  ],
+  "jobids": [
+   "29723431"
+  ],
+  "starts": [
+   "2026-09-16 14:32:08"
+  ],
+  "sig": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ftbanap principle with the ksd checkpoint: exact per-slice effective scale per block 0-8 (54 numbers) and Gaussian-sampled LN gains/biases (per-block mean/std of pr_vitb_ksd); timm random, per-slice rms multipliers (block 0 + linear ramp 1-8) from vitbase_runs/profile_ftbanakx.json, LN=1, biases 0, no checkpoint",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "output_dir": "results/imnet_base/results_IMNET_BASE_29723431/s0",
+  "first_start": "2026-09-16 14:32:08",
+  "sig_first": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ftbanap principle with the ksd checkpoint: exact per-slice effective scale per block 0-8 (54 numbers) and Gaussian-sampled LN gains/biases (per-block mean/std of pr_vitb_ksd); timm random, per-slice rms multipliers (block 0 + linear ramp 1-8) from vitbase_runs/profile_ftbanakx.json, LN=1, biases 0, no checkpoint",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "max_epoch": 11,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.140042476093349,
+  "train_loss_last": 5.795921654034501,
   "pre_fix": false
  }
 ]

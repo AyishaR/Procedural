@@ -436,7 +436,7 @@ worked because kdyck's fc1 is small (0.36x), so random matrices at that scale si
 fc1 is loud (0.9-2.3x), so every second-moment copy gives a loud, half-on MLP, the `ftbanai` state. Accordingly
 `ftbanak` (the `ftbanap` procedure applied verbatim to ksd) FINAL 77.86 = random, and `ftbanakw` (write ratios matched,
 GELU still on) FINAL 76.65, 1.4 below random. Registered prediction confirmed: `ftbanakg` (exact scales + permuted LN vectors) FINAL 77.64, `ftbqmlnvok` (twin recipe)
-77.8 at epoch 294; `ftbanakb` (transient MLP gate) FINAL 78.25. Consequences: the functional mechanism generalises across the two
+FINAL 77.83; `ftbanakb` (transient MLP gate) FINAL 78.25. Consequences: the functional mechanism generalises across the two
 checkpoints and ksd confirms it; the parametric extraction procedure ("read 54 second moments off the checkpoint")
 does not, and the paper must state the lever as the functional state with `ftbanap` as one checkpoint-free
 instantiation. The late lever is untouched (a single number, never read off a checkpoint). Decisive test launched
