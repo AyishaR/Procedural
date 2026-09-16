@@ -12,14 +12,27 @@ ingredients are read off:
 
    "Effective" means: how large the linear layer looks to the forward pass, relative to
    a fresh timm initialisation. In a pre-norm block the input to q, k, v is
-   gain * LN(x) + bias, so q = W_q (gain * LN(x)) = (W_q diag(gain)) LN(x). LN(x) has unit
-   variance per channel, so the matrix that acts on a unit-variance input is
-   W_q diag(gain), whose root mean square is root mean square(W_q) * root mean square(gain) when gain and weight
-   columns are uncorrelated. Dividing by timm's truncated-normal standard deviation
-   (0.02) turns this into a multiplier: 1.0 means "as large as a random initialisation",
-   0.36 means "about a third of it". q, k, v take norm1's gain and fc1 takes norm2's.
-   proj and fc2 have no LayerNorm in front, so their effective scale is the raw
-   root mean square(W) / 0.02.
+   norm1(x) = gain * standardise(x) + bias, so
+
+       q = W_q (gain * standardise(x) + bias)
+         = (W_q diag(gain)) standardise(x)  +  W_q bias
+
+   standardise(x) has unit variance per channel, so the matrix that acts on a
+   unit-variance input is W_q diag(gain), whose root mean square is
+   root mean square(W_q) * root mean square(gain) when gain and weight columns are
+   uncorrelated. That product is the effective scale. Dividing by timm's
+   truncated-normal standard deviation (0.02) turns it into a multiplier: 1.0 means "as
+   large as a random initialisation", 0.36 means "about a third of it". q, k, v take
+   norm1's gain and fc1 takes norm2's. proj and fc2 have no LayerNorm in front, so their
+   effective scale is the raw root mean square(W) / 0.02.
+
+   The second term, W_q bias, is a constant offset added to every token, independent of
+   the input, so it is not part of the scale. Ingredient 2 records the mean and standard
+   deviation of each LayerNorm bias, which reproduces the size of that offset, but not
+   its direction relative to the rows of W, since the sampled bias and the random W are
+   independent. On kdyck that direction is inert (ftbanab). On ksd it is the mechanism
+   that switches the middle MLPs off (fc1 rows anti-aligned with the norm2 bias give
+   pre-activations of mean -2 to -3), and no second-moment recipe reproduces it.
 
    Why the recipe is written in these units: the procedural checkpoints have gains
    around 0.4, not 1. Copying root mean square(W) alone would give a forward pass 2.5 times louder
@@ -30,8 +43,13 @@ ingredients are read off:
    is what makes Adam's relative step on them small (the early lever's carrier, see the
    synthesis document).
 
-   Caveat: root mean square(W) * root mean square(gain) is exact only if gain and weight columns are uncorrelated.
-   See "Manual corrections" below for where that fails.
+   Caveat: root mean square(W) * root mean square(gain) equals the exact
+   root mean square(W diag(gain)) only if gain_j squared is uncorrelated with the mean
+   squared magnitude of column j of W. Measured on both checkpoints (2026-09-16), the
+   exact value is 1 to 11 percent larger in every block and weight, so the two are
+   mildly positively correlated. The product is kept as the default because every
+   existing specification, arm and verification target is expressed in it;
+   --gain_fold exact writes the exact value instead.
 
    Default form ("linear", the ftbanap recipe): block 0 keeps its measured value and
    blocks 1..8 are replaced by a least-squares straight line from block 1 to block 8.
@@ -42,27 +60,39 @@ ingredients are read off:
 2. LayerNorm statistics: mean and standard deviation of the gain and of the bias of
    norm1 and norm2, per block. 4 vectors times 2 moments times 9 blocks = 72 numbers,
    written inline under "ln.stats" so utils.apply_analytic_profile can sample them
-   without the checkpoint. --no_layernorm omits them (gains stay 1, biases 0: the
+   without the checkpoint (it only opens the file named under "ln.ckpt" when "ln.stats"
+   is absent, so that key is provenance here). --no_layernorm omits them (gains stay 1, biases 0: the
    ftbana form).
 
 Output: a profile specification for
     --init_method analytic_profile --profile_spec OUT --init_method_scaled_blocks 0,...,8
 
-Manual corrections. The kdyck specification in use (vitbase_runs/profile_ftbanap.json)
-deviates from the raw measurement in two places that were found on forward-pass dumps,
-not from the weights: q and k flat at 1.32 (the checkpoint's q and k columns are
-anti-correlated with the LayerNorm gain, large-gain channels have small q and k weights,
-so the folded root mean square overstates the attention logit scale; the measured
-1.4 to 1.8 gave logits 1.3 to 1.5 times too sharp on a forward pass) and the fc2 line
-ending at 0.95 instead of the fitted value
-(block 8's fc2 already grows toward the loud top blocks while its GELU is still off).
---query_key_flat 1.32 --fc2_end 0.95 reproduce them; the printed "max line misfit" then
-shows how far the override sits from the measurement.
+Corrections. The kdyck specification in use (vitbase_runs/profile_ftbanap.json)
+deviates from the raw per-slice measurement in two places.
+
+q and k flat at 1.32. This is not a free constant: it is the effective scale of the
+*fused* qkv matrix treated as one tensor (product folding, mean over blocks 1..8 =
+1.321, range 1.27..1.42), i.e. the convention of the quantile twin ftbqmlnvo, whose
+q and k slices are drawn from the pooled q+k+v value distribution
+(--quantile_qkv_mode v_only pools q and k). The recipe was calibrated to reproduce that
+twin on a forward pass, and the measured 1.4 (q) / 1.7 (k) gave logits 1.3 to 1.5 times
+sharper than the twin's because the twin itself is at the pooled 1.32. Whether the
+checkpoint's unpooled q/k scale would work as well is untested as a Gaussian recipe
+(the qk_v shuffle ftb4e3fix, which keeps it, ends at 79.50 against the pooled twin's
+79.93, within seed noise). --query_key pooled derives the value from the checkpoint;
+--query_key_flat X sets it by hand.
+
+fc2 line ending at 0.95 instead of the fitted 1.05: a design decision, not a
+calibration (matching the twin's block-8 MLP write would give 1.31). Block 8's fc2
+already grows toward the loud top blocks while its GELU is still off, and the recipe
+describes a quiet middle. --fc2_end 0.95 reproduces it; the printed "max line misfit"
+shows how far each override sits from the measurement.
 
 usage: .venv/bin/python extract_profile.py CHECKPOINT OUT.json [--blocks 0-8] [--exact] [--no_layernorm]
                                             [--query_key_flat X] [--fc2_end Y] [--init_standard_deviation 0.02]
-for example:
-       .venv/bin/python extract_profile.py results/pr_vitb_n/pr_6066174_final.pth /tmp/kdyck.json --query_key_flat 1.32 --fc2_end 0.95
+                                            [--query_key separate|pooled] [--gain_fold product|exact]
+for example (the ftbanap specification, derived):
+       .venv/bin/python extract_profile.py results/pr_vitb_n/pr_6066174_final.pth /tmp/kdyck.json --query_key pooled --fc2_end 0.95
 """
 import argparse
 import json
@@ -81,29 +111,40 @@ def root_mean_square(tensor):
 
 def load_state_dict(path):
     """Model weights of a procedural checkpoint (accepts the 'state', 'model' or bare layouts)."""
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     return checkpoint.get("state", checkpoint.get("model", checkpoint))
 
 
-def effective_scales(state_dict, block, init_standard_deviation):
+def gain_folded_scale(weight, gain, init_standard_deviation, gain_fold):
+    """Root mean square of the matrix the forward pass applies to the standardised stream, W diag(gain),
+    relative to the initialisation standard deviation. "product" approximates it as
+    root mean square(W) * root mean square(gain) (the units of every existing specification);
+    "exact" computes it."""
+    if gain_fold == "exact":
+        return root_mean_square(weight.float() * gain.float()[None, :]) / init_standard_deviation
+    return root_mean_square(weight) * root_mean_square(gain) / init_standard_deviation
+
+
+def effective_scales(state_dict, block, init_standard_deviation, gain_fold="product"):
     """Effective scale of each linear weight of one block, relative to the initialisation standard deviation.
 
-    How large the layer looks to the forward pass: root mean square(W diag(gain)) / 0.02, approximated as
-    root mean square(W) * root mean square(gain) / 0.02 (see the module docstring). q, k, v are the three row groups of
-    the fused attn.qkv.weight; they take norm1's gain and fc1 takes norm2's. proj and fc2 have
-    no LayerNorm in front, so their scale is the raw root mean square(W) / 0.02."""
+    How large the layer looks to the forward pass (see the module docstring). q, k, v are the
+    three row groups of the fused attn.qkv.weight; they take norm1's gain and fc1 takes norm2's.
+    proj and fc2 have no LayerNorm in front, so their scale is the raw root mean square(W) / 0.02."""
     prefix = f"blocks.{block}."
     fused_qkv = state_dict[prefix + "attn.qkv.weight"]
     width = fused_qkv.shape[1]
     query, key, value = fused_qkv[:width], fused_qkv[width:2 * width], fused_qkv[2 * width:]
-    gain1 = root_mean_square(state_dict[prefix + "norm1.weight"])
-    gain2 = root_mean_square(state_dict[prefix + "norm2.weight"])
+    gain1 = state_dict[prefix + "norm1.weight"]
+    gain2 = state_dict[prefix + "norm2.weight"]
     return {
-        "q": gain1 * root_mean_square(query) / init_standard_deviation,
-        "k": gain1 * root_mean_square(key) / init_standard_deviation,
-        "v": gain1 * root_mean_square(value) / init_standard_deviation,
+        "q": gain_folded_scale(query, gain1, init_standard_deviation, gain_fold),
+        "k": gain_folded_scale(key, gain1, init_standard_deviation, gain_fold),
+        # the fused matrix as one tensor: the twin's convention for q and k (--query_key pooled)
+        "qkv_pooled": gain_folded_scale(fused_qkv, gain1, init_standard_deviation, gain_fold),
+        "v": gain_folded_scale(value, gain1, init_standard_deviation, gain_fold),
         "proj": root_mean_square(state_dict[prefix + "attn.proj.weight"]) / init_standard_deviation,
-        "fc1": gain2 * root_mean_square(state_dict[prefix + "mlp.fc1.weight"]) / init_standard_deviation,
+        "fc1": gain_folded_scale(state_dict[prefix + "mlp.fc1.weight"], gain2, init_standard_deviation, gain_fold),
         "fc2": root_mean_square(state_dict[prefix + "mlp.fc2.weight"]) / init_standard_deviation,
     }
 
@@ -153,26 +194,28 @@ def apply_corrections(weight_name, start, end, query_key_flat, fc2_end):
 def build_profile_specification(arguments):
     """Measure the checkpoint. Returns (specification for apply_analytic_profile, blocks, report rows)."""
     state_dict = load_state_dict(arguments.checkpoint)
-    first, last = (int(x) for x in arguments.blocks.split("-"))
+    first, last = (int(x) for x in arguments.blocks.split("-"))   # validated in parse_arguments
     blocks = list(range(first, last + 1))
     first_block, fitted_blocks = blocks[0], blocks[1:]
 
-    scales = {block: effective_scales(state_dict, block, arguments.init_standard_deviation) for block in blocks}
+    scales = {block: effective_scales(state_dict, block, arguments.init_standard_deviation, arguments.gain_fold)
+              for block in blocks}
 
     specification, rows = {}, []
     for weight_name in LINEAR_WEIGHTS:
-        measured = [scales[block][weight_name] for block in fitted_blocks]
+        source = "qkv_pooled" if (weight_name in ("q", "k") and arguments.query_key == "pooled") else weight_name
+        per_block = [scales[block][source] for block in blocks]
+        if arguments.exact:
+            specification[weight_name] = {"per_block": {str(block): round(scales[block][source], 4) for block in blocks}}
+            rows.append((weight_name, per_block, None))
+            continue
+        measured = [scales[block][source] for block in fitted_blocks]
         start, end = fit_line(measured)
         start, end = apply_corrections(weight_name, start, end, arguments.query_key_flat, arguments.fc2_end)
         misfit = line_misfit(measured, start, end)
-
-        if arguments.exact:
-            specification[weight_name] = {"per_block": {str(block): round(scales[block][weight_name], 4) for block in blocks}}
-        else:
-            specification[weight_name] = {"b0": round(scales[first_block][weight_name], 3),
-                                         "start": round(start, 3), "end": round(end, 3)}
-        rows.append((weight_name, [scales[block][weight_name] for block in blocks],
-                     scales[first_block][weight_name], start, end, misfit))
+        specification[weight_name] = {"b0": round(scales[first_block][source], 3),
+                                      "start": round(start, 3), "end": round(end, 3)}
+        rows.append((weight_name, per_block, (scales[first_block][source], start, end, misfit)))
 
     if not arguments.no_layernorm:
         specification["ln"] = {
@@ -184,13 +227,19 @@ def build_profile_specification(arguments):
 
 
 def print_scale_table(arguments, blocks, rows):
-    print(f"{arguments.checkpoint}: effective scales "
-          f"(root mean square(gain) * root mean square(weight) / {arguments.init_standard_deviation}) "
-          f"and the linear fit over blocks {blocks[1]}-{blocks[-1]}")
-    print("weight| " + " ".join(f"b{block:<5d}" for block in blocks) + " | b0   start -> end   | max line misfit")
-    for weight_name, per_block, first_block_value, start, end, misfit in rows:
+    formula = ("root mean square(weight diag(gain))" if arguments.gain_fold == "exact"
+               else "root mean square(gain) * root mean square(weight)")
+    fit_note = "" if arguments.exact else f" and the linear fit over blocks {blocks[1]}-{blocks[-1]}"
+    print(f"{arguments.checkpoint}: effective scales ({formula} / {arguments.init_standard_deviation}){fit_note}")
+    header = "weight| " + " ".join(f"b{block:<5d}" for block in blocks)
+    print(header if arguments.exact else header + " | b0   start -> end   | max line misfit")
+    for weight_name, per_block, line in rows:
         cells = " ".join(f"{value:5.2f} " for value in per_block)
-        print(f"{weight_name:5s} | {cells} | {first_block_value:4.2f}  {start:5.2f} -> {end:5.2f} | {misfit:5.1%}")
+        if line is None:
+            print(f"{weight_name:5s} | {cells}")
+        else:
+            first_block_value, start, end, misfit = line
+            print(f"{weight_name:5s} | {cells} | {first_block_value:4.2f}  {start:5.2f} -> {end:5.2f} | {misfit:5.1%}")
 
 
 def print_layernorm_table(statistics):
@@ -214,13 +263,39 @@ def parse_arguments():
                         help="per-block measured scales instead of block 0 + linear fit")
     parser.add_argument("--no_layernorm", action="store_true",
                         help="omit the LayerNorm statistics (gains 1, biases 0: the ftbana form)")
+    parser.add_argument("--query_key", choices=("separate", "pooled"), default="separate",
+                        help="'separate' = q and k measured as their own row groups; 'pooled' = both take the effective scale of the "
+                             "fused qkv matrix (the quantile twin's convention; kdyck: 1.32 over blocks 1-8)")
     parser.add_argument("--query_key_flat", type=float, default=None,
-                        help="override the q and k lines with this constant (kdyck: 1.32)")
+                        help="override the q and k lines with this constant (kdyck: 1.32, which --query_key pooled derives)")
     parser.add_argument("--fc2_end", type=float, default=None,
                         help="override the end of the fc2 line (kdyck: 0.95)")
+    parser.add_argument("--gain_fold", choices=("product", "exact"), default="product",
+                        help="how the LayerNorm gain enters q, k, v, fc1: 'product' = root mean square(W) * root mean square(gain), "
+                             "the units of every existing specification; 'exact' = root mean square(W diag(gain))")
     parser.add_argument("--init_standard_deviation", type=float, default=0.02,
                         help="standard deviation of timm's truncated-normal initialisation that the scales are relative to")
-    return parser.parse_args()
+    arguments = parser.parse_args()
+
+    first, last = parse_block_range(parser, arguments.blocks)
+    if not arguments.exact and last - first < 1:
+        parser.error("the linear form needs at least two blocks (block 0 plus one to fit)")
+    if arguments.query_key == "pooled" and arguments.query_key_flat is not None:
+        parser.error("--query_key pooled derives the q/k value; do not combine it with --query_key_flat")
+    if arguments.exact and (arguments.query_key_flat is not None or arguments.fc2_end is not None):
+        parser.error("--query_key_flat and --fc2_end correct the fitted line and have no meaning with --exact")
+    return arguments
+
+
+def parse_block_range(parser, text):
+    """'0-8' -> (0, 8); rejects malformed or descending ranges."""
+    try:
+        first, last = (int(x) for x in text.split("-"))
+    except ValueError:
+        parser.error(f"--blocks must look like 0-8, got {text!r}")
+    if first < 0 or first > last:
+        parser.error(f"--blocks must be an ascending range of non-negative blocks, got {text!r}")
+    return first, last
 
 
 def main():
@@ -236,7 +311,7 @@ def main():
 
     form = "exact per-block" if arguments.exact else "block 0 + linear fit"
     layernorm_note = ("" if arguments.no_layernorm
-                      else f" + {4 * len(blocks)} LayerNorm statistics inline (no checkpoint needed at initialisation)")
+                      else f" + {8 * len(blocks)} LayerNorm statistics inline (no checkpoint needed at initialisation)")
     print(f"wrote {arguments.out}: {form} scales{layernorm_note}")
 
 
