@@ -14,8 +14,8 @@ q and k flat at 1.32 (the checkpoint's q/k columns are anti-correlated with gamm
 scale) and fc2 ending at 0.95 instead of the fitted value (block 8 already turns toward the loud top). Reproduce them
 with --qk_flat 1.32 --fc2_end 0.95; this script otherwise reports the raw measurement and its ramp misfit.
 
-usage: .venv/bin/python plots/verify/extract_profile.py CKPT OUT.json [--blocks 0-8] [--exact] [--qk_flat X] [--fc2_end Y]
-   e.g. .venv/bin/python plots/verify/extract_profile.py results/pr_vitb_n/pr_6066174_final.pth /tmp/kdyck.json --qk_flat 1.32 --fc2_end 0.95"""
+usage: .venv/bin/python extract_profile.py CKPT OUT.json [--blocks 0-8] [--exact] [--qk_flat X] [--fc2_end Y]
+   e.g. .venv/bin/python extract_profile.py results/pr_vitb_n/pr_6066174_final.pth /tmp/kdyck.json --qk_flat 1.32 --fc2_end 0.95"""
 import sys, json, argparse, torch, numpy as np
 ap = argparse.ArgumentParser(); ap.add_argument("ckpt"); ap.add_argument("out"); ap.add_argument("--blocks", default="0-8")
 ap.add_argument("--exact", action="store_true"); ap.add_argument("--qk_flat", type=float, default=None); ap.add_argument("--fc2_end", type=float, default=None)
