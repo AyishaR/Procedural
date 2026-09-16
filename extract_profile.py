@@ -85,17 +85,21 @@ checkpoint's unpooled q/k scale would work as well is untested as a Gaussian rec
 79.93, within seed noise). --query_key pooled derives the value from the checkpoint;
 --query_key_flat X sets it by hand.
 
-fc2 line ending at 0.95 instead of the fitted 1.05: a design decision, not a
-calibration (matching the twin's block-8 MLP write would give 1.31). Block 8's fc2
-already grows toward the loud top blocks while its GELU is still off, and the recipe
-describes a quiet middle. --fc2_end 0.95 reproduces it; the printed "max line misfit"
-shows how far each override sits from the measurement.
+fc2 line ending at 0.95 instead of the fitted 1.05. Block 8's fc2 (1.19) already grows
+toward the loud top blocks while its GELU is still off, and a least-squares line over
+blocks 1..8 is pulled up by that one point (it misfits blocks 1..7 by up to 8%). Fitting
+the early-regime trend over blocks 1..7 and extrapolating it to block 8 gives
+0.738 -> 0.956 (misfit over 1..7: 2.7%), i.e. the hand value; --fit_upto 7 derives it
+for every slice with one rule (v, proj, fc1 move by a few percent, q/k are pooled-flat
+anyway). --fc2_end X sets the end by hand; the printed "max line misfit" shows how far
+each line sits from the measurement.
 
 usage: .venv/bin/python extract_profile.py CHECKPOINT OUT.json [--blocks 0-8] [--exact] [--no_layernorm]
                                             [--query_key_flat X] [--fc2_end Y] [--init_standard_deviation 0.02]
                                             [--query_key separate|pooled] [--gain_fold product|exact]
-for example (the ftbanap specification, derived):
-       .venv/bin/python extract_profile.py results/pr_vitb_n/pr_6066174_final.pth /tmp/kdyck.json --query_key pooled --fc2_end 0.95
+                                            [--fit_upto B]
+for example (the ftbanap specification, derived, no hand constant):
+       .venv/bin/python extract_profile.py results/pr_vitb_n/pr_6066174_final.pth /tmp/kdyck.json --query_key pooled --fit_upto 7
 """
 import argparse
 import json
@@ -213,7 +217,12 @@ def build_profile_specification(arguments):
             rows.append((weight_name, per_block, None))
             continue
         measured = [scales[block][source] for block in fitted_blocks]
-        start, end = fit_line(measured)
+        if arguments.fit_upto is not None:      # fit the early-regime trend and extrapolate it to the last block
+            n_fit = arguments.fit_upto - fitted_blocks[0] + 1
+            start, end_fit = fit_line(measured[:n_fit])
+            end = start + (end_fit - start) * (len(measured) - 1) / max(1, n_fit - 1)
+        else:
+            start, end = fit_line(measured)
         start, end = apply_corrections(weight_name, start, end, arguments.query_key_flat, arguments.fc2_end)
         misfit = line_misfit(measured, start, end)
         specification[weight_name] = {"b0": round(scales[first_block][source], 3),
@@ -274,7 +283,10 @@ def build_parser(description=__doc__, output_required=True):
     parser.add_argument("--query_key_flat", type=float, default=None,
                         help="override the q and k lines with this constant (kdyck: 1.32, which --query_key pooled derives)")
     parser.add_argument("--fc2_end", type=float, default=None,
-                        help="override the end of the fc2 line (kdyck: 0.95)")
+                        help="override the end of the fc2 line (kdyck: 0.95, which --fit_upto 7 derives)")
+    parser.add_argument("--fit_upto", type=int, default=None,
+                        help="fit the line over blocks 1..B only and extrapolate it to the last block (all slices); "
+                             "kdyck: B=7 keeps block 8's turn toward the loud top out of the fit and reproduces the ftbanap line")
     parser.add_argument("--gain_fold", choices=("product", "exact"), default="product",
                         help="how the LayerNorm gain enters q, k, v, fc1: 'product' = root mean square(W) * root mean square(gain), "
                              "the units of every existing specification; 'exact' = root mean square(W diag(gain))")
@@ -300,8 +312,10 @@ def validate_arguments(parser, arguments):
                      "and ramps over the other listed blocks); use --blocks 0-N or --exact")
     if arguments.query_key == "pooled" and arguments.query_key_flat is not None:
         parser.error("--query_key pooled derives the q/k value; do not combine it with --query_key_flat")
-    if arguments.exact and (arguments.query_key_flat is not None or arguments.fc2_end is not None):
-        parser.error("--query_key_flat and --fc2_end correct the fitted line and have no meaning with --exact")
+    if arguments.exact and (arguments.query_key_flat is not None or arguments.fc2_end is not None or arguments.fit_upto is not None):
+        parser.error("--query_key_flat, --fc2_end and --fit_upto shape the fitted line and have no meaning with --exact")
+    if arguments.fit_upto is not None and not (first + 2 <= arguments.fit_upto < last):
+        parser.error(f"--fit_upto must lie in [{first + 2}, {last - 1}] (at least two fitted blocks, and at least one extrapolated)")
 
 
 def parse_block_range(parser, text):

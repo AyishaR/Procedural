@@ -1408,10 +1408,14 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
                 blk.mlp.fc1.weight.mul_(mult["fc1"])
             if "fc2" in mult:
                 blk.mlp.fc2.weight.mul_(mult["fc2"])
-            # measured rms / timm std, for the log
+            # for the log: (multiplier applied, raw rms / timm std, effective rms(W diag gamma) / timm std -- the quantity the
+            # spec controls for q, k, v, fc1; equals the raw value for proj and fc2, which have no LayerNorm in front)
             got = {"q": W[:D], "k": W[D:2 * D], "v": W[2 * D:], "proj": blk.attn.proj.weight,
                    "fc1": blk.mlp.fc1.weight, "fc2": blk.mlp.fc2.weight}
-            applied[b] = {s: (round(mult.get(s, 1.0), 3), round(float(got[s].pow(2).mean().sqrt()) / timm_std, 3)) for s in got}
+            gam = {"q": blk.norm1.weight, "k": blk.norm1.weight, "v": blk.norm1.weight, "fc1": blk.norm2.weight}
+            rms_ = lambda t: float(t.detach().float().pow(2).mean().sqrt())
+            applied[b] = {s: (round(mult.get(s, 1.0), 3), round(rms_(got[s]) / timm_std, 3),
+                              round(rms_(got[s].float() * gam[s].detach().float()[None, :]) / timm_std if s in gam else rms_(got[s]) / timm_std, 3)) for s in got}
         for b_str, mult in spec.get("extra", {}).items():
             b = int(b_str); blk = model.blocks[b]; W = blk.attn.qkv.weight
             for j, s in enumerate(("q", "k", "v")):
