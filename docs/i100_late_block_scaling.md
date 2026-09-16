@@ -1458,6 +1458,32 @@ prediction held; the `ftbanag`-analogue does not transfer either, so it is not t
 worth ~0.4 over `ftbanak` and no more, as predicted from its epoch-9 traces (gate gone) and its block-7 transient (32).
 `ftbqmlnvok` (twin recipe on ksd) at 77.83 at epoch 294, final 07:25. All three continuations cancelled.
 
+**Structural arms, first traces (2026-09-16 07:30; `plots/verify/wandb_layerwise.py` FAST, dynamics rows).** Block-7 head-probe
+at epochs 9/19/29/49, attention entropy and MLP write ratio of blocks 1-8 at 9/19/49, accuracy/train loss at 94:
+| arm | block-7 probe 9/19/29/49 | entropy 9/19/49 | MLP write 9/19/49 | acc / loss at 94 |
+|---|---|---|---|---|
+| random | 29.8 44.6 47.8 45.9 | 4.06 3.83 3.65 | 0.31 0.28 0.19 | 75.50 / 3.251 |
+| ksd prefix `ftb4i` | 7.0 6.4 5.3 2.6 | 1.73 2.69 4.14 | 0.25 0.23 0.18 | 72.43 / 3.555 |
+| `ftbanap` (kdyck recipe) | 13.9 24.2 28.4 26.2 | 4.36 4.01 3.71 | 0.12 0.25 0.24 | 75.34 / 3.360 |
+| `ftbanak` (ksd recipe, 77.86) | 18.9 34.3 39.6 36.5 | 4.07 3.70 3.51 | 0.45 0.42 0.34 | 75.58 / 3.236 |
+| `ftbanaks` (sink) | 12.2 13.4 12.1 6.4 | 0.12 0.07 0.69 | 0.34 0.20 0.14 | 69.70 / 3.765 |
+| `ftbanaksw` (weak sink) | 15.3 21.7 22.6 15.6 | 0.42 0.66 1.30 | 0.38 0.25 0.21 | 72.43 / 3.512 |
+| `ftbanakd` (diffuse q/k + gate) | 19.7 32.9 35.2 32.4 | 4.14 3.50 3.52 | 0.31 0.36 0.33 | 75.67 / 3.228 |
+| `ftbanaksg` (sink + gate) | 12.6 (epoch 9 only) | 0.16 | 0.24 | -- |
+The sink reproduces the prefix's dynamics: `ftbanaksw` sits on the ksd prefix's accuracy and loss curve (72.43 / 3.51 vs 72.43 /
+3.56 at 94; 74.00 / 3.38 vs 73.79 / 3.44 at 109), its transient is in the winners' band (22.6) and its sink relaxes like the
+prefix's, ~30 epochs later (entropy 1.3 at 49 vs the prefix's 4.1). `ftbanaks` (init-strength sink) is over-suppressed: the sink
+sharpens instead of relaxing (0.07 at 19, 0.69 at 49), attention writes shrink to 0.06, the transient is at the proc level
+(6-14) and the fit deficit exceeds the prefix's (69.7 / 3.77 at 94). `ftbanakd` is random-like: its diffuse attention sharpens to
+random's entropy by epoch 19 (ksd's LN gains of 0.27 move faster than kdyck's 0.4), the persistent gate does not keep the MLP
+write down (0.31 at 9, same as the transient gate), transient 35 = the `ftbanai` class. The gate is therefore not the
+operative ingredient in either form; the sink is. Expectation: `ftbanaksw` ~80 if the prefix-like fit deficit converts as the
+prefix's does after epoch 200; `ftbanaks` uncertain (78-80: the same state but held too long); `ftbanakd` ~78; `ftbanaksg`
+tracks `ftbanaks`; `ftbanakbs` (still pending for a healthy node) ~78.3 like `ftbanakb`.
+*Cluster:* `ftbqmlnvok` was preempted at epoch 296 at 00:20, requeued onto dlc2gpu23 (fabric manager `failed`; probe job
+29722329 confirms CUDA 802 there this morning), lost its 6 retries and its continuation; resubmitted 07:35 excluding the three
+nodes (3 epochs left). dlc2gpu24/25 are powered down again.
+
 **ksd structural arms (2026-09-15 night): reproduce the prefix's early state without a checkpoint vector.** The dynamics table
 says the ksd second-moment recipes fail because their middle attention mixes tokens from the start (entropy 3.9-4.1 at
 epoch 9) and their MLPs are loud; the prefix keeps a *sink* (every query reads one key, entropy 1.6-1.7 through epoch 9) and a
