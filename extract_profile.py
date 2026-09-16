@@ -253,10 +253,12 @@ def print_layernorm_table(statistics):
         print(f"  b{block}: " + " / ".join(columns))
 
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def build_parser(description=__doc__, output_required=True):
+    """The extractor's command line. plot_profile.py reuses it so both scripts take the same options."""
+    parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("checkpoint", help="procedural checkpoint (.pth)")
-    parser.add_argument("out", help="profile specification to write (.json)")
+    if output_required:
+        parser.add_argument("out", help="profile specification to write (.json)")
     parser.add_argument("--blocks", default="0-8",
                         help="inclusive block range; the first block keeps its value, the rest are fitted by a line")
     parser.add_argument("--exact", action="store_true",
@@ -275,8 +277,18 @@ def parse_arguments():
                              "the units of every existing specification; 'exact' = root mean square(W diag(gain))")
     parser.add_argument("--init_standard_deviation", type=float, default=0.02,
                         help="standard deviation of timm's truncated-normal initialisation that the scales are relative to")
-    arguments = parser.parse_args()
+    return parser
 
+
+def parse_arguments():
+    parser = build_parser()
+    arguments = parser.parse_args()
+    validate_arguments(parser, arguments)
+    return arguments
+
+
+def validate_arguments(parser, arguments):
+    """Rejects option combinations that would silently do the wrong thing."""
     first, last = parse_block_range(parser, arguments.blocks)
     if not arguments.exact and last - first < 1:
         parser.error("the linear form needs at least two blocks (block 0 plus one to fit)")
@@ -284,7 +296,6 @@ def parse_arguments():
         parser.error("--query_key pooled derives the q/k value; do not combine it with --query_key_flat")
     if arguments.exact and (arguments.query_key_flat is not None or arguments.fc2_end is not None):
         parser.error("--query_key_flat and --fc2_end correct the fitted line and have no meaning with --exact")
-    return arguments
 
 
 def parse_block_range(parser, text):
