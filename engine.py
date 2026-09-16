@@ -216,6 +216,11 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                                 f"LR Scaling/layer{layer}_{param_name}_total_to_weight_ratio": total_to_weight_ratio,
                             }, commit=True)
             if (data_iter_step + 1) % update_freq == 0:
+                # readout routing: the grads are unscaled (loss_scaler ran unscale_ before
+                # step) and not yet zeroed -- count the sign of the readout weights' gradient
+                mixer = getattr(model_without_ddp, 'readout_mixer', None)
+                if mixer is not None:
+                    mixer.record_grad_sign()
                 optimizer.zero_grad()
                 update_steps_done += 1
                 if model_ema is not None:
@@ -226,6 +231,9 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
             loss.backward()
             if (data_iter_step + 1) % update_freq == 0:
                 optimizer.step()
+                mixer = getattr(model_without_ddp, 'readout_mixer', None)
+                if mixer is not None:
+                    mixer.record_grad_sign()
                 optimizer.zero_grad()
                 if model_ema is not None:
                     model_ema.update(model)

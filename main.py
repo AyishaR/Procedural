@@ -135,6 +135,14 @@ def get_args_parser():
     parser.add_argument('--routing_impl', type=str, default='loop', choices=('loop', 'buf'),
                         help="'loop' (ordered autograd accumulation, bit-identical to vanilla at "
                              "init) or 'buf' (fused history buffer, same math, cheaper at depth)")
+    # Readout-only routing (models/readout_routing.py): the block loop stays vanilla and only the
+    # readout reads a weighted mix of the embedding and the 24 branch outputs. Linear weights.
+    parser.add_argument('--readout_routing', type=str, default='off',
+                        choices=('off', 'fixed_last4', 'learn_last4', 'learn_ones'),
+                        help="fixed_last4: readout = sum of blocks 8-11's branch outputs (buffer); "
+                             "learn_last4: same init, trainable; learn_ones: all ones (== vanilla "
+                             "at init), trainable -- the control. Refuses to compose with "
+                             "--resid_routing.")
 
     # Augmentation parameters
     parser.add_argument('--color_jitter', type=float, default=0.4, metavar='PCT',
@@ -2087,7 +2095,7 @@ def main(args):
                 # the router stays fp32: THETA_ONE rounds to softplus ~0.99976 in fp16, which
                 # would cost the "every coefficient is exactly 1 at init" property in the dump
                 # (1.3 kB; a no-op for vanilla checkpoints, which have no router.* keys)
-                torch.save({k: (v if k.startswith('router.') else v.half())
+                torch.save({k: (v if k.startswith(('router.', 'readout_mixer.')) else v.half())
                             for k, v in model_without_ddp.state_dict().items()}, checkpoint_path)
             
         if data_loader_val is not None and \
@@ -2172,6 +2180,19 @@ def main(args):
                 with open(os.path.join(args.output_dir, 'routing.jsonl'), 'a') as f:
                     f.write(json.dumps({'epoch': epoch,
                                         'a': router.coefficient_matrix().cpu().tolist()}) + '\n')
+
+        # readout-only routing: the same split -- readout/* scalars in log_stats, the full
+        # 25-vector plus the per-weight gradient-sign statistics of this epoch in readout.jsonl.
+        # The sign counters are per epoch (reset here, after logging).
+        if getattr(args, 'readout_routing', 'off') != 'off':
+            mixer = model_without_ddp.readout_mixer
+            log_stats.update({f'readout/{k}': v for k, v in mixer.summary().items()})
+            if args.output_dir and utils.is_main_process():
+                with open(os.path.join(args.output_dir, 'readout.jsonl'), 'a') as f:
+                    f.write(json.dumps({'epoch': epoch,
+                                        'w': mixer.weight.detach().float().cpu().tolist(),
+                                        **mixer.grad_stats()}) + '\n')
+            mixer.reset_grad_stats()
 
         if args.output_dir and utils.is_main_process():
             if log_writer is not None:

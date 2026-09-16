@@ -37,6 +37,7 @@ from timm.models.layers import PatchEmbed, Mlp, DropPath, trunc_normal_, lecun_n
 from timm.models.registry import register_model
 
 from models.residual_routing import ResidualRouter, routed_forward_buf
+from models.readout_routing import READOUT_MODES, ReadoutMixer
 
 _logger = logging.getLogger(__name__)
 
@@ -423,7 +424,8 @@ class VisionTransformer(nn.Module):
             distill_proj="linear",
             resid_routing=False,
             routing_bound=0.0,
-            routing_impl='loop'
+            routing_impl='loop',
+            readout_routing='off'
     ):
         """
         Args:
@@ -459,24 +461,33 @@ class VisionTransformer(nn.Module):
         self.resid_routing = bool(resid_routing)
         self.routing_bound = float(routing_bound)
         self.routing_impl = str(routing_impl)
+        # readout-only routing (models/readout_routing.py): the block loop stays vanilla and only
+        # the readout mixes the embedding and the 2*depth branch outputs with its own weights.
+        self.readout_routing = str(readout_routing)
+        assert self.readout_routing in READOUT_MODES, \
+            f'readout_routing must be one of {READOUT_MODES}: {self.readout_routing!r}'
+        assert not (self.resid_routing and self.readout_routing != 'off'), \
+            'one intervention at a time: resid_routing already routes the readout'
         if self.resid_routing:
             assert self.routing_bound == 0.0 or self.routing_bound > 1.0, \
                 f'routing_bound must be 0 (softplus) or > 1: {self.routing_bound}'
             assert self.routing_impl in ('loop', 'buf'), \
                 f"routing_impl must be 'loop' or 'buf': {self.routing_impl!r}"
+        if self.resid_routing or self.readout_routing != 'off':
+            what = 'resid_routing' if self.resid_routing else 'readout_routing'
             assert init_values is None, \
-                'resid_routing replaces the residual adds; LayerScale is a second residual ' \
+                f'{what} reweights the residual path; LayerScale is a second residual ' \
                 'intervention (and its fp32 gamma would promote the branch output under AMP)'
             assert drop_path_rate == 0., \
-                'resid_routing replaces the residual adds; stochastic depth is a second ' \
+                f'{what} reweights the residual path; stochastic depth is a second ' \
                 'residual intervention'
             assert block_fn is Block, \
-                'resid_routing assumes the pre-norm Block (norm1/attn/ls1/drop_path1 + ' \
+                f'{what} assumes the pre-norm Block (norm1/attn/ls1/drop_path1 + ' \
                 'norm2/mlp/ls2/drop_path2)'
             assert not is_teacher and distill_head_dim == -1 and distill_num_heads == 1, \
-                'resid_routing has no per-block residual stream, so the intermediate features ' \
-                'the distillation heads read do not exist'
-            assert global_pool in ('token', 'avg'), 'resid_routing needs a pooled readout'
+                f'{what} replaces the tensor the distillation heads read (the stream after ' \
+                'the last block), so the intermediate features are not what they mean'
+            assert global_pool in ('token', 'avg'), f'{what} needs a pooled readout'
         use_fc_norm = global_pool == 'avg' if fc_norm is None else fc_norm
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
         act_layer = act_layer or nn.GELU
@@ -565,6 +576,10 @@ class VisionTransformer(nn.Module):
             print(f'residual routing: {2 * depth + 1} consumers, static {kind}, '
                   f'impl {self.routing_impl}', flush=True)
             self.router = ResidualRouter(depth, bound=self.routing_bound)
+        # same placement and the same RNG argument for the readout mixer (torch.zeros / ones)
+        if self.readout_routing != 'off':
+            self.readout_mixer = ReadoutMixer(depth, self.readout_routing)
+            print(f'readout routing: {self.readout_mixer}', flush=True)
 
     def init_weights(self, mode=''):
         assert mode in ('jax', 'jax_nlhb', 'moco', '')
@@ -641,6 +656,11 @@ class VisionTransformer(nn.Module):
             # `for i in range(self.distill_num_heads)` indexes exactly this entry.
             x = self._forward_routed(x)
             features_list = [x]
+        elif self.readout_routing != 'off':
+            # vanilla block loop; the readout mix is the analogue of "the stream after the
+            # last block" and is the single pre-norm entry, as in the routed branch above
+            x = self._forward_readout_mixed(x)
+            features_list = [x]
         elif self.grad_checkpointing and not torch.jit.is_scripting():
             x = checkpoint_seq(self.blocks, x)
         else:
@@ -674,6 +694,40 @@ class VisionTransformer(nn.Module):
             history.append(blk.drop_path2(blk.ls2(blk.mlp(blk.norm2(self.router(i, history))))))
             i += 1
         return self.router(i, history)  # readout (consumer M+1) over all M+1 entries
+
+    def _forward_readout_mixed(self, x):
+        """Vanilla traversal of the blocks (Block.forward runs, so utils.HookCollector and
+        every stream-based metric keep working) while the 2*depth branch outputs are captured
+        by temporary forward hooks on drop_path1 / drop_path2 -- the last module of each branch,
+        the same capture point utils.RoutedHookCollector and routing/gate.py use. Returns the
+        readout mixer's weighted sum over [x] + branch outputs, pre-norm.
+
+        First write wins: HookCollector's block hook re-runs drop_path1 inside the forward
+        (utils.py, hook_block) and must not replace the tensor that is in the graph.
+        """
+        assert not self.grad_checkpointing, (
+            'readout_routing does not support gradient checkpointing: the recomputation would '
+            'fire the capture hooks a second time')
+        sources = [x] + [None] * (2 * len(self.blocks))
+
+        def capture(k):
+            def hook(_mod, _inp, out):
+                if sources[k] is None:
+                    sources[k] = out
+            return hook
+
+        handles = []
+        try:
+            for b, blk in enumerate(self.blocks):
+                handles.append(blk.drop_path1.register_forward_hook(capture(2 * b + 1)))
+                handles.append(blk.drop_path2.register_forward_hook(capture(2 * b + 2)))
+            for blk in self.blocks:
+                x = blk(x)
+        finally:
+            for h in handles:
+                h.remove()
+        assert all(t is not None for t in sources), 'a branch output was not captured'
+        return self.readout_mixer(sources)
 
     # def forward_head(self, x, pre_logits: bool = False):
     #     if self.global_pool:

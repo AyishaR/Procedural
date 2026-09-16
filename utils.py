@@ -605,12 +605,18 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
         # the chain driver resubmits on every TIMEOUT, so this path runs many times per run.
         ck_args = checkpoint.get('args') if isinstance(checkpoint, dict) else None
         want = bool(getattr(args, 'resid_routing', False))
+        want_ro = str(getattr(args, 'readout_routing', 'off'))
         if ck_args is not None:
             have = bool(getattr(ck_args, 'resid_routing', False))
             assert have == want, (
                 f"{args.resume} was trained with resid_routing={have} but this run has "
                 f"resid_routing={want}; the load below is strict=False and would silently "
                 f"drop / ignore the router")
+            have_ro = str(getattr(ck_args, 'readout_routing', 'off'))
+            assert have_ro == want_ro, (
+                f"{args.resume} was trained with readout_routing={have_ro} but this run has "
+                f"readout_routing={want_ro}; the load below is strict=False, and a fixed <-> "
+                f"learnable swap would silently change the arm mid-run")
             if want:
                 assert float(getattr(ck_args, 'routing_bound', 0.0)) == float(args.routing_bound), (
                     f"routing_bound {getattr(ck_args, 'routing_bound', 0.0)} in the checkpoint "
@@ -623,6 +629,14 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
                 f"--resid_routing is on but {args.resume} has no {missing[:3]}; refusing to "
                 f"start a routed run from an unrouted checkpoint by accident")
             print(f"[routing] restored {sum(k.startswith('router.') for k in sd)} router tensors")
+        if want_ro != 'off':  # strict for the mixer subset only (arm A's buffer included)
+            missing = [k for k in model_without_ddp.state_dict()
+                       if k.startswith('readout_mixer.') and k not in sd]
+            assert not missing, (
+                f"--readout_routing {want_ro} is on but {args.resume} has no {missing[:3]}; "
+                f"refusing to start a readout-routed run from a vanilla checkpoint by accident")
+            print(f"[readout] restored {sum(k.startswith('readout_mixer.') for k in sd)} "
+                  f"mixer tensors")
         model_without_ddp.load_state_dict(sd, strict=False)
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:
@@ -700,6 +714,8 @@ def build_model(args):
             routing = dict(resid_routing=True,
                            routing_bound=float(getattr(args, 'routing_bound', 0.0)),
                            routing_impl=str(getattr(args, 'routing_impl', 'loop')))
+        if getattr(args, 'readout_routing', 'off') != 'off':
+            routing['readout_routing'] = str(args.readout_routing)   # the model refuses both
         model = create_model(
             args.model, 
             pretrained=False, 
@@ -738,24 +754,30 @@ ROUTING_ALLOWED_NON_DEFAULT = frozenset({
     # diagnostics (see engine.model_analyse_routed)
     "detailed_metrics", "stage_wise_metrics",
     # the intervention itself
-    "resid_routing", "routing_bound", "routing_impl",
+    "resid_routing", "routing_bound", "routing_impl", "readout_routing",
 })
 
 
 def assert_routing_isolated(args, parser):
-    """One intervention at a time: refuse --resid_routing composed with anything else.
+    """One intervention at a time: refuse --resid_routing / --readout_routing composed with
+    anything else (or with each other).
 
     Call this straight after parse_args() and BEFORE main(args), which rewrites flags such as
     freeze_blocks ('' -> []) and attention_residual_scaling ('' -> {}) in place; after that the
     comparison against the parser defaults is meaningless.
     """
-    if not getattr(args, "resid_routing", False):
+    routed = bool(getattr(args, "resid_routing", False))
+    readout = str(getattr(args, "readout_routing", "off")) != "off"
+    assert not (routed and readout), \
+        "--resid_routing already routes the readout; do not compose it with --readout_routing"
+    if not (routed or readout):
         return
+    flag = "--resid_routing" if routed else "--readout_routing"
     defaults = {a.dest: a.default for a in parser._actions if a.dest != "help"}
     bad = sorted(k for k, d in defaults.items()
                  if k not in ROUTING_ALLOWED_NON_DEFAULT and getattr(args, k, d) != d)
     assert not bad, (
-        "--resid_routing composes with no other intervention, but these flags are off their "
+        f"{flag} composes with no other intervention, but these flags are off their "
         f"defaults: {bad}. If one of them is genuinely harmless here, add it to "
         "utils.ROUTING_ALLOWED_NON_DEFAULT after checking what it does to the residual path.")
     print(f"[routing] isolation check passed ({len(defaults)} flags inspected)", flush=True)
