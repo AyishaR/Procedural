@@ -24,3 +24,6 @@ plots/cache/*.npz
 /grad_norms.json
 /o
 /pid,*
+
+# untracked symlinks into the kempfe/ workspace (like `results` above)
+routing/figures
