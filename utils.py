@@ -1347,7 +1347,8 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
     applied = {}
     ln = spec.get("ln")
     ln_sd = None
-    if ln:
+    ln_stats = (ln or {}).get("stats")        # {block: {"norm1": {"gain_mean","gain_std","bias_mean","bias_std"}, "norm2": {...}}}
+    if ln and not ln_stats:                   # otherwise the statistics are read from the checkpoint at init time
         ck = torch.load(ln["ckpt"], map_location="cpu", weights_only=False)
         ln_sd = ck.get("state", ck.get("model", ck))
     with torch.no_grad():
@@ -1359,11 +1360,12 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
                 parametric = ln.get("source", "permute") == "parametric"
                 for i, norm in (("1", blk.norm1), ("2", blk.norm2)):
                     perm = torch.randperm(D, generator=gen)
+                    st = ln_stats[str(b)][f"norm{i}"] if ln_stats else None
                     if ln.get("gain"):
-                        gam = ln_sd[f"blocks.{b}.norm{i}.weight"].float()
-                        if parametric:   # Gaussian with the checkpoint vector's mean and std (2 numbers), not its values
+                        gam = None if st else ln_sd[f"blocks.{b}.norm{i}.weight"].float()
+                        if parametric or st:   # Gaussian with the checkpoint vector's mean and std (2 numbers), not its values
                             gs = ln.get("gain_stats")   # optional override {"mean": m, "std": s}: no checkpoint statistic at all
-                            mu, sd = (float(gs["mean"]), float(gs["std"])) if gs else (gam.mean(), gam.std())
+                            mu, sd = (float(gs["mean"]), float(gs["std"])) if gs else ((st["gain_mean"], st["gain_std"]) if st else (gam.mean(), gam.std()))
                             vec = torch.randn(D, generator=gen) * sd + mu
                         else:
                             vec = gam[perm]
@@ -1372,8 +1374,11 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
                         # effective scales equal the spec; false leaves the weights exactly as in ftbana
                         g_rms[i] = float(vec.pow(2).mean().sqrt()) if ln.get("compensate", True) else 1.0
                     if ln.get("bias"):
-                        bet = ln_sd[f"blocks.{b}.norm{i}.bias"].float()
-                        vec = (torch.randn(D, generator=gen) * bet.std() + bet.mean()) if parametric else bet[perm]
+                        if st:
+                            vec = torch.randn(D, generator=gen) * st["bias_std"] + st["bias_mean"]
+                        else:
+                            bet = ln_sd[f"blocks.{b}.norm{i}.bias"].float()
+                            vec = (torch.randn(D, generator=gen) * bet.std() + bet.mean()) if parametric else bet[perm]
                         norm.bias.copy_(vec.to(norm.bias.dtype))
             mult = {}
             for s, p in spec.items():
