@@ -8,6 +8,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 |---|---|---|---|---|---|---|---|---|
 | `ftbanag` | clean | 1 | 80.70 | nan | +2.63 | 2.384 | 0.988 | ftbana + proc LN gains (permuted) in blocks 0-8, q/k/v/fc1 multipliers / rms(gamma) |
 | `ftbcomp11` | clean | 3 | 80.63 | 0.18 | +2.55 | 2.583 | 0.913 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 11; init_method_copied_blocks=0;1;2;3;4;5;6;7;8;9;10; target_ratio_absolute=1.4 |
+| `ftbanac` | clean | 1 | 80.55 | nan | +2.47 | 2.335 | 0.984 | ftbanap + blocks 9-11 amplified to write ratio 1.4 (early + late lever) |
 | `ftb1i` | clean | 3 | 80.37 | 0.12 | +2.29 | 2.563 | 0.943 | init=proc ckpt; random blocks 11 |
 | `ftbqmlnvot` | clean | 1 | 80.36 | nan | +2.28 | 2.356 | 0.983 | init=proc ckpt; quantile_match_target_blocks; scaled blocks 0,1,2,3,4,5,6,7,8; quantile_source=parametric; quantile_1d_mode=layernorm; quantile_qkv_mode=v_only |
 | `ftb2i` | clean | 1 | 80.24 | nan | +2.17 | 2.595 | 0.944 | init=proc ckpt; random blocks 10,11 |
@@ -98,6 +99,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftbqm1dpar` | contaminated | 3 | 78.35 | 0.32 | +0.28 | 2.253 | 1.144 | init=proc ckpt; quantile_match_target_blocks; scaled blocks 0,1,2,3,4,5,6,7,8; quantile_1d_mode=shuffle; quantile_1d_source=parametric |
 | `ftbrhosl` | clean | 1 | 78.31 | nan | +0.24 | 2.424 | 1.131 | random + lr / multiplier on proj/fc2 of blocks 9-11 (slow, not loud) |
 | `ftbnorm` | clean | 3 | 78.28 | 0.32 | +0.20 | 2.257 | 1.143 | init=proc ckpt; match_target_block_norms; scaled blocks 0,1,2,3,4,5,6,7,8 |
+| `ftbanakb` | clean | 1 | 78.25 | nan | +0.17 | 2.214 | 1.170 | init=none; analytic_profile; scaled blocks 0,1,2,3,4,5,6,7,8 |
 | `pattn3d` | old | 1 | 78.20 | nan | +0.12 | 2.327 | 1.160 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8; downscale_pr_match_attn_delta_norms; scaled blocks 9,10,11 |
 | `oldckpt` | old | 3 | 78.20 | 0.93 | +0.12 | 2.240 | 1.179 | init=none;  |
 | `ftb3es1` | clean | 1 | 78.20 | nan | +0.12 | 2.320 | 1.157 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8; downscale_pr_match_delta_norms; scaled blocks 9,10,11 |
@@ -118,6 +120,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftbclip1` | clean | 3 | 77.73 | 0.16 | -0.35 | 2.217 | 1.213 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8,9,10,11 |
 | `ftb11d` | clean | 3 | 77.71 | 0.12 | -0.37 | 2.200 | 1.235 | init=proc ckpt; random blocks 1,2,3,4,5,6,7,8,9,10,11; downscale_pr_match_delta_norms; scaled blocks 0 |
 | `ftbvu` | clean | 3 | 77.65 | 0.06 | -0.43 | 2.192 | 1.243 | init=none; slice_scale_v=1.745; custom_init_type=slice_scale |
+| `ftbanakg` | clean | 1 | 77.64 | nan | -0.44 | 2.196 | 1.223 | init=none; analytic_profile; scaled blocks 0,1,2,3,4,5,6,7,8 |
 | `ftbclip5` | clean | 3 | 77.59 | 0.55 | -0.49 | 2.225 | 1.224 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8,9,10,11 |
 | `ftbcfg` | clean | 3 | 77.50 | 0.54 | -0.57 | 2.201 | 1.235 | init=none; slice_scale_qk=1.587; slice_scale_v=0.729; slice_scale_proj=2.395; custom_init_type=slice_scale |
 | `pattn2d` | old | 1 | 77.45 | nan | -0.63 | 2.274 | 1.217 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8,9; downscale_pr_match_attn_delta_norms; scaled blocks 10,11 |
@@ -141,17 +144,17 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb4n` | clean | 1 | 75.67 | nan | -2.41 | 2.306 | 1.312 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7; init_method_copied_blocks=8;9;10;11 |
 | `ftbrhos` | clean | 1 | 75.07 | nan | -3.01 | 2.195 | 1.342 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8 |
 
-## T2. Fit vs generalisation over the 123 clean arms
+## T2. Fit vs generalisation over the 126 clean arms
 
 Pearson(acc, train loss) = +0.61, Spearman = +0.72; Pearson(test loss, train loss) = -0.80; test loss = -0.68 x train loss + 2.69, residual sd 0.061.
 
 Arms more than 2 residual sd above the line (test loss worse than their fit predicts):
 
-- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.191)
-- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.169)
-- `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.145)
-- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.132)
-- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.132)
+- `ftb4n` 75.67, train loss 2.306, test loss 1.312 (+0.192)
+- `pattn4d` 76.04, train loss 2.281, test loss 1.307 (+0.170)
+- `ftbrhos` 75.07, train loss 2.195, test loss 1.342 (+0.146)
+- `ftb1e` 76.37, train loss 2.281, test loss 1.270 (+0.133)
+- `ftb11isfix` 76.36, train loss 2.286, test loss 1.267 (+0.133)
 
 ## T3. Trajectories of representative arms (test acc / train loss at epoch)
 
@@ -257,7 +260,11 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | `ftbanai` | 1.40 | 0.130 | 0.089 | 2.71 | 0.038 | 0.131 | 5.26 | 75 |
 | `ftbanak` | 0.91 | 0.267 | 0.039 | 2.23 | 0.527 | 0.051 | 5.17 | 194 |
 | `ftbanakb` | 0.91 | 0.309 | 0.071 | 2.23 | 0.260 | 0.099 | 5.16 | 101 |
+| `ftbanakbs` | 0.91 | 0.309 | 0.071 | 2.23 | 0.260 | 0.099 | 5.16 | 101 |
+| `ftbanakd` | 0.91 | 0.308 | 0.071 | 2.23 | 0.261 | 0.099 | 5.24 | 101 |
 | `ftbanakg` | 0.92 | 0.300 | 0.039 | 2.17 | 0.474 | 0.051 | 5.14 | 194 |
+| `ftbanaks` | 0.91 | 0.307 | 0.039 | 2.23 | 0.499 | 0.050 | 1.57 | 199 |
+| `ftbanaksg` | 0.91 | 0.344 | 0.070 | 2.23 | 0.233 | 0.092 | 1.59 | 108 |
 | `ftbanakw` | 4.53 | 0.159 | 0.006 | 19.64 | 0.117 | 0.008 | 5.22 | 1238 |
 | `ftbanakx` | 0.91 | 0.291 | 0.039 | 2.23 | 0.471 | 0.050 | 5.15 | 195 |
 | `ftbanap` | 1.45 | 0.128 | 0.087 | 2.71 | 0.038 | 0.129 | 5.23 | 76 |
@@ -301,22 +308,37 @@ Arms more than 2 residual sd above the line (test loss worse than their fit pred
 | `ftb3b` | 289 | 0.4 (159) | 0.2 | 0.4 | 58.0 / 80.0 | 1.76 / 0.38 / 1.17 | 0.50 / 0.30 / 0.37 |
 | `ftb3h` | 289 | 46.8 (39) | 18.5 | 30.6 | 74.7 / 78.9 | 1.82 / 0.43 / 0.49 | 0.55 / 0.35 / 0.29 |
 | `ftb3i` | 289 | 8.9 (19) | 0.4 | 1.0 | 33.9 / 80.0 | 0.71 / 0.29 / 1.01 | 0.54 / 0.26 / 0.56 |
+| `ftb4` | 289 | 6.9 (19) | 0.2 | 0.8 | 35.7 / 80.2 | 1.13 / 0.39 / 0.96 | 0.59 / 0.30 / 0.47 |
+| `ftb4h` | 289 | 49.7 (39) | 23.5 | 34.6 | 76.1 / 77.8 | 2.20 / 0.42 / 0.52 | 0.51 / 0.34 / 0.40 |
+| `ftb4i` | 289 | 7.5 (14) | 0.2 | 0.7 | 44.3 / 80.0 | 0.64 / 0.36 / 1.25 | 0.48 / 0.27 / 0.50 |
 | `ftb4o` | 289 | 34.0 (39) | 16.3 | 22.9 | 67.9 / 77.3 | 2.47 / 0.32 / 0.96 | 0.62 / 0.26 / 0.37 |
 | `ftb7h` | 289 | 46.0 (59) | 15.1 | 27.2 | 75.6 / 79.6 | 2.02 / 0.44 / 0.56 | 0.52 / 0.37 / 0.29 |
 | `ftb8h` | 289 | 38.7 (39) | 6.0 | 9.8 | 67.2 / 79.1 | 1.99 / 0.45 / 0.77 | 0.52 / 0.37 / 0.30 |
 | `ftb9h` | 289 | 36.8 (49) | 3.5 | 6.8 | 67.1 / 78.8 | 1.95 / 0.45 / 0.86 | 0.52 / 0.37 / 0.31 |
 | `ftbana` | 289 | 41.7 (39) | 26.1 | 33.2 | 69.9 / 76.6 | 1.74 / 0.37 / 0.98 | 0.66 / 0.32 / 0.36 |
 | `ftbanab` | 259 | 42.6 (39) | 25.7 | 33.9 | 70.6 / 76.4 | 1.70 / 0.37 / 0.90 | 0.61 / 0.32 / 0.33 |
+| `ftbanac` | 259 | 0.8 (119) | 0.3 | 0.5 | 35.0 / 80.4 | 1.70 / 0.38 / 0.94 | 0.50 / 0.32 / 0.43 |
 | `ftbanaf` | 289 | 41.7 (29) | 28.4 | 35.4 | 69.9 / 76.4 | 1.71 / 0.36 / 0.92 | 0.60 / 0.32 / 0.37 |
 | `ftbanag` | 289 | 25.3 (29) | 3.3 | 11.1 | 68.2 / 80.6 | 1.91 / 0.37 / 0.82 | 0.58 / 0.36 / 0.39 |
+| `ftbanai` | 289 | 34.9 (29) | 11.4 | 19.2 | 74.8 / 78.1 | 1.63 / 0.45 / 0.63 | 0.54 / 0.36 / 0.56 |
+| `ftbanak` | 289 | 39.6 (29) | 14.0 | 16.1 | 70.1 / 77.8 | 2.01 / 0.47 / 1.21 | 0.54 / 0.37 / 0.36 |
+| `ftbanakb` | 179 | 32.4 (29) | 16.2 | 21.4 | 69.4 / 77.9 | 1.70 / 0.40 / 1.34 | 0.57 / 0.32 / 0.32 |
+| `ftbanakg` | 229 | 38.1 (29) | 22.4 | 25.1 | 69.3 / 77.6 | 1.75 / 0.44 / 1.21 | 0.58 / 0.36 / 0.35 |
+| `ftbanakw` | 289 | 39.2 (59) | 24.2 | 27.1 | 70.2 / 76.7 | 2.04 / 0.45 / 1.09 | 0.62 / 0.38 / 0.35 |
+| `ftbanal` | 289 | 28.6 (29) | 2.8 | 13.3 | 69.6 / 79.7 | 1.87 / 0.38 / 1.13 | 0.54 / 0.37 / 0.42 |
 | `ftbanap` | 159 | 28.5 (39) | 10.1 | 21.1 | 70.9 / 78.0 | 1.89 / 0.34 / 1.18 | 0.65 / 0.31 / 0.36 |
+| `ftbanau` | 289 | 41.2 (29) | 15.3 | 25.4 | 70.8 / 77.3 | 1.81 / 0.36 / 0.78 | 0.65 / 0.30 / 0.34 |
 | `ftbcomp11` | 289 | 0.4 (139) | 0.2 | 0.2 | 5.5 / 80.6 | 1.14 / 0.29 / 1.02 | 0.58 / 0.29 / 0.53 |
 | `ftblrm` | 289 | 38.8 (29) | 13.1 | 17.4 | 67.7 / 77.7 | 0.83 / 0.60 / 1.08 | 0.38 / 0.38 / 0.35 |
 | `ftbqmlnvo` | 289 | 26.4 (29) | 1.5 | 6.7 | 64.9 / 79.9 | 1.93 / 0.41 / 1.06 | 0.56 / 0.37 / 0.39 |
 | `ftbqmlnvog` | 289 | 26.1 (29) | 2.3 | 7.0 | 64.7 / 79.5 | 1.93 / 0.40 / 1.13 | 0.56 / 0.36 / 0.42 |
+| `ftbqmlnvok` | 259 | 33.4 (29) | 11.9 | 15.7 | 67.9 / 77.6 | 1.88 / 0.46 / 1.31 | 0.56 / 0.37 / 0.36 |
 | `ftbqmlnvot` | 289 | 22.7 (29) | 2.2 | 9.4 | 67.2 / 80.4 | 1.83 / 0.41 / 1.07 | 0.58 / 0.37 / 0.41 |
 | `ftbrho` | 289 | 1.4 (89) | 0.2 | 0.4 | 42.2 / 79.7 | 1.79 / 0.37 / 0.88 | 0.53 / 0.28 / 0.39 |
+| `ftbrhop` | 289 | 0.7 (89) | 0.2 | 0.2 | 27.4 / 79.9 | 1.72 / 0.37 / 0.99 | 0.47 / 0.29 / 0.40 |
+| `ftbrhopl` | 289 | 0.8 (49) | 0.1 | 0.8 | 62.9 / 80.1 | 2.56 / 0.37 / 1.53 | 0.43 / 0.26 / 1.14 |
 | `ftbrhos` | 289 | 43.5 (39) | 31.1 | 39.4 | 70.7 / 75.0 | 1.86 / 0.35 / 0.75 | 0.57 / 0.31 / 0.35 |
+| `ftbrhosl` | 289 | 62.8 (69) | 54.1 | 57.6 | 78.3 / 78.3 | 2.01 / 0.47 / 0.22 | 0.53 / 0.38 / 0.11 |
 | `p` | 289 | 10.3 (29) | 0.4 | 2.0 | 39.0 / 80.1 | 1.21 / 0.32 / 0.97 | 0.63 / 0.31 / 0.48 |
 | `r` | 289 | 47.8 (29) | 14.7 | 21.2 | 73.2 / 78.1 | 1.89 / 0.41 / 0.96 | 0.54 / 0.34 / 0.37 |
 

@@ -423,8 +423,8 @@ mirror image of the early lever, where the slow steps carry the effect and the s
 levers act through different channels (optimiser vs forward pass) and, per the dynamics table
 (docs/dynamics_consistency.md), do not even share the phenotype: the early lever has a mid-training fit deficit and a lead
 that appears after epoch ~120, the late lever has no deficit and leads from epoch ~100; the late lever's near-zero block-7
-head-probe is a head-direction artefact, so fig18(c) must not be read as a shared delayed readout; `ftbanac` (both levers, 80.44 at epoch 259 vs `ftbanap`
-80.03 at 249) will say whether they add. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
+head-probe is a head-direction artefact, so fig18(c) must not be read as a shared delayed readout; `ftbanac` (both levers) FINAL 80.55: at `ftbcomp11`'s level (80.63), 0.3 above `ftbanap` -- the
+checkpoint-free combination reaches the proc-based ceiling; additivity itself is below seed resolution. (iv) The measurements, which need no training. (v) Seeds of `ftbanac` if it reaches the combined level.
 After (ii) and (iii) the early- and late-block results are either one story or demonstrably two, at three seeds.
 (vi) Generality across checkpoints (wandb project "vit base kdyck shuffle"; docs/i100_late_block_scaling.md 0d.11,
 "Generality test" and "The input side at the function level"). The second procedural checkpoint (`pr_vitb_ksd`; prefix
@@ -435,8 +435,8 @@ rows are anti-aligned with the normalised stream, a rank-one relation no per-ten
 worked because kdyck's fc1 is small (0.36x), so random matrices at that scale silence the GELU by scale instead; ksd's
 fc1 is loud (0.9-2.3x), so every second-moment copy gives a loud, half-on MLP, the `ftbanai` state. Accordingly
 `ftbanak` (the `ftbanap` procedure applied verbatim to ksd) FINAL 77.86 = random, and `ftbanakw` (write ratios matched,
-GELU still on) FINAL 76.65, 1.4 below random. Registered prediction: `ftbqmlnvok` (twin recipe) and `ftbanakg` (exact
-scales + permuted LN vectors) also end near random. Consequences: the functional mechanism generalises across the two
+GELU still on) FINAL 76.65, 1.4 below random. Registered prediction confirmed: `ftbanakg` (exact scales + permuted LN vectors) FINAL 77.64, `ftbqmlnvok` (twin recipe)
+77.8 at epoch 294; `ftbanakb` (transient MLP gate) FINAL 78.25. Consequences: the functional mechanism generalises across the two
 checkpoints and ksd confirms it; the parametric extraction procedure ("read 54 second moments off the checkpoint")
 does not, and the paper must state the lever as the functional state with `ftbanap` as one checkpoint-free
 instantiation. The late lever is untouched (a single number, never read off a checkpoint). Decisive test launched

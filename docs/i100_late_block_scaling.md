@@ -1447,6 +1447,17 @@ random's line. Slowing the two writing matrices without making them loud is not 
 the trio's third arm `ftbrhopl` (loud, not slow; 79.32 at epoch 194 vs `ftbrho` 79.27 at 199) decides tomorrow whether
 the loud write alone is the whole lever.
 
+**`ftbanac` FINAL 80.55, `ftbanakg` FINAL 77.64, `ftbanakb` FINAL 78.25 (2026-09-16 morning, one seed each).** `ftbanac`
+(`ftbanap`'s early lever + blocks 9-11 at write ratio 1.4): 80.55, train loss 2.335, test loss 0.984 -- 0.3 above `ftbanap`
+(80.24) and at `ftbcomp11`'s level (80.63 +/- 0.18, the proc-weight version of both levers). The checkpoint-free combination
+reaches the proc combination; whether the two levers add (+0.3) is below seed resolution (0.45) and cannot be settled
+without ~10 seeds -- the honest statement is "combining them does not hurt and reaches the proc-based ceiling". `ftbanakg`
+(ksd exact per-block scales + permuted ksd LN vectors): 77.64 = random (78.08 -0.4), train loss 2.196 -- the registered
+prediction held; the `ftbanag`-analogue does not transfer either, so it is not the ramp/sampling simplification that broke
+`ftbanak`. `ftbanakb` (ksd recipe + fc1 bias gate at full lr): 78.25 (+0.2), train loss 2.214 -- the transient gate is
+worth ~0.4 over `ftbanak` and no more, as predicted from its epoch-9 traces (gate gone) and its block-7 transient (32).
+`ftbqmlnvok` (twin recipe on ksd) at 77.83 at epoch 294, final 07:25. All three continuations cancelled.
+
 **ksd structural arms (2026-09-15 night): reproduce the prefix's early state without a checkpoint vector.** The dynamics table
 says the ksd second-moment recipes fail because their middle attention mixes tokens from the start (entropy 3.9-4.1 at
 epoch 9) and their MLPs are loud; the prefix keeps a *sink* (every query reads one key, entropy 1.6-1.7 through epoch 9) and a
