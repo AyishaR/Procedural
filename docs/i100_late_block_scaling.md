@@ -1458,6 +1458,22 @@ prediction held; the `ftbanag`-analogue does not transfer either, so it is not t
 worth ~0.4 over `ftbanak` and no more, as predicted from its epoch-9 traces (gate gone) and its block-7 transient (32).
 `ftbqmlnvok` (twin recipe on ksd) at 77.83 at epoch 294, final 07:25. All three continuations cancelled.
 
+**`ftbanaks` FINAL 79.58, `ftbanaksw` FINAL 78.73 (2026-09-16 22:30, one seed each): the sink is the missing structure.**
+`ftbanaks` -- the ksd second-moment recipe (`ftbanak`, 77.86) plus one number per block 1-8, the norm of a seeded random
+q-bias direction per head chosen so the attention entropy at init equals the ksd prefix's (0.17-2.97 nats) -- ends at
+79.58: +1.50 over random (78.08), 0.47 below the ksd prefix `ftb4i` (80.05), train loss 2.543 (prefix 2.501, random
+2.225), test loss 0.998 (prefix ~0.95). Eight numbers recover three quarters of the ksd prefix's gain, and the arm shows
+the prefix's full signature: block-7 transient 13.8 (prefix 7.5, random 48), fit deficit +0.32 at epoch 149, sink
+persisting to epoch 49 (entropy 0.69) and beyond. `ftbanaksw` (weaker sink, flat 1.7 nats = the prefix's epoch-9 entropy)
+ends at 78.73 (+0.65), train loss 2.324: a sink of the prefix's *init* strength is needed; the mid-run read (weak sink on
+the prefix's curve, strong sink "over-suppressed" and 0.9 below random at 184) was the prefix's own late-conversion
+pattern and reversed after epoch 200, as the no-predictions-before-270 rule says it may. Reading: the second-moment
+description fails on ksd because it lacks the common-mode attention write, and a one-number-per-block sink supplies it.
+Together with kdyck (uniform attention kept diffuse by slow q/k) this makes the general early-lever state "middle blocks
+that write common-mode, MLPs quiet, input side slow", reachable by two different constructions. `ftbanaksg` (sink +
+persistent gate, tracking `ftbanaks`), `ftbanakbs` (gate only, tracking random) and `ftbanakd` (diffuse + gate, 77.99 at
+274 = random) complete the 2x2 by Thursday noon.
+
 **`ftbqmlnvok` FINAL 77.83 (2026-09-16 15:00, one seed).** The `ftbqmlnvo` twin recipe applied to the ksd checkpoint
 (per-matrix empirical quantiles, v against its own distribution, LayerNorm vectors matched): 77.83 = random (78.08),
 train loss 2.198 (random 2.225) -- the registered prediction held. The ksd second-moment set is now complete except for

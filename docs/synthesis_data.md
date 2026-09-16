@@ -49,6 +49,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb5i` | clean | 1 | 79.67 | nan | +1.59 | 2.596 | 0.978 | init=proc ckpt; random blocks 7,8,9,10,11 |
 | `ftb7h` | clean | 1 | 79.67 | nan | +1.59 | 2.332 | 1.072 | init=proc ckpt; random blocks 0,1,2,3,4 |
 | `ftb6i` | clean | 1 | 79.66 | nan | +1.59 | 2.560 | 0.973 | init=proc ckpt; random blocks 6,7,8,9,10,11 |
+| `ftbanaks` | clean | 1 | 79.58 | nan | +1.50 | 2.543 | 0.998 | init=none; analytic_profile; scaled blocks 0,1,2,3,4,5,6,7,8 |
 | `ftb8i` | clean | 3 | 79.58 | 0.25 | +1.50 | 2.403 | 1.022 | init=proc ckpt; random blocks 4,5,6,7,8,9,10,11 |
 | `ftbqmlnvog` | clean | 3 | 79.55 | 0.74 | +1.48 | 2.321 | 1.044 | init=proc ckpt; quantile_match_target_blocks; scaled blocks 0,1,2,3,4,5,6,7,8; quantile_source=gaussian; quantile_1d_mode=layernorm; quantile_qkv_mode=v_only |
 | `ftb0a` | clean | 1 | 79.54 | nan | +1.46 | 2.336 | 1.037 | init=proc ckpt;  |
@@ -83,6 +84,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb11i` | clean | 3 | 78.78 | 0.18 | +0.70 | 2.274 | 1.107 | init=proc ckpt; random blocks 1,2,3,4,5,6,7,8,9,10,11 |
 | `rattn2` | old | 1 | 78.78 | nan | +0.70 | 2.217 | 1.137 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7,8,9; upscale_random_match_attn_delta_norms; scaled blocks 10,11 |
 | `ftbvd` | clean | 3 | 78.74 | 0.10 | +0.66 | 2.284 | 1.126 | init=none; slice_scale_v=0.459; custom_init_type=slice_scale |
+| `ftbanaksw` | clean | 1 | 78.73 | nan | +0.65 | 2.324 | 1.097 | init=none; analytic_profile; scaled blocks 0,1,2,3,4,5,6,7,8 |
 | `ftb6h` | clean | 1 | 78.72 | nan | +0.64 | 2.337 | 1.128 | init=proc ckpt; random blocks 0,1,2,3,4,5 |
 | `ftb11b` | clean | 1 | 78.68 | nan | +0.60 | 2.229 | 1.159 | init=proc ckpt; random blocks 0; upscale_random_match_delta_norms; scaled blocks 1,2,3,4,5,6,7,8,9,10,11 |
 | `ftb10h` | clean | 1 | 78.68 | nan | +0.60 | 2.244 | 1.137 | init=proc ckpt; random blocks 0,1 |
@@ -144,9 +146,9 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb4n` | clean | 1 | 75.67 | nan | -2.41 | 2.306 | 1.312 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7; init_method_copied_blocks=8;9;10;11 |
 | `ftbrhos` | clean | 1 | 75.07 | nan | -3.01 | 2.195 | 1.342 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8 |
 
-## T2. Fit vs generalisation over the 126 clean arms
+## T2. Fit vs generalisation over the 128 clean arms
 
-Pearson(acc, train loss) = +0.61, Spearman = +0.72; Pearson(test loss, train loss) = -0.80; test loss = -0.68 x train loss + 2.69, residual sd 0.061.
+Pearson(acc, train loss) = +0.61, Spearman = +0.72; Pearson(test loss, train loss) = -0.80; test loss = -0.68 x train loss + 2.68, residual sd 0.061.
 
 Arms more than 2 residual sd above the line (test loss worse than their fit predicts):
 

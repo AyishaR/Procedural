@@ -448,9 +448,14 @@ ksd. Every ksd second-moment recipe (`ftbanak`, `ftbanakg`, `ftbqmlnvok`, `ftban
 kdyck arms that lose the profile early: random-like transient (32-40), no fit deficit, attention entropy 3.8-4.1 at epoch
 9. The feature every winner shares in the first ~20 epochs is a middle without token-specific computation (uniform or
 sink attention, quiet MLPs); ksd's second moments randomised give token-mixing attention instead, because sharpness that
-is common-mode with structure is token-specific without it. **Structural arms launched 2026-09-15 night** (run log 0d.11 "ksd structural arms"): ftbanaks (attention sink, 8
-numbers), ftbanaksw (weaker sink), ftbanaksg (sink + persistent MLP gate, 16 numbers), ftbanakbs (persistent gate only), ftbanakd
-(diffuse q/k + persistent gate: the kdyck route on ksd's other numbers); finals 2026-09-16 evening.
+is common-mode with structure is token-specific without it. **Structural arms (run log 0d.11 "ksd structural arms"): the sink closes most of the gap.** `ftbanaks` = `ftbanak` + one
+number per block 1-8 (a seeded random q-bias direction per head, norm chosen so the attention entropy at init equals the
+ksd prefix's) FINAL 79.58: +1.50 over random, 0.47 below the ksd prefix (80.05), with the prefix's full dynamical signature
+(transient 13.8, fit deficit +0.32 at 149). `ftbanaksw` (weaker sink at the prefix's epoch-9 entropy) 78.73. So the ksd
+prefix's benefit is second moments plus a common-mode attention write, and the general early-lever state -- middle blocks
+that write common-mode, quiet MLPs, slow input side -- is reachable by two constructions: uniform attention kept diffuse
+by slow q/k (kdyck recipe) or a sink (ksd recipe). `ftbanaksg` (sink + persistent gate), `ftbanakbs` (gate only) and
+`ftbanakd` (diffuse q/k + gate, at random through epoch 274) finish 2026-09-17.
 
 ## Appendix: data status
 
