@@ -248,3 +248,98 @@ driven purely by the optimizer. Any follow-up should mask that edge (`router.set
 * Consumer 1's coefficient gradient is **structurally ~0** — its mix has a single source, so the
   coefficient only rescales the input of `norm1`, and LayerNorm is scale-invariant. Expected, not
   a bug; `tests/test_residual_routing.py` records it.
+
+---
+
+# Follow-up: readout-only routing (branch `readout-routing`)
+
+The free-matrix result above confounds 25 rows. Its readout row was the one that ended up
+*qualitatively* different from the vanilla uniform sum — soft-suppressing early sources (emb 0.47,
+blocks 0-5 at 0.05-0.16, mlp_6/7 at 0.36/0.48, blocks 10-11 at 2.2-3.4; late/early ratio 7.7) but
+never zero. This follow-up isolates that row: **every block connection stays vanilla** (the ordinary
+residual stream, `Block.forward` runs untouched) and only the readout reads
+
+    mixed = sum_{j=0}^{24} w_j * h_j
+
+over the same 25 sources the router used (`h_0` = tokens entering block 0, `h_k` = branch output
+`k` incl. ls/drop_path = `history[k]`), then the existing `norm -> pool -> fc_norm -> head`.
+
+| arm | `--readout_routing` | readout row init     | trainable | question                                        |
+|-----|---------------------|----------------------|-----------|-------------------------------------------------|
+| A   | `fixed_last4`       | `[0]*17 + [1]*8`     | no        | can the head live on blocks 8-11's deltas alone? |
+| B   | `learn_last4`       | `[0]*17 + [1]*8`     | yes       | does it put the embedding / blocks 6-7 back?     |
+| C   | `learn_ones`        | all ones (= vanilla) | yes       | CONTROL: does a free readout row ALONE hurt?     |
+
+"Last 4 blocks" = blocks 8-11 = sources 17..24 (`attn_8 .. mlp_11`), embedding excluded, so arm
+A's readout input is `sum(h[17..24]) == x_after_block_11 - x_after_block_7`. Base = the same `r`
+runs (78.079 ± 0.189); recipe identical; one seed per arm.
+
+## Design decisions
+
+* **Linear parametrization** (`a_j = w_j`). The fixed init must be exactly representable, 0 must
+  be an ordinary point that a trainable weight can *leave* (softplus cannot represent 0, and Adam's
+  eps freezes near-zero coefficients; the router's mask gives exact zeros with a deliberately zero
+  gradient — an ablation tool, not an init), and all-ones must be the vanilla model bit for bit.
+  Negative weights are allowed; a `>= 0` projection is the pre-registered control if they go
+  strongly negative.
+* **Backbone LR, no decay.** The weight is 1-D, so `get_parameter_groups` puts it in `no_decay`
+  (wd 0, `lr_scale` 1). Under Adam a weight moves ~lr per consistently-signed step: 0 -> 1 in ~1.6
+  epochs at peak LR. Nothing pulls it back toward its init.
+* **Gradient-sign consistency is logged** per weight and epoch (`readout.jsonl`:
+  `pos_frac`, `sign_consistency = max(pos, neg)/n_steps`, counted at every optimizer step after
+  `unscale_`, non-finite/skipped steps excluded), so "moved by a consistent signal" and
+  "random-walked" (the `attn_0 <- emb` story above) are distinguishable.
+* **Not the full router.** 24 of its 25 consumers would be identical to vanilla and `buf` costs
+  +22%. `models/readout_routing.py` is ~150 lines: `ReadoutMixer` (buffer for A, `nn.Parameter`
+  for B/C), and `VisionTransformer._forward_readout_mixed`, which runs the **vanilla block loop**
+  and captures the 24 branch outputs with temporary forward hooks on `drop_path1`/`drop_path2` —
+  the same capture point `RoutedHookCollector`, `gate.branch_outputs` and the tests use.
+  Hooks rather than an unrolled loop, deliberately: `Block.__call__` keeps running, so
+  `utils.HookCollector` (whose block hook fires on the whole `Block`) and everything built on it
+  — `model_analyse`'s `blk_acc`/`ece`/block norms, `calculate_rank_final` at start — keep working
+  for these arms. The hooks are first-write-wins because `HookCollector`'s block hook re-runs
+  `drop_path1` inside the forward and must not replace the graph tensor.
+* **Vanilla path byte-for-byte untouched** when the flag is off (elif-dispatch in
+  `forward_features`); refuses to compose with `--resid_routing`, LayerScale, stochastic depth,
+  distillation, gradient checkpointing; `utils.assert_routing_isolated` fires for either flag; the
+  resume guard compares the *mode* (a fixed<->learnable swap is shape-compatible and would be
+  silent otherwise) and requires `readout_mixer.*` in the checkpoint; the half-precision analysis
+  dump keeps the mixer fp32. `tests/test_readout_routing.py`: 14 CPU tests (depth-6 toy).
+* **The forward is exact, the backward is not bit-exact.** With every `w_j == 1` the mixer
+  accumulates in fp32 in the vanilla stream's own summation order, so arm C's forward is the
+  vanilla forward bit for bit, in fp32 and under fp16 autocast. Its backward is the same maths but
+  a different graph — every branch output now has a direct edge to the readout beside its path
+  through the stream — so autograd accumulates `dL/dh_j` in a different order: fp32 gradients
+  agree to 6.6e-6 relative (fp64: 5e-16). No claim of bit-identical gradients is made for this arm.
+
+## Cost: a compiled sum
+
+Eager, the 25-term weighted sum is 75 unfused memory-bound kernels over `B*N*D` elements.
+Micro-benchmark on one H200 (vit_base, batch 128, fp16 AMP, fwd+bwd, all variants bit-identical to
+vanilla at `w == 1` under autocast):
+
+| mixer | ms / micro-step | overhead | peak GB |
+|---|---|---|---|
+| (base) | 77.5 | — | 14.5 |
+| eager | 86.4 | +11.5% | 17.0 |
+| `torch.addcmul` per source | 86.4 | +11.5% | 16.9 |
+| **inductor-fused (`torch.compile`)** | **79.0** | **+1.9%** | 15.3 |
+
+The compiled sum reads every source once and keeps the summation order. It is used on CUDA only
+(CPU/tests stay eager; `READOUT_MIXER_COMPILE=0` switches it off); compile is ~5 s once per shape.
+This is the first `torch.compile` in this repo's training path — a single 25-input pointwise
+function, not the model.
+
+## Gate (job 29724990, one H200, per-GPU batch 128, ImageNet val probe)
+
+`routing/readout_gate.py`; artefacts in `kempfe/routing/gate_readout/{gate.json,gate.png}`.
+
+| check | result |
+|---|---|
+| weights | each arm adds exactly `readout_mixer.weight` (25 floats; A: buffer, B/C: parameter); every other tensor `torch.equal` to the same-seed base |
+| fp32 logits | **C bit-identical to base**; A vs `head(fc_norm(pool(norm(x12 − x8))))` from base's own stream 1.2e-06; B == A |
+| fp16 AMP logits | **C bit-identical under autocast too**; A vs hand 9.8e-04 (fp16 ulp) |
+| fp32 gradients | C vs base 6.6e-06 max relative (summation order, see above); B/C weight gradients finite, non-zero on all 25 entries; `readout_mixer` bucketed in `grad_norms.json` |
+| fp16 step | one `NativeScalerWithGradNormCount` step: GradScaler scale 65536 on all arms; C vs base 1.3e-03 (fp16 noise band) |
+| collectors | `utils.HookCollector` on arm C: 12 blocks, block activations `torch.equal` to base's, no hooks left behind |
+| cost | base 77.0 ms / 17.1 GB; **A +1.6%, B +2.1%, C +1.9%**, +0.8 GB |
