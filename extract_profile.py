@@ -30,9 +30,12 @@ ingredients are read off:
    the input, so it is not part of the scale. Ingredient 2 records the mean and standard
    deviation of each LayerNorm bias, which reproduces the size of that offset, but not
    its direction relative to the rows of W, since the sampled bias and the random W are
-   independent. On kdyck that direction is inert (ftbanab). On ksd it is the mechanism
-   that switches the middle MLPs off (fc1 rows anti-aligned with the norm2 bias give
-   pre-activations of mean -2 to -3), and no second-moment recipe reproduces it.
+   independent. On kdyck that direction is inert (ftbanab; removing the norm2 bias
+   moves the fc1 pre-activation mean by at most 0.4 of its -2 to -2.7). On ksd it is part
+   of the mechanism that switches the middle MLPs off: the fc1 pre-activations have a
+   mean of -2.3 to -3.2, of which 1.0 to 1.5 comes from the rows' anti-alignment with the
+   norm2 bias and the rest from their alignment with the standardised stream's common
+   direction (measured 2026-09-14/16); no second-moment recipe reproduces either part.
 
    Why the recipe is written in these units: the procedural checkpoints have gains
    around 0.4, not 1. Copying root mean square(W) alone would give a forward pass 2.5 times louder
@@ -46,8 +49,8 @@ ingredients are read off:
    Caveat: root mean square(W) * root mean square(gain) equals the exact
    root mean square(W diag(gain)) only if gain_j squared is uncorrelated with the mean
    squared magnitude of column j of W. Measured on both checkpoints (2026-09-16), the
-   exact value is 1 to 11 percent larger in every block and weight, so the two are
-   mildly positively correlated. The product is kept as the default because every
+   exact value is larger in every block and weight: by 2 to 11 percent in blocks 1..8
+   and by up to 15 percent for q of block 0, so the two are mildly positively correlated. The product is kept as the default because every
    existing specification, arm and verification target is expressed in it;
    --gain_fold exact writes the exact value instead.
 
