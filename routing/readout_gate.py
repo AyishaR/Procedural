@@ -17,7 +17,8 @@ seed through the training code path (utils.build_model) and hard-fails unless:
                   arm and buckets readout_mixer in get_layer_grad_norms;
   5  collectors   utils.HookCollector runs on arm C (Block.forward still runs) and its block
                   activations equal the baseline's -- model_analyse's blk_acc / ece stay defined;
-  6  cost         median fwd+bwd time and peak memory at the real per-GPU batch for base / A / B / C.
+  6  cost         median fwd+bwd time and peak memory at the real per-GPU batch for base / A / B / C
+                  (the mixer is a torch.compile-fused sum on CUDA; eager was +11.5%, compiled +1.9%).
 
 Writes <out>/gate.json and <out>/gate.png and prints GATE PASSED as its last line.
 Run it on a GPU (the login node has none):
@@ -166,7 +167,7 @@ def plot(res, path):
         for i, k in enumerate(tags):
             ax[1].text(i, t[k]["ms_micro"], f"{t[k]['ms_micro']:.1f}", ha="center", va="bottom", fontsize=8)
         ax[1].set_ylabel("ms per fwd+bwd micro-step (batch %d)" % res["meta"]["batch"])
-        ax[1].set_title("cost, eager fp16 AMP")
+        ax[1].set_title("cost, fp16 AMP (mixer: compiled on CUDA)")
         ax[2].bar(tags, [t[k]["peak_gb"] for k in tags], color=["0.5", "C0", "C1", "C2"][:len(tags)])
         ax[2].set_ylabel("peak GB allocated"); ax[2].set_title("memory")
     fig.suptitle("readout-routing gate -- " + res["meta"]["device"])

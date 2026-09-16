@@ -38,6 +38,8 @@ at every optimizer step (engine.train_one_epoch calls record_grad_sign) so that 
 consistent signal" and "random-walked under Adam" are distinguishable in the log.
 """
 
+import os
+
 import torch
 import torch.nn as nn
 
@@ -45,6 +47,30 @@ from models.residual_routing import source_labels
 
 READOUT_MODES = ("off", "fixed_last4", "learn_last4", "learn_ones")
 LAST_BLOCKS = 4
+
+
+def _mix(w, sources):
+    """sum_j w[j] * sources[j], accumulated in the stream's dtype (at least fp32) in source order.
+
+    Under fp16 autocast the branch outputs are fp16 and the stream fp32; the vanilla residual add
+    upcasts each h, so `1.0 * h.to(fp32)` summed in this order IS the vanilla stream bit for bit.
+    (A 0-dim fp32 weight times an fp16 tensor would stay fp16 -- hence the explicit cast.)
+    Elementwise mul is not on autocast's cast lists, so the products stay in the acc dtype.
+    """
+    acc = torch.promote_types(sources[0].dtype, torch.float32)
+    mixed = w[0] * sources[0].to(acc)
+    for j in range(1, len(sources)):
+        mixed = mixed + w[j] * sources[j].to(acc)
+    return mixed.to(sources[0].dtype)
+
+
+# Eager, the 25-term sum is 75 unfused memory-bound kernels over B*N*D elements (+11.5% per
+# fwd+bwd micro-step on an H200 at batch 128, measured); inductor fuses it into one kernel that
+# reads every source once (+1.9%, and no fp32 copies: -1.7 GB), with the same summation order, so
+# the compiled path is still bit-identical to vanilla at w == 1 (the gate checks exactly that).
+# CUDA only; CPU (the tests) stays eager. READOUT_MIXER_COMPILE=0 switches it off.
+_COMPILE_MIXER = os.environ.get("READOUT_MIXER_COMPILE", "1") != "0"
+_mix_compiled = torch.compile(_mix)   # lazy: costs nothing until called (~5 s, once per shape)
 
 
 def readout_init(mode, depth):
@@ -87,17 +113,8 @@ class ReadoutMixer(nn.Module):
 
     def forward(self, sources):
         assert len(sources) == self.n_sources, (len(sources), self.n_sources)
-        w = self.weight
-        # Accumulate in the stream's dtype, at least fp32, in source order. Under fp16 autocast
-        # the branch outputs are fp16 and the stream fp32; the vanilla residual add upcasts each
-        # h, so `1.0 * h.to(fp32)` summed in this order IS the vanilla stream bit for bit. (A
-        # 0-dim fp32 weight times an fp16 tensor would stay fp16 -- hence the explicit cast.)
-        # Elementwise mul is not on autocast's cast lists, so the products stay in acc dtype.
-        acc = torch.promote_types(sources[0].dtype, torch.float32)
-        mixed = w[0] * sources[0].to(acc)
-        for j in range(1, self.n_sources):
-            mixed = mixed + w[j] * sources[j].to(acc)
-        return mixed.to(sources[0].dtype)
+        fn = _mix_compiled if (_COMPILE_MIXER and sources[0].is_cuda) else _mix
+        return fn(self.weight, list(sources))
 
     # ----- gradient sign consistency (one call per optimizer step, after unscale) -----
     @torch.no_grad()
