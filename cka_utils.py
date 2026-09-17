@@ -43,6 +43,50 @@ def gram_cka(X, Y, eps=1e-12):
     norm = torch.sqrt((Kc * Kc).sum() * (Lc * Lc).sum())
     return hsic / (norm + eps)
 
+def center_gram_unbiased(G):
+    """
+    Unbiased (debiased) Gram-matrix centering via the U-statistic formulation of
+    Szekely & Rizzo (2014, "Partial distance correlation with methods for
+    dissimilarity selection", section 2.5.1) -- the same formulation Kornblith et
+    al. 2019's reference CKA implementation uses to compute the Song et al. 2007
+    unbiased HSIC_1 estimator. Unlike directly evaluating HSIC_1's U-statistic
+    formula (tr(K~L~) + ... - ...), which subtracts terms of similar magnitude and
+    can go slightly negative under floating-point cancellation for near-degenerate
+    Gram matrices (e.g. the near-uniform attention maps typical of a ViT's first
+    and last blocks), this centering makes the self-similarity term
+    sum(center_gram_unbiased(K) ** 2) a sum of squares -- non-negative by
+    construction, so gram_cka_unbiased's sqrt() below can never see a negative
+    input. G: [n, n] Gram matrix (not pre-centered).
+    """
+    n = G.size(0)
+    G = G.clone()
+    G.fill_diagonal_(0)
+    means = G.sum(dim=0) / (n - 2)
+    means = means - means.sum() / (2 * (n - 1))
+    G = G - means[:, None] - means[None, :]
+    G.fill_diagonal_(0)
+    return G
+
+def gram_cka_unbiased(X, Y, eps=1e-12):
+    """
+    Unbiased (debiased) kernel CKA using Gram matrices, via center_gram_unbiased
+    above -- numerically-stable equivalent of plugging Song et al. 2007's unbiased
+    HSIC_1 estimator into gram_cka's biased sum(K_c * L_c) formula. Computed in
+    float64 (like Kornblith et al.'s reference implementation) to further limit
+    cancellation error, then cast back to X's dtype.
+    X: [n_samples, d1]
+    Y: [n_samples, d2]
+    """
+    orig_dtype = X.dtype
+    K = (X.double() @ X.double().T)
+    L = (Y.double() @ Y.double().T)
+    Kc = center_gram_unbiased(K)
+    Lc = center_gram_unbiased(L)
+
+    hsic = (Kc * Lc).sum()
+    norm = torch.sqrt((Kc * Kc).sum() * (Lc * Lc).sum())
+    return (hsic / (norm + eps)).to(orig_dtype)
+
 if __name__ == "__main__":
     k_data = KDyckDataset(k=64, num_samples=1000, max_length=196)
     # get 20 samples

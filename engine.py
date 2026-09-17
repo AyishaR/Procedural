@@ -509,7 +509,7 @@ def model_analyse(
     ece = ece_metric.compute()
     # if wandb_logger:
     #     wandb_logger.log_epoch_metrics({"epoch": epoch, "test_ece": ece})
-    if device == torch.device('cpu') or (device.type == 'cuda' and torch.distributed.get_rank() == 0):
+    if device == torch.device('cpu') or (device.type == 'cuda' and utils.get_rank() == 0):
         print("ECE:", ece)
         detailed_metrics_logger.meters["ece"].update(ece, n=1)
 

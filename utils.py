@@ -42,8 +42,12 @@ class SmoothedValue(object):
         """
         if not is_dist_avail_and_initialized():
             return
+<<<<<<< Updated upstream
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         t = torch.tensor([self.count, self.total], dtype=torch.float64, device=device)
+=======
+        t = torch.tensor([self.count, self.total], dtype=torch.float64, device='cuda')
+>>>>>>> Stashed changes
         dist.barrier()
         dist.all_reduce(t)
         t = t.tolist()
@@ -1022,16 +1026,16 @@ def pr_load_model(path, args, device, model=None):
             for p in model.blocks[i].parameters():
                 p.requires_grad = False
 
-    try:
-        for pname, p in model.named_parameters():
-            if pname in args.train_param_list:
-                pass
-                print(f"-- Training {pname}")
-            else:
-                p.requires_grad = False
-                print(f"-- Freezing {pname}")
-    except AttributeError:
-        pass
+    # try:
+    #     for pname, p in model.named_parameters():
+    #         if pname in args.train_param_list:
+    #             pass
+    #             print(f"-- Training {pname}")
+    #         else:
+    #             p.requires_grad = False
+    #             print(f"-- Freezing {pname}")
+    # except AttributeError:
+    #     pass
             
     for i in args.delete_blocks:
         print(f"Deleting block {i}")

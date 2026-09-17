@@ -79,6 +79,12 @@ def get_args_parser():
     parser.add_argument('--custom_pr_load', default='', type=str, help='Custom config to control how weights are loaded from the pretrained checkpoint for procedural pretraining. Options: "L3 - keep start,end, repeat mid"')
     parser.add_argument('--random_blocks', default="", type=str,
                         help='Comma separated list of layer indices to keep random, e.g. "0,1,2" to keep the first 3 layers random; supports "all" to keep all layers random and "" to not keep any layers random (default: "")')
+    parser.add_argument('--downscale_blocks', default="", type=str,
+                        help='For --init_method "mixed_updown_match_delta_norms": comma separated list of layer indices to PR-initialise from --initialize and then downscale to the delta-norm ratios of a fully random model, e.g. "5,6,7,8". Requires --init_method_scaled_blocks to also be set (to any non-empty value) so --init_method_scaled_attributes is parsed and shared by both --downscale_blocks and --upscale_blocks. Supports "all" and "" (default: "")')
+    parser.add_argument('--upscale_blocks', default="", type=str,
+                        help='For --init_method "mixed_updown_match_delta_norms": comma separated list of layer indices to keep randomly initialised and then upscale to the delta-norm ratios of the target model built from --upscale_target_pr_blocks, e.g. "9,10,11". Supports "all" and "" (default: "")')
+    parser.add_argument('--upscale_target_pr_blocks', default="", type=str,
+                        help='For --init_method "mixed_updown_match_delta_norms": comma separated list of layer indices that are PR-initialised (from --initialize) in the target model used to compute the --upscale_blocks targets, e.g. "5,6,7,8,9,10,11". Every other block of that target model keeps the trained model\'s own random init. Supports "all" and "" (default: "")')
     
     # EMA related parameters
     parser.add_argument('--model_ema', type=str2bool, default=False)
@@ -119,6 +125,30 @@ def get_args_parser():
                         help='epochs to warmup LR, if scheduler supports')
     parser.add_argument('--warmup_steps', type=int, default=-1, metavar='N',
                         help='num of steps to warmup LR, will overload warmup_epochs if set > 0')
+    parser.add_argument('--warmup_swap_source', type=str, default="",
+                        help='Experiment: once --warmup_epochs completes, replace the weights of the blocks '
+                             'in --warmup_swap_blocks with weights drawn from this source, then rescale the '
+                             'attribute groups in --warmup_swap_attributes block-by-block so '
+                             'norm_ratio_attn_delta_in_mean / norm_ratio_mlp_delta_in_mean (the residual '
+                             'sublayer\'s delta-norm over its input norm, from '
+                             'engine.attention_residual_analysis) matches what the model being trained had '
+                             'for that block immediately before the swap. Training then continues to --epochs. '
+                             '"" (default) disables the swap. "random" draws a fresh random model '
+                             '(utils.build_model). Any other value is treated as a checkpoint path and loaded '
+                             'the same way as --initialize (via utils.pr_load_model), so this also supports '
+                             'the reverse experiment: train from a random init through warmup, then swap in a '
+                             'procedurally pretrained checkpoint\'s weights, still matching norm ratios rather '
+                             'than copying them outright. The optimizer is left untouched: Adam moment '
+                             'buffers stay attached to the same parameter tensors, which now hold the new '
+                             'norm-ratio-matched values.')
+    parser.add_argument('--warmup_swap_blocks', type=str, default="all",
+                        help='Comma separated block indices swapped by --warmup_swap_source; "all" (default) '
+                             '= every transformer block, "" = none (disables the swap regardless of '
+                             '--warmup_swap_source).')
+    parser.add_argument('--warmup_swap_attributes', type=str, default="",
+                        help='Comma separated attribute groups (norm1,qk,v,proj,norm2,fc1,fc2) whose scale is '
+                             'calibrated to match the pre-swap model\'s norm ratios during --warmup_swap_source; '
+                             '"" (default) = all seven groups.')
 
     parser.add_argument('--drop_path', type=float, default=0, metavar='PCT',
                         help='Drop path rate (default: 0.0)')
@@ -575,6 +605,7 @@ def clip_block_outliers(model, blocks, frac, tag=""):
                   f"norm {orig_norm:.4f} -> {w.norm().item():.4f}", flush=True)
 
 
+<<<<<<< Updated upstream
 def spectral_reinit(model, blocks, values="keep", basis="keep", seed=0, tag=""):
     """Rebuild each 2-D weight matrix of `blocks` as U @ diag(s) @ V^T with the singular
     VALUES and the singular VECTORS chosen independently. Every combination preserves
@@ -652,6 +683,84 @@ def spectral_reinit(model, blocks, values="keep", basis="keep", seed=0, tag=""):
                 print(f"Spectral{tag} block {block_idx} {name}: stable rank "
                       f"{sr_old:.1f} -> {sr_new:.1f}, |W| {before:.4f} -> {after:.4f}",
                       flush=True)
+=======
+def build_warmup_swap_source_model(args, device):
+    """Build the model that --warmup_swap_source draws block weights from. "random" builds a
+    fresh randomly-initialised model; any other value is a checkpoint path loaded the same way
+    as --initialize (utils.pr_load_model), so the swap can run in either direction: a
+    procedurally-pretrained model swapped to random, or a randomly-initialised model swapped to
+    a procedurally-pretrained checkpoint."""
+    source_model = utils.build_model(args).to(device)
+    if args.warmup_swap_source == "random":
+        return source_model
+    _, source_model, _ = utils.pr_load_model(
+        path=args.warmup_swap_source, args=args, device=device, model=source_model
+    )
+    return source_model
+
+
+def swap_blocks_matching_norm_ratio(model_without_ddp, source_model, blocks, attributes, attn_count, mlp_count,
+                                     data_loader, device, args):
+    """Used by --warmup_swap_source. Replaces every parameter of each block in `blocks` with the
+    corresponding block's weights from `source_model`, then rescales the attn
+    ("norm1","qk","v","proj") and mlp ("norm2","fc1","fc2") attribute groups named in
+    `attributes`, block by block in ascending index order, so norm_ratio_{attn,mlp}_delta_in_mean
+    (engine.attention_residual_analysis) matches what model_without_ddp had for each block
+    immediately before the swap. Blocks are re-measured after each edit because an earlier
+    block's new weights change what a later block receives as input - this mirrors the
+    sequential match used by the "..._match_delta_norms" --init_method family at init time (see
+    e.g. the "upscale_random_match_delta_norms" branch above). Parameters are edited via
+    load_state_dict/.data so tensor identity is preserved and the optimizer's Adam moment
+    buffers stay attached, now holding values for the swapped weights."""
+    if not blocks:
+        return
+    was_training = model_without_ddp.training
+
+    target_stats = attention_residual_analysis(
+        data_loader=data_loader, model=model_without_ddp, device=device, args=args,
+        save=False, detailed=False, layers_to_analyse=blocks,
+    )
+
+    with torch.no_grad():
+        for block_idx in blocks:
+            model_without_ddp.blocks[block_idx].load_state_dict(source_model.blocks[block_idx].state_dict())
+
+    for block_idx in blocks:
+        current_stats = attention_residual_analysis(
+            data_loader=data_loader, model=model_without_ddp, device=device, args=args,
+            save=False, detailed=False, layers_to_analyse=[block_idx],
+        )
+        if attn_count > 0:
+            scale_sq = (target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
+                        / current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+            scale = scale_sq ** (1 / attn_count)
+            scale_weights = {a: scale for a in ["norm1", "qk", "v", "proj"] if a in attributes}
+            print(f"[warmup_swap] block {block_idx} attn scale {scale:.4f} "
+                  f"(target ratio {target_stats[block_idx]['norm_ratio_attn_delta_in_mean']:.4f}, "
+                  f"post-swap ratio {current_stats[block_idx]['norm_ratio_attn_delta_in_mean']:.4f})",
+                  flush=True)
+            utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
+        if mlp_count > 0:
+            scale_sq = (target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
+                        / current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+            scale = scale_sq ** (1 / mlp_count)
+            scale_weights = {a: scale for a in ["norm2", "fc1", "fc2"] if a in attributes}
+            print(f"[warmup_swap] block {block_idx} mlp scale {scale:.4f} "
+                  f"(target ratio {target_stats[block_idx]['norm_ratio_mlp_delta_in_mean']:.4f}, "
+                  f"post-swap ratio {current_stats[block_idx]['norm_ratio_mlp_delta_in_mean']:.4f})",
+                  flush=True)
+            utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
+
+    if args.distributed:
+        for _, t in sorted(model_without_ddp.state_dict().items()):
+            if torch.is_tensor(t) and t.is_floating_point():
+                torch.distributed.broadcast(t.data, src=0)
+        torch.distributed.barrier()
+        if utils.is_main_process():
+            print("[warmup_swap] broadcast swapped weights from rank 0", flush=True)
+
+    model_without_ddp.train(was_training)
+>>>>>>> Stashed changes
 
 
 def main(args):
@@ -797,6 +906,41 @@ def main(args):
         args.random_blocks = list(range(len(model.blocks)))
     else:
         args.random_blocks = [int(x) for x in args.random_blocks.split(",")]
+
+    if args.downscale_blocks == "":
+        args.downscale_blocks = []
+    elif args.downscale_blocks == "all":
+        args.downscale_blocks = list(range(len(model.blocks)))
+    else:
+        args.downscale_blocks = [int(x) for x in args.downscale_blocks.split(",")]
+
+    if args.upscale_blocks == "":
+        args.upscale_blocks = []
+    elif args.upscale_blocks == "all":
+        args.upscale_blocks = list(range(len(model.blocks)))
+    else:
+        args.upscale_blocks = [int(x) for x in args.upscale_blocks.split(",")]
+
+    if args.upscale_target_pr_blocks == "":
+        args.upscale_target_pr_blocks = []
+    elif args.upscale_target_pr_blocks == "all":
+        args.upscale_target_pr_blocks = list(range(len(model.blocks)))
+    else:
+        args.upscale_target_pr_blocks = [int(x) for x in args.upscale_target_pr_blocks.split(",")]
+
+    if args.warmup_swap_blocks == "":
+        args.warmup_swap_blocks = []
+    elif args.warmup_swap_blocks == "all":
+        args.warmup_swap_blocks = list(range(len(model.blocks)))
+    else:
+        args.warmup_swap_blocks = [int(x) for x in args.warmup_swap_blocks.split(",")]
+
+    if args.warmup_swap_attributes == "":
+        args.warmup_swap_attributes = ["norm1", "qk", "v", "proj", "norm2", "fc1", "fc2"]
+    else:
+        args.warmup_swap_attributes = args.warmup_swap_attributes.split(",")
+    warmup_swap_attn_count = len(set(["norm1", "qk", "v", "proj"]).intersection(args.warmup_swap_attributes))
+    warmup_swap_mlp_count = len(set(["norm2", "fc1", "fc2"]).intersection(args.warmup_swap_attributes))
 
     if args.clip_outlier_blocks == "":
         args.clip_outlier_blocks = []
@@ -1381,6 +1525,53 @@ def main(args):
             device = device,
             model = model
         )
+    elif args.init_method == "mixed_updown_match_delta_norms":
+        # Combines downscale_pr and upscale_random in one run: --downscale_blocks are
+        # PR-initialised then scaled DOWN to a fully random model's delta-norm ratios (below);
+        # --upscale_blocks stay randomly initialised here and are scaled UP to the delta-norm
+        # ratios of a separate target model in which --upscale_target_pr_blocks are
+        # PR-initialised (e.g. a "PR in layers 5-11" model, independent of how --downscale_blocks
+        # end up scaled in the trained model).
+        if not args.downscale_blocks or not args.upscale_blocks:
+            raise ValueError('init_method "mixed_updown_match_delta_norms" requires both --downscale_blocks and --upscale_blocks to be set')
+        num_blocks = len(model.blocks)
+
+        # Downscale target: fully random model sharing the trained model's own random init in
+        # every block, so activations feeding into --downscale_blocks match exactly except for
+        # the PR weights being scaled there.
+        downscale_target_without_ddp = utils.build_model(args)
+        downscale_target_without_ddp.load_state_dict(model.state_dict())
+        _, downscale_target_without_ddp, _ = utils.pr_load_model(
+            path = "",
+            args = args,
+            device = device,
+            model = downscale_target_without_ddp
+        )
+
+        # Upscale target: trained model's own random init everywhere, except
+        # --upscale_target_pr_blocks which get the checkpoint's weights.
+        upscale_target_without_ddp = utils.build_model(args)
+        upscale_target_without_ddp.load_state_dict(model.state_dict())
+        saved_random_blocks = args.random_blocks
+        args.random_blocks = [b for b in range(num_blocks) if b not in args.upscale_target_pr_blocks]
+        _, upscale_target_without_ddp, _ = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = upscale_target_without_ddp
+        )
+
+        # Trained model: random init everywhere except --downscale_blocks, which get the
+        # checkpoint's weights (downscaled below); --upscale_blocks stay random here and are
+        # scaled up towards the upscale target below.
+        args.random_blocks = [b for b in range(num_blocks) if b not in args.downscale_blocks]
+        model, model_without_ddp, shuffled_block_order = utils.pr_load_model(
+            path = args.initialize,
+            args = args,
+            device = device,
+            model = model
+        )
+        args.random_blocks = saved_random_blocks
     elif args.init_method == "match_target_qkvp_ln1_norm_ratio":
         if args.layer_11_target_qkvp_ln1_norm_ratio < 0:
             raise ValueError("layer_11_target_qkvp_ln1_norm_ratio must be set to a positive float value when using match_target_qkvp_ln1_norm_ratio init method")
@@ -2023,7 +2214,90 @@ def main(args):
                         print(utils.get_rank(), f"Torch barrier: Scale weights for layer {block_idx}: {scale_weights}", flush=True)
 
                         scale_weights = broadcast_dict([scale_weights], src=0)[0]
-                        utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling) 
+                        utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
+
+        if args.init_method == "mixed_updown_match_delta_norms":
+            if utils.is_main_process():
+                downscale_target_stats = attention_residual_analysis(
+                    data_loader = dataset_ref_loader,
+                    model = downscale_target_without_ddp,
+                    device = device,
+                    args = args,
+                    save=True,
+                    filename="downscale_target_res_stats",
+                    layers_to_analyse = args.downscale_blocks,
+                    detailed=False
+                )
+                downscale_target_stats = transform_target_ratios(downscale_target_stats, args)
+
+                upscale_target_stats = attention_residual_analysis(
+                    data_loader = dataset_ref_loader,
+                    model = upscale_target_without_ddp,
+                    device = device,
+                    args = args,
+                    save=True,
+                    filename="upscale_target_res_stats",
+                    layers_to_analyse = args.upscale_blocks,
+                    detailed=False
+                )
+                upscale_target_stats = transform_target_ratios(upscale_target_stats, args)
+            else:
+                downscale_target_stats = {}
+                upscale_target_stats = {}
+
+            for group_name, group_blocks, target_stats in [
+                ("downscale", args.downscale_blocks, downscale_target_stats),
+                ("upscale", args.upscale_blocks, upscale_target_stats),
+            ]:
+                for block_idx in group_blocks:
+                    for sub_idx in ["attn", "mlp"]:
+                        if utils.is_main_process():
+                            current_stats = attention_residual_analysis(
+                                data_loader = dataset_ref_loader,
+                                model = model_without_ddp,
+                                device = device,
+                                args = args,
+                                save=False,
+                                layers_to_analyse = [block_idx],
+                                detailed=False
+                            )
+                            if sub_idx == "attn":
+                                scale_sq = target_stats[block_idx]["norm_ratio_attn_delta_in_mean"]/current_stats[block_idx]["norm_ratio_attn_delta_in_mean"]
+                                print(f"Scale squared for {group_name} layer {block_idx} attn delta norm ratio: {scale_sq}", flush=True)
+                                scale = scale_sq ** (1/attn_scaling_elements_count) if attn_scaling_elements_count > 0 else 1.0
+                                print(f"Scale for {group_name} layer {block_idx} attn delta norm ratio: {scale}", flush=True)
+                                scale_weights = {
+                                    "norm1": scale if "norm1" in args.init_method_scaled_attributes else 1.0,
+                                    "qk": scale if "qk" in args.init_method_scaled_attributes else 1.0,
+                                    "v": scale if "v" in args.init_method_scaled_attributes else 1.0,
+                                    "proj": scale if "proj" in args.init_method_scaled_attributes else 1.0
+                                }
+                                for s, sw in scale_weights.items():
+                                    wandb_logger.update_config(f"calculated_{group_name}_layer_{block_idx}_scale_{s}", sw)
+                                wandb_logger.update_config(f"current_{group_name}_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                                wandb_logger.update_config(f"target_{group_name}_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                            else:
+                                scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
+                                print(f"Scale squared for {group_name} layer {block_idx} mlp delta norm ratio: {scale_sq}", flush=True)
+                                scale = scale_sq ** (1/mlp_scaling_elements_count) if mlp_scaling_elements_count > 0 else 1.0
+                                print(f"Scale for {group_name} layer {block_idx} mlp delta norm ratio: {scale}", flush=True)
+                                scale_weights = {
+                                    "norm2": scale if "norm2" in args.init_method_scaled_attributes else 1.0,
+                                    "fc1": scale if "fc1" in args.init_method_scaled_attributes else 1.0,
+                                    "fc2": scale if "fc2" in args.init_method_scaled_attributes else 1.0
+                                }
+                                for s, sw in scale_weights.items():
+                                    wandb_logger.update_config(f"calculated_{group_name}_layer_{block_idx}_scale_{s}", sw)
+                                wandb_logger.update_config(f"current_{group_name}_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                                wandb_logger.update_config(f"target_{group_name}_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                        else:
+                            scale_weights = {}
+
+                        torch.distributed.barrier()
+                        print(utils.get_rank(), f"Torch barrier: Scale weights for {group_name} layer {block_idx}: {scale_weights}", flush=True)
+
+                        scale_weights = broadcast_dict([scale_weights], src=0)[0]
+                        utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
 
         if args.init_method == "ortho":
             
@@ -2105,6 +2379,33 @@ def main(args):
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
+        if args.warmup_swap_source and epoch == args.warmup_epochs and args.warmup_swap_blocks:
+            print(f"[warmup_swap] End of warmup ({args.warmup_epochs} epochs) reached: swapping blocks "
+                  f"{args.warmup_swap_blocks} to source '{args.warmup_swap_source}', matching norm ratios "
+                  f"on attributes {args.warmup_swap_attributes}", flush=True)
+            n_ref = min(5000, len(dataset_train))
+            ref_indices = list(range(len(dataset_train)))
+            random.shuffle(ref_indices)
+            warmup_swap_ref_loader = torch.utils.data.DataLoader(
+                dataset_train, sampler=torch.utils.data.SubsetRandomSampler(ref_indices[:n_ref]),
+                batch_size=int(1.5 * args.batch_size),
+                num_workers=args.num_workers,
+                pin_memory=args.pin_mem,
+                drop_last=False,
+            )
+            warmup_swap_source_model = build_warmup_swap_source_model(args, device)
+            swap_blocks_matching_norm_ratio(
+                model_without_ddp=model_without_ddp,
+                source_model=warmup_swap_source_model,
+                blocks=args.warmup_swap_blocks,
+                attributes=args.warmup_swap_attributes,
+                attn_count=warmup_swap_attn_count,
+                mlp_count=warmup_swap_mlp_count,
+                data_loader=warmup_swap_ref_loader,
+                device=device,
+                args=args,
+            )
+            del warmup_swap_source_model, warmup_swap_ref_loader
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
         if log_writer is not None:
