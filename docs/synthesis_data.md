@@ -112,6 +112,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftbanai` | clean | 1 | 78.11 | nan | +0.03 | 2.314 | 1.141 | ftbanap with the input-side effective scales (q/k/v/fc1 x gamma) reset to timm's; MLP write and raw sizes kept |
 | `r` | old | 3 | 78.08 | 0.19 | +0.00 | 2.225 | 1.187 | init=none;  |
 | `ftbqu` | clean | 3 | 78.05 | 0.09 | -0.03 | 2.192 | 1.204 | init=none; slice_scale_qk=2.177; custom_init_type=slice_scale |
+| `ftbanakd` | clean | 1 | 78.04 | nan | -0.04 | 2.206 | 1.194 | init=none; analytic_profile; scaled blocks 0,1,2,3,4,5,6,7,8 |
 | `ftbqm1d` | clean | 3 | 78.01 | 0.13 | -0.07 | 2.224 | 1.177 | init=proc ckpt; quantile_match_target_blocks; scaled blocks 0,1,2,3,4,5,6,7,8; quantile_1d_mode=shuffle |
 | `ftb5e` | old | 1 | 78.00 | nan | -0.08 | 2.356 | 1.153 | init=proc ckpt; random blocks 0,1,2,3,4,5,6; downscale_pr_match_delta_norms; scaled blocks 7,8,9,10,11 |
 | `pattn4` | old | 1 | 77.95 | nan | -0.12 | 2.194 | 1.214 | init=proc ckpt; random blocks 0,1,2,3,4,5,6,7 |
@@ -146,7 +147,7 @@ Random baseline r = 78.08 (n = 3). Last-epoch top-1, seed means; train loss = ep
 | `ftb4n` | clean | 1 | 75.67 | nan | -2.41 | 2.306 | 1.312 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7; init_method_copied_blocks=8;9;10;11 |
 | `ftbrhos` | clean | 1 | 75.07 | nan | -3.01 | 2.195 | 1.342 | init=proc ckpt; upscale_random_match_delta_norms; scaled blocks 0,1,2,3,4,5,6,7,8 |
 
-## T2. Fit vs generalisation over the 128 clean arms
+## T2. Fit vs generalisation over the 129 clean arms
 
 Pearson(acc, train loss) = +0.61, Spearman = +0.72; Pearson(test loss, train loss) = -0.80; test loss = -0.68 x train loss + 2.68, residual sd 0.061.
 

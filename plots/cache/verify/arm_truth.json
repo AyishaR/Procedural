@@ -28934,7 +28934,7 @@
    "29720302"
   ],
   "starts": [
-   "2026-09-16 22:06:47"
+   "2026-09-17 01:11:08"
   ],
   "sig": {
    "initialize": "",
@@ -28991,7 +28991,7 @@
    "head_init_scale": 1.0
   },
   "output_dir": "results/imnet_base/results_IMNET_BASE_29720205/s0",
-  "first_start": "2026-09-16 22:06:47",
+  "first_start": "2026-09-17 01:11:08",
   "sig_first": {
    "initialize": "",
    "random_blocks": "",
@@ -29046,10 +29046,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 152,
+  "max_epoch": 226,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.237137728263266,
+  "train_loss_last": 2.77903884748379,
   "pre_fix": false
  },
  {
@@ -29062,7 +29062,7 @@
    "29720304"
   ],
   "starts": [
-   "2026-09-16 22:01:08"
+   "2026-09-16 23:59:48"
   ],
   "sig": {
    "initialize": "",
@@ -29119,7 +29119,7 @@
    "head_init_scale": 1.0
   },
   "output_dir": "results/imnet_base/results_IMNET_BASE_29720207/s0",
-  "first_start": "2026-09-16 22:01:08",
+  "first_start": "2026-09-16 23:59:48",
   "sig_first": {
    "initialize": "",
    "random_blocks": "",
@@ -29174,10 +29174,144 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 118,
+  "max_epoch": 125,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.086312580328339,
+  "train_loss_last": 3.05541625743111,
+  "pre_fix": false
+ },
+ {
+  "slurm_id": "29720209",
+  "seed": 0,
+  "jobnames": [
+   "ftbanakd"
+  ],
+  "jobids": [
+   "29720306"
+  ],
+  "starts": [
+   "2026-09-17 00:00:35"
+  ],
+  "sig": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ksd recipe with the q,k scales of blocks 1-8 reduced so the attention logit std at init is the kdyck recipe's 0.55 (diffuse attention) plus the persistent fc1 bias gate (lr x0.02): the kdyck route on ksd's other numbers",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "output_dir": "results/imnet_base/results_IMNET_BASE_29720209/s0",
+  "first_start": "2026-09-17 00:00:35",
+  "sig_first": {
+   "initialize": "",
+   "random_blocks": "",
+   "weight_shuffle": "",
+   "init_method": "analytic_profile",
+   "init_method_scaled_blocks": "0,1,2,3,4,5,6,7,8",
+   "init_method_scaled_attributes": "",
+   "quantile_source": "empirical",
+   "quantile_1d_mode": "skip",
+   "quantile_qkv_mode": "pooled",
+   "quantile_1d_source": "empirical",
+   "custom_init_type": "",
+   "custom_init_blocks": "",
+   "slice_scale_qk": 1.0,
+   "slice_scale_v": 1.0,
+   "slice_scale_proj": 1.0,
+   "spectral_values": "keep",
+   "spectral_basis": "keep",
+   "target_ratio_absolute": -1.0,
+   "target_ratio_scale": 1.0,
+   "target_ratio_flatten": false,
+   "clip_outlier_blocks": "",
+   "outlier_clip_frac": 0.001,
+   "weight_init": "",
+   "layer_11_scale_method": "",
+   "layer_11_scale_ln": 1.0,
+   "layer_11_scale_attn_qk": 1.0,
+   "layer_11_scale_attn_v": 1.0,
+   "layer_11_scale_attn_proj": 1.0,
+   "layer_11_target_qkvp_ln1_norm_ratio": -1.0,
+   "skip_norm": true,
+   "shuffle_load": false,
+   "skip_load_blocks": "",
+   "freeze_blocks": "",
+   "attention_residual_scaling": "",
+   "attention_out_scaling": "",
+   "learning_rate_scaling": false,
+   "init_method_copied_blocks": "",
+   "simultaneous_init_scaling": false,
+   "init_method_bias_scaling": false,
+   "notes": "ksd recipe with the q,k scales of blocks 1-8 reduced so the attention logit std at init is the kdyck recipe's 0.55 (diffuse attention) plus the persistent fc1 bias gate (lr x0.02): the kdyck route on ksd's other numbers",
+   "epochs": 300,
+   "lr": 0.002,
+   "warmup_epochs": 50,
+   "model": "vit_base",
+   "drop_path": 0,
+   "skip_load_block_attributes": "",
+   "custom_pr_load": "",
+   "hold_back_blocks": "",
+   "delete_blocks": "",
+   "skip_attn_segments": "",
+   "initialize_as_pr": true,
+   "head_init_scale": 1.0
+  },
+  "max_epoch": 299,
+  "acc_last": 78.04200240234375,
+  "acc_at": {
+   "249": 77.67400247558594,
+   "274": 77.99400250488281,
+   "284": 78.0320027392578,
+   "289": 78.0240025,
+   "299": 78.04200240234375
+  },
+  "train_loss_last": 2.206117590160993,
   "pre_fix": false
  },
  {
@@ -29302,10 +29436,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 108,
-  "acc_last": null,
+  "max_epoch": 219,
+  "acc_last": 77.30600254394531,
   "acc_at": {},
-  "train_loss_last": 3.162190000120646,
+  "train_loss_last": 2.5115564975481575,
   "pre_fix": false
  },
  {
@@ -29318,7 +29452,7 @@
    "29723558"
   ],
   "starts": [
-   "2026-09-16 16:13:39"
+   "2026-09-17 01:19:29"
   ],
   "sig": {
    "initialize": "",
@@ -29375,7 +29509,7 @@
    "head_init_scale": 1.0
   },
   "output_dir": "results/imnet_base/results_IMNET_BASE_29723558/s0",
-  "first_start": "2026-09-16 16:13:39",
+  "first_start": "2026-09-17 01:19:29",
   "sig_first": {
    "initialize": "",
    "random_blocks": "",
@@ -29430,10 +29564,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 85,
+  "max_epoch": 158,
   "acc_last": null,
   "acc_at": {},
-  "train_loss_last": 3.390558142453814,
+  "train_loss_last": 2.9640172198534205,
   "pre_fix": false
  },
  {
@@ -29558,10 +29692,10 @@
    "initialize_as_pr": true,
    "head_init_scale": 1.0
   },
-  "max_epoch": 83,
-  "acc_last": null,
+  "max_epoch": 194,
+  "acc_last": 78.20800238769532,
   "acc_at": {},
-  "train_loss_last": 3.413296239761015,
+  "train_loss_last": 2.7675615633145356,
   "pre_fix": false
  }
 ]

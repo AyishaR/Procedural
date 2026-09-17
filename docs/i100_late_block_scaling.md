@@ -1458,6 +1458,13 @@ prediction held; the `ftbanag`-analogue does not transfer either, so it is not t
 worth ~0.4 over `ftbanak` and no more, as predicted from its epoch-9 traces (gate gone) and its block-7 transient (32).
 `ftbqmlnvok` (twin recipe on ksd) at 77.83 at epoch 294, final 07:25. All three continuations cancelled.
 
+**`ftbanakd` FINAL 78.04 (2026-09-17 early morning, one seed).** ksd recipe with q/k rescaled to the kdyck recipe's diffuse
+logit std 0.55 plus the persistent fc1-bias gate (lr x0.02): 78.04 = random (78.08), train loss 2.206, test loss 1.194. The
+kdyck route does not work on ksd's other numbers: diffuse attention sharpened to random's entropy by epoch 19 (ksd's LN
+gains 0.27 are smaller and move faster than kdyck's 0.4) and the gate did not keep the MLP write down. With `ftbanaks`
+79.58 this isolates the sink as the operative ingredient on ksd; `ftbanaksg` (sink + gate) is at 78.81 at epoch 224, 0.35
+above `ftbanaks` at the same epoch, final ~12:20; `ftbanakbs` (gate only) waits on the shared partition's per-account GPU cap.
+
 **`ftbanaks` FINAL 79.58, `ftbanaksw` FINAL 78.73 (2026-09-16 22:30, one seed each): the sink is the missing structure.**
 `ftbanaks` -- the ksd second-moment recipe (`ftbanak`, 77.86) plus one number per block 1-8, the norm of a seeded random
 q-bias direction per head chosen so the attention entropy at init equals the ksd prefix's (0.17-2.97 nats) -- ends at

@@ -454,8 +454,8 @@ ksd prefix's) FINAL 79.58: +1.50 over random, 0.47 below the ksd prefix (80.05),
 (transient 13.8, fit deficit +0.32 at 149). `ftbanaksw` (weaker sink at the prefix's epoch-9 entropy) 78.73. So the ksd
 prefix's benefit is second moments plus a common-mode attention write, and the general early-lever state -- middle blocks
 that write common-mode, quiet MLPs, slow input side -- is reachable by two constructions: uniform attention kept diffuse
-by slow q/k (kdyck recipe) or a sink (ksd recipe). `ftbanaksg` (sink + persistent gate), `ftbanakbs` (gate only) and
-`ftbanakd` (diffuse q/k + gate, at random through epoch 274) finish 2026-09-17.
+by slow q/k (kdyck recipe) or a sink (ksd recipe). `ftbanakd` (diffuse q/k + persistent gate, the kdyck route on ksd's numbers) FINAL 78.04 = random;
+`ftbanaksg` (sink + persistent gate) and `ftbanakbs` (gate only) finish 2026-09-17.
 
 ## Appendix: data status
 
