@@ -158,6 +158,21 @@ mechanism** — what every accurate arm shares is the loud, general top (late re
 rank-mapped marginals), which settles §0d.10's open question (1) in favour of the late lever. The fused-qkv
 caveat of §0d.9 (v moves ~2x slower than in proc) still applies to `ftblrm`.
 
+**Effective-robustness view (added 2026-09-17; `plots` in `probes/fig_effective_robustness.py` ->
+`figures/fig21_effective_robustness.png`, offsets in `effective_robustness.csv`).** Re-plotting every readout
+against the ImageNet linear-probe accuracy *at the same depth* (x = in-distribution, y = transfer / OOD, one
+trajectory per arm from the embedding to b11, logit axes) separates "less trained" from "less general": at
+matched ImageNet-probe accuracy, proc's blocks 1-5 sit on random's transfer line (mean offset within ±0.5
+points; ImageNet-R, VOC, NYU and the low-level R² likewise within ±0.6), i.e. the front is *earlier along the
+same curve*, not on a worse one — so the depth-indexed deficit of reading 1 is a training-speed effect, not a
+generality deficit. The excess appears in the upper half: proc's mean offset from random's line over b7-b11 is
++1.4 (transfer mean), +0.9 (ImageNet-R), +1.1 (VOC), +1.1 (k-NN), where random's own trajectory bends down
+(b10-b11 gain ImageNet accuracy and lose transfer) and proc's does not. Per arm over b9-b11: `ftb3b` +2.1,
+`ftbqmlnvo` +1.6, `ftbrho` +1.5, `p` +1.7, `ftb3i` +0.8 above random's line on the transfer mean; `ftblrm`
+−1.1, `ftb4o` −1.6, `ftbrhos` −1.7 below it. k-NN is the one readout where proc's front is *below* the line
+(−0.9 over b3-b8): the slow front has slightly worse metric structure per unit of decodable class
+information. Per model (21 checkpoints), final top-1 correlates with block-11 transfer at r = 0.74, with best-depth transfer at 0.71, with block-11 ImageNet-R at 0.86 and with best VOC mIoU at 0.80.
+
 **Caveats.** n=1 for `ftb4o`, `ftbrhos` and `ftblrm`; probes use a single centre crop and 100 ImageNet train images per
 class (the absolute numbers are below full-train linear-probe numbers but every arm is treated identically);
 dense metrics are on the 14x14 patch grid; the transfer mean weights EuroSAT (saturated at 98 %) like the
