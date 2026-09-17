@@ -1458,6 +1458,20 @@ prediction held; the `ftbanag`-analogue does not transfer either, so it is not t
 worth ~0.4 over `ftbanak` and no more, as predicted from its epoch-9 traces (gate gone) and its block-7 transient (32).
 `ftbqmlnvok` (twin recipe on ksd) at 77.83 at epoch 294, final 07:25. All three continuations cancelled.
 
+**The sink is a joint statistic, not unsampleable structure (2026-09-17, 32 training images at init).** Decomposing the query
+into the part common to all tokens of an image and the rest: common share of the query energy in blocks 1-8 is 0.97-0.99 in the
+kdyck prefix, 0.79-0.95 in the ksd prefix, 0.73-0.77 in `ftbanap`, 0.47-0.60 in random, 1.00 in `ftbanaks`; and the logits
+produced by that common query alone (a function of the key only = the sink term) account for essentially all of the prefixes'
+logit std (kdyck 69.6 of 69.9 at block 1; ksd 192 of 218) against 0.49 of 0.57 in `ftbanap`. The common query comes from the
+stream's mean direction (94-96% in kdyck; 58-94% in ksd with 5-38% from the norm1 bias), not from a bias: after block 0's
+write the tokens are nearly parallel (cosine 0.95 kdyck, 0.78-0.84 ksd) and W_q maps that shared direction onto a vector that
+W_k's outputs resolve strongly. With the same per-tensor second moments a random W_q, W_k pair gives a key-only logit term
+~150x smaller. So what the second-moment recipes lack is a *joint* statistic of (W_q, W_k, stream) -- the size of the
+key-only logit term -- not something unsampleable: `ftbanaks` samples it directly (a random common query per head via the q
+bias, one strength per block) and recovers 1.5 of ksd's 2.0. Terminology for the paper: kdyck's prefix is reproduced by
+marginal (per-tensor) second moments; ksd's needs one joint statistic per block in addition. "Structure" should be reserved
+for what no low-dimensional statistic captures.
+
 **Uniform vs sink attention: both are common-mode writes; correction for ksd (2026-09-17, 32 training images at init).** Every
 random-weight init is near-uniform at init (entropy 5.17-5.26 of a maximum 5.28, incl. plain random; logit std 0.3-0.9) while
 the kdyck prefix is a near-one-hot sink (entropy 0.6-1.2, logit std 33-84, max prob 0.7-0.8): q.k alignment is structure no
