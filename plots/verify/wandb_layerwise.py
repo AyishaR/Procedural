@@ -47,6 +47,8 @@ ARMS = {  # arm -> [(slurm_id, seed)]
     "ftbanakb": [(29637998, 0, SHUF)],   # + MLP gate
     "ftbanakg": [(29634997, 0, SHUF)],   # exact scales + permuted LN vectors
     "ftbqmlnvok": [(29634995, 0, SHUF)], # twin recipe on ksd
+    "ftbanapx": [(29723558, 0)],   # kdyck control: exact fold, q/k separate, ramp
+    "ftbanape": [(29723598, 0)],   # kdyck control: exact fold, per block, no corrections
     "ftbanaks": [(29720235, 0, SHUF)],   # sink
     "ftbanaksw": [(29720203, 0, SHUF)],  # weak sink
     "ftbanaksg": [(29720205, 0, SHUF)],  # sink + persistent gate

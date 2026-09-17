@@ -1458,6 +1458,21 @@ prediction held; the `ftbanag`-analogue does not transfer either, so it is not t
 worth ~0.4 over `ftbanak` and no more, as predicted from its epoch-9 traces (gate gone) and its block-7 transient (32).
 `ftbqmlnvok` (twin recipe on ksd) at 77.83 at epoch 294, final 07:25. All three continuations cancelled.
 
+**Uniform vs sink attention: both are common-mode writes; correction for ksd (2026-09-17, 32 training images at init).** Every
+random-weight init is near-uniform at init (entropy 5.17-5.26 of a maximum 5.28, incl. plain random; logit std 0.3-0.9) while
+the kdyck prefix is a near-one-hot sink (entropy 0.6-1.2, logit std 33-84, max prob 0.7-0.8): q.k alignment is structure no
+random q/k pair produces. The two extremes do the same thing to the stream. Token-specific share of the attention write's
+energy in blocks 1-8 (0 = the same vector added to every token): random 1.3-3.4%, twin / `ftbanap` 1.0-1.7%, kdyck prefix
+0.1-0.6%, `ftbanaks` 0.0-0.5%, `ftbanak` 9.4% falling to 0.1%. **The ksd prefix is the exception: 17.6 / 26.6 / 9.9% in blocks
+1-3** (0.7-6.5% above), so the earlier statement that both prefixes are pure common-mode sinks was too strong -- ksd's first
+three middle blocks do token-specific attention at init, and the pure common-mode sink `ftbanaks` still recovers 1.5 of the
+prefix's 2.0. Entropy is therefore the wrong axis; token-specificity of the write is the right one. Second observation:
+these init statistics do NOT separate winners from losers on kdyck (`ftbana` 76.6 and `ftbanai` 78.1 have the same 0.5-2%
+attention share and the same token-specific MLP write 0.02-0.03 as `ftbanap`), and `ftbanaks` wins with a random-like
+token-specific MLP write (0.18-0.23 of the stream, vs `ftbanap` 0.02, kdyck prefix 0.002). What separates the arms is how
+long the common-mode state persists in training (slow q/k for the uniform route, a bias of norm ~100-500 with a relative
+Adam step of ~1e-5 for the sink), i.e. the dynamics table, not any init-time forward statistic.
+
 **`ftbanakd` FINAL 78.04 (2026-09-17 early morning, one seed).** ksd recipe with q/k rescaled to the kdyck recipe's diffuse
 logit std 0.55 plus the persistent fc1-bias gate (lr x0.02): 78.04 = random (78.08), train loss 2.206, test loss 1.194. The
 kdyck route does not work on ksd's other numbers: diffuse attention sharpened to random's entropy by epoch 19 (ksd's LN
