@@ -40,9 +40,10 @@ class SmoothedValue(object):
         """
         Warning: does not synchronize the deque!
         """
-        # if not is_dist_avail_and_initialized():
-        #     return
-        t = torch.tensor([self.count, self.total], dtype=torch.float64, device='cuda')
+        if not is_dist_avail_and_initialized():
+            return
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        t = torch.tensor([self.count, self.total], dtype=torch.float64, device=device)
         dist.barrier()
         dist.all_reduce(t)
         t = t.tolist()
@@ -425,9 +426,11 @@ class NativeScalerWithGradNormCount:
                 
         # device = parameters[0][1].grad.device
         expanded_grads = []
+        total_grads = []          # one entry per parameter tensor: what the total norm is taken over
         for name, p in parameters:
             if p.grad is not None:
                 grad = p.grad.detach()
+                total_grads.append(grad)
                 
                 # if 'qkv.weight' in name or 'qkv.bias' in name:
                 if 'qkv' in name:
@@ -444,12 +447,10 @@ class NativeScalerWithGradNormCount:
                     expanded_grads.append((name, grad))
         # 2. CHANGED: Loop over our new `expanded_grads` list instead of `parameters`
         buckets = defaultdict(list)
-        total_grads = []
-      
+
         for name, grad_norm in expanded_grads:
             for fn in group_fn:
                 buckets[fn(name)].append(grad_norm)
-            total_grads.append(grad_norm)
 
         layer_norms = {}
         if norm_type == inf:
@@ -1528,10 +1529,24 @@ def block_input_stream(model, images):
 
 
 @torch.no_grad()
+def fc1_input(block, stream):
+    """norm2 of the stream after the block's attention sub-layer, following the block's own forward: layer scale (ls1),
+    stochastic depth (drop_path1) and, for a block patched by patched_last_block_forward, the residual / attention-output
+    scales. All of these are the identity for the evaluation-mode ViT-B used so far, so the value is unchanged there;
+    spelling them out keeps the calibration target meaning "what fc1 really reads" under any other configuration."""
+    attention_out = block.attn(block.norm1(stream))
+    for name in ("ls1", "drop_path1"):
+        if hasattr(block, name):
+            attention_out = getattr(block, name)(attention_out)
+    return block.norm2(stream * getattr(block, "attn_res_scale", 1.0) + attention_out * getattr(block, "attn_out_scale", 1.0))
+
+
 def joint_statistics_per_block(model, images, blocks):
     """{block: {"entropy", "sink_share", "pre_activation_mean", "active_units"}} on `images`: the functional quantities the
     rank-one components target (mean attention entropy in nats, share of attention mass on the most-attended key, mean fc1
     pre-activation, fraction of positive fc1 pre-activations)."""
+    if not blocks:
+        return {}
     was_training = model.training
     model.eval()
     stream, result = block_input_stream(model, images), {}
@@ -1540,7 +1555,7 @@ def joint_statistics_per_block(model, images, blocks):
             break
         if index in blocks:
             probabilities, _, _ = _attention_rows(block, stream, block.attn.qkv.weight)
-            pre_activation = block.mlp.fc1(block.norm2(stream + block.attn(block.norm1(stream))))
+            pre_activation = block.mlp.fc1(fc1_input(block, stream))
             result[index] = {"entropy": float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean()),
                              "sink_share": float(probabilities.mean(2).max(-1).values.mean()),
                              "pre_activation_mean": float(pre_activation.mean()),
@@ -1630,7 +1645,7 @@ def _install_fc1_gate(block, stream, target_mean, renormalize):
     W = fc1.weight.data
     base = W.clone().float()
     n = W.shape[0]
-    y = block.norm2(stream + block.attn(block.norm1(stream)))          # what fc1 reads
+    y = fc1_input(block, stream)                                       # what fc1 reads
     c = torch.nn.functional.normalize(y.mean(dim=(0, 1)), dim=0)
     delta = -torch.ones(n, 1, device=W.device) / n ** 0.5 * c[None, :]    # unit Frobenius norm; every hidden unit shifted alike
     gamma = block.norm2.weight.detach().float()[None, :]
@@ -1665,6 +1680,8 @@ def calibrate_joint_statistics(model, spec, images, seed=0):
     sink, gate = spec.get("qk_sink") or {}, spec.get("fc1_gate") or {}
     sink_targets = {int(b): float(v) for b, v in sink.get("entropy", {}).items()}
     gate_targets = {int(b): float(v) for b, v in gate.get("pre_activation_mean", {}).items()}
+    if not sink_targets and not gate_targets:
+        return {}
     was_training = model.training
     model.eval()
     stream, report = block_input_stream(model, images), {}
