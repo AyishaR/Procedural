@@ -1033,6 +1033,42 @@ def main(args):
         if utils.is_main_process():
             for _b, _m in _applied.items():
                 print(f"[analytic_profile] block {_b}: " + "  ".join(f"{k} x{v[0]} (raw rms/0.02 = {v[1]}" + (f", effective = {v[2]})" if len(v) > 2 else ")") for k, v in _m.items()))
+        # Optional joint statistics (spec keys "qk_sink" / "fc1_gate", utils.calibrate_joint_statistics): rank-one components
+        # calibrated on TRAINING images with the evaluation transform, on rank 0 only; the calibrated weights are then
+        # broadcast so every rank holds identical parameters (the model is already DDP-wrapped here, see docs "DDP
+        # rank-sync bug").
+        _profile = json.load(open(args.profile_spec)) if os.path.exists(str(args.profile_spec)) else json.loads(args.profile_spec)
+        _joint = {_key: _profile[_key] for _key in ("qk_sink", "fc1_gate") if _key in _profile}
+        if _joint:
+            _tensors = [model_without_ddp.blocks[int(_b)].attn.qkv.weight for _b in _joint.get("qk_sink", {}).get("entropy", {})] + \
+                       [model_without_ddp.blocks[int(_b)].mlp.fc1.weight for _b in _joint.get("fc1_gate", {}).get("pre_activation_mean", {})]
+            if utils.is_main_process():
+                from datasets import build_transform
+                _n_images = max(int(_part.get("images", 64)) for _part in _joint.values())
+                _images = utils.calibration_images(dataset_train.samples, dataset_train.loader, build_transform(False, args),
+                                                   _n_images, args.seed).to(device)
+                for _b, _parts in utils.calibrate_joint_statistics(model_without_ddp, _joint, _images, seed=args.seed).items():
+                    if "qk_sink" in _parts:
+                        _r = _parts["qk_sink"]
+                        print(f"[qk_sink] block {_b}: alpha {_r['alpha']:.3f} s_q {_r['s_q']:.3f} s_k {_r['s_k']:.3f} | entropy {_r['entropy']:.3f} "
+                              f"(target {_r['target']}, reachable {_r['reachable']}) sink share {_r['sink_share']:.2f} common query {_r['common_query']:.3f} "
+                              f"| row logit std {_r['row_logit_std']:.1f} max |logit| {_r['max_abs_logit']:.0f} | effective q x{_r['effective_q_ratio']:.4f} "
+                              f"k x{_r['effective_k_ratio']:.4f}, raw rms q x{_r['rms_q_ratio']:.4f} k x{_r['rms_k_ratio']:.4f}", flush=True)
+                    if "fc1_gate" in _parts:
+                        _r = _parts["fc1_gate"]
+                        print(f"[fc1_gate] block {_b}: beta {_r['beta']:.3f} s {_r['s']:.3f} | mean pre-activation {_r['pre_activation_mean']:+.3f} "
+                              f"(target {_r['target']:+.3f}, reachable {_r['reachable']}) active units {_r['active_units']:.4f} GELU rms {_r['gelu_rms']:.3f} "
+                              f"| mean-row energy share {_r['mean_row_energy_share']:.3f} | effective fc1 x{_r['effective_ratio']:.4f}, raw rms x{_r['rms_ratio']:.4f}", flush=True)
+            if utils.is_dist_avail_and_initialized():
+                for _t in _tensors:
+                    dist.broadcast(_t.data, src=0)
+                _check = torch.stack([_t.data.double().abs().sum() for _t in _tensors])
+                _gathered = [torch.zeros_like(_check) for _ in range(utils.get_world_size())]
+                dist.all_gather(_gathered, _check)
+                _same = all(torch.equal(_g, _gathered[0]) for _g in _gathered)
+                if utils.is_main_process():
+                    print(f"[joint statistics] {len(_tensors)} calibrated tensors identical on all {len(_gathered)} ranks: {_same}", flush=True)
+                assert _same, "joint statistics: ranks hold different weights after the broadcast"
     elif args.init_method == "clip_outlier_weights":
         # Checkpoint init with the largest-magnitude weights of
         # args.init_method_scaled_blocks winsorised to the (1 - outlier_clip_frac)

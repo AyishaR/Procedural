@@ -1382,7 +1382,7 @@ def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
                         norm.bias.copy_(vec.to(norm.bias.dtype))
             mult = {}
             for s, p in spec.items():
-                if s in ("extra", "ln", "fc1_bias", "q_sink"):
+                if s in ("extra", "ln", "fc1_bias", "q_sink", "qk_sink", "fc1_gate"):
                     continue
                 if "per_block" in p:            # explicit per-block multipliers, e.g. a checkpoint's exact profile (ftbanak)
                     m = float(p["per_block"][str(b)])
@@ -1452,3 +1452,233 @@ def sink_directions(num_heads, head_dim, seed, block):
     gen = torch.Generator().manual_seed(2000 + 10 * seed + block)
     d = torch.randn(num_heads, head_dim, generator=gen)
     return d / d.norm(dim=1, keepdim=True)
+
+
+# ----------------------------------------------------------------------------- joint statistics: rank-one components
+#
+# Per-tensor second moments cannot express how a weight matrix is aligned with the residual stream. In both procedural
+# prefixes two such alignments dominate the function of blocks 1..8 (docs/i100_late_block_scaling.md 0d.11):
+#
+#   * attention sink: W_q maps the direction every token shares onto one query, so logit_ij depends on the key only
+#     (attention entropy 0.4 to 1.0 nats on kdyck against 5.2 for any random q/k pair; the top singular component holds
+#     22% of W_q's energy against 0.5% for a random matrix);
+#   * MLP gate: the average row of fc1 (22 to 30% of fc1's energy on kdyck, 0.03% for a random matrix) points against the
+#     stream's common direction, shifting every pre-activation by -2 to -2.7 so the GELU is off.
+#
+# Both are reproduced here by ONE rank-one component per tensor, placed along the initialised model's OWN stream
+# direction and sized by bisection on training images until a functional target read off the checkpoint prefix is met:
+#
+#   "qk_sink":  {"entropy": {block: nats}}                W_q <- s_q W_q + alpha P c1^T ,  W_k <- s_k W_k + alpha P r^T
+#   "fc1_gate": {"pre_activation_mean": {block: value}}   W_fc1 <- s W_fc1 - beta (1/sqrt(n)) 1 c2^T
+#
+#   c1, c2   unit direction of the token- and image-mean of norm1's / norm2's output at that block (measured)
+#   P        per-head random unit vectors stacked (sink_directions);  r  a seeded random unit direction for the keys
+#   1        the all-ones vector over the n hidden units: every unit gets the same shift, like the checkpoint's mean row
+#   s, s_q, s_k   with "renormalize" (default) chosen so the EFFECTIVE scale rms(W diag(gamma)) of each tensor is
+#            unchanged, i.e. the numbers the specification declares stay exact and only the joint statistic is added.
+#            (c1, c2 are means of gamma * x_hat + b and hence correlated with gamma, so keeping the RAW rms instead
+#            would shift the effective scale by up to 5%; the raw rms moves by about that much, reported.)
+#
+# Blocks are processed in depth order and each block's sink is installed before its gate, because norm2 sees the
+# attention output. Data enters through c1, c2, alpha, beta only: label-free, TRAINING images, evaluation transform.
+# Not rank-safe by itself: main.py runs it on rank 0 and broadcasts the calibrated weights.
+
+def calibration_images(samples, loader, transform, n, seed):
+    """`n` images of an ImageFolder-style sample list, chosen by a seeded permutation, under `transform` (no labels used)."""
+    gen = torch.Generator().manual_seed(4000 + int(seed))
+    index = torch.randperm(len(samples), generator=gen)[:n].tolist()
+    return torch.stack([transform(loader(samples[i][0])) for i in index])
+
+
+def _attention_rows(block, stream, qkv_weight):
+    """Attention probabilities (B, H, N, N), logits and queries of `block` for input `stream`, using `qkv_weight` in place
+    of the block's own (so a candidate can be evaluated without touching the parameters)."""
+    attn = block.attn
+    y = block.norm1(stream)
+    B, N, C = y.shape
+    H = attn.num_heads
+    qkv = torch.nn.functional.linear(y, qkv_weight, attn.qkv.bias).reshape(B, N, 3, H, C // H).permute(2, 0, 3, 1, 4)
+    q, k = qkv[0], qkv[1]
+    if hasattr(attn, "q_norm"):
+        q, k = attn.q_norm(q), attn.k_norm(k)
+    logits = (q @ k.transpose(-2, -1)) * attn.scale
+    return logits.softmax(dim=-1), logits, q
+
+
+@torch.no_grad()
+def block_input_stream(model, images):
+    """The residual stream entering block 0 for `images` (patch embedding, position embedding, class token), obtained by
+    stopping the model's own forward pass at the first block."""
+    captured = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _grab(module, inputs):
+        captured["stream"] = inputs[0]
+        raise _Stop
+
+    handle = model.blocks[0].register_forward_pre_hook(_grab)
+    try:
+        model(images)
+    except _Stop:
+        pass
+    handle.remove()
+    return captured["stream"].float()
+
+
+@torch.no_grad()
+def joint_statistics_per_block(model, images, blocks):
+    """{block: {"entropy", "sink_share", "pre_activation_mean", "active_units"}} on `images`: the functional quantities the
+    rank-one components target (mean attention entropy in nats, share of attention mass on the most-attended key, mean fc1
+    pre-activation, fraction of positive fc1 pre-activations)."""
+    was_training = model.training
+    model.eval()
+    stream, result = block_input_stream(model, images), {}
+    for index, block in enumerate(model.blocks):
+        if index > max(blocks):
+            break
+        if index in blocks:
+            probabilities, _, _ = _attention_rows(block, stream, block.attn.qkv.weight)
+            pre_activation = block.mlp.fc1(block.norm2(stream + block.attn(block.norm1(stream))))
+            result[index] = {"entropy": float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean()),
+                             "sink_share": float(probabilities.mean(2).max(-1).values.mean()),
+                             "pre_activation_mean": float(pre_activation.mean()),
+                             "active_units": float((pre_activation > 0).float().mean())}
+        stream = block(stream)
+    if was_training:
+        model.train()
+    return result
+
+
+def _rescale_to_keep_norm(base, delta, alpha):
+    """s > 0 with ||s * base + alpha * delta||_F = ||base||_F, or None when alpha is too large for that."""
+    A = float(base.pow(2).sum()); Bc = float((base * delta).sum()); Dd = float(delta.pow(2).sum())
+    disc = (alpha * Bc) ** 2 - A * (alpha ** 2 * Dd - A)
+    if disc < 0:
+        return None
+    s = (-alpha * Bc + disc ** 0.5) / A
+    return s if s > 0 else None
+
+
+def _bisect(value_at, target, hi, decreasing=True, steps=40, tolerance=1e-4):
+    """Smallest strength in [0, hi] at which `value_at` reaches `target` (value_at monotone in the strength).
+    Returns (strength, reachable)."""
+    below = (lambda v: v <= target) if decreasing else (lambda v: v >= target)
+    if not below(value_at(hi)):
+        return hi, False
+    lo = 0.0
+    for _ in range(steps):
+        mid = 0.5 * (lo + hi)
+        if below(value_at(mid)):
+            hi = mid
+        else:
+            lo = mid
+        if hi - lo < tolerance:
+            break
+    return hi, True
+
+
+def _install_rank_one_sink(block, stream, target_entropy, renormalize, seed, index):
+    """Rank-one coupled q/k component of one block (see the section comment). Returns its report."""
+    W = block.attn.qkv.weight.data
+    D, H = W.shape[1], block.attn.num_heads
+    base_q, base_k = W[:D].clone().float(), W[D:2 * D].clone().float()
+    c = torch.nn.functional.normalize(block.norm1(stream).mean(dim=(0, 1)), dim=0)
+    r = torch.randn(D, generator=torch.Generator().manual_seed(3000 + 10 * int(seed) + index)).to(W.device)
+    r = torch.nn.functional.normalize(r, dim=0)
+    P = sink_directions(H, D // H, int(seed), index).reshape(D, 1).to(W.device)
+    delta_q, delta_k = P * c[None, :], P * r[None, :]
+    gamma = block.norm1.weight.detach().float()[None, :]        # norms are taken in the folded metric W diag(gamma)
+
+    def candidate(alpha):
+        s_q = _rescale_to_keep_norm(base_q * gamma, delta_q * gamma, alpha) if renormalize else 1.0
+        s_k = _rescale_to_keep_norm(base_k * gamma, delta_k * gamma, alpha) if renormalize else 1.0
+        Wc = W.clone().float()
+        Wc[:D] = s_q * base_q + alpha * delta_q
+        Wc[D:2 * D] = s_k * base_k + alpha * delta_k
+        return Wc, s_q, s_k
+
+    def entropy_at(alpha):
+        probabilities, _, _ = _attention_rows(block, stream, candidate(alpha)[0])
+        return float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean())
+
+    # with renormalisation the rank-one part cannot exceed the tensor's own (folded) norm
+    hi = 0.98 * min(float((base_q * gamma).norm() / (delta_q * gamma).norm()),
+                    float((base_k * gamma).norm() / (delta_k * gamma).norm())) if renormalize else 64.0
+    alpha, reachable = _bisect(entropy_at, target_entropy, hi, decreasing=True)
+    Wc, s_q, s_k = candidate(alpha)
+    probabilities, logits, q = _attention_rows(block, stream, Wc)
+    q_flat = q.transpose(1, 2).reshape(q.shape[0], q.shape[2], -1)
+    q_mean = q_flat.mean(1, keepdim=True)
+    rms = lambda t: float(t.pow(2).mean().sqrt())
+    W.copy_(Wc.to(W.dtype))
+    return {"alpha": alpha, "s_q": s_q, "s_k": s_k, "target": target_entropy, "reachable": bool(reachable),
+            "entropy": float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean()),
+            "sink_share": float(probabilities.mean(2).max(-1).values.mean()),
+            "common_query": float((q_mean.pow(2).sum(-1) / q_flat.pow(2).sum(-1).mean(1, keepdim=True)).mean()),
+            "row_logit_std": float(logits.std(-1).mean()), "max_abs_logit": float(logits.abs().max()),
+            "rms_q_ratio": rms(Wc[:D]) / rms(base_q), "rms_k_ratio": rms(Wc[D:2 * D]) / rms(base_k),
+            "effective_q_ratio": rms(Wc[:D] * gamma) / rms(base_q * gamma),
+            "effective_k_ratio": rms(Wc[D:2 * D] * gamma) / rms(base_k * gamma)}
+
+
+def _install_fc1_gate(block, stream, target_mean, renormalize):
+    """Rank-one mean-row component of one block's fc1 (see the section comment); `stream` is the block's input, the
+    block's attention must already be final. Returns its report."""
+    fc1 = block.mlp.fc1
+    W = fc1.weight.data
+    base = W.clone().float()
+    n = W.shape[0]
+    y = block.norm2(stream + block.attn(block.norm1(stream)))          # what fc1 reads
+    c = torch.nn.functional.normalize(y.mean(dim=(0, 1)), dim=0)
+    delta = -torch.ones(n, 1, device=W.device) / n ** 0.5 * c[None, :]    # unit Frobenius norm; every hidden unit shifted alike
+    gamma = block.norm2.weight.detach().float()[None, :]
+    bias = fc1.bias.detach().float()
+
+    def candidate(beta):
+        s = _rescale_to_keep_norm(base * gamma, delta * gamma, beta) if renormalize else 1.0
+        return s * base + beta * delta, s
+
+    def mean_at(beta):
+        return float((torch.nn.functional.linear(y, candidate(beta)[0], bias)).mean())
+
+    hi = 0.98 * float((base * gamma).norm() / (delta * gamma).norm()) if renormalize else 64.0
+    beta, reachable = _bisect(mean_at, target_mean, hi, decreasing=True)
+    Wc, s = candidate(beta)
+    pre_activation = torch.nn.functional.linear(y, Wc, bias)
+    rms = lambda t: float(t.pow(2).mean().sqrt())
+    folded = Wc * gamma
+    W.copy_(Wc.to(W.dtype))
+    return {"beta": beta, "s": s, "target": target_mean, "reachable": bool(reachable),
+            "pre_activation_mean": float(pre_activation.mean()), "active_units": float((pre_activation > 0).float().mean()),
+            "gelu_rms": rms(block.mlp.act(pre_activation)),
+            "mean_row_energy_share": float(n * folded.mean(0).pow(2).sum() / folded.pow(2).sum()),
+            "rms_ratio": rms(Wc) / rms(base), "effective_ratio": rms(folded) / rms(base * gamma)}
+
+
+@torch.no_grad()
+def calibrate_joint_statistics(model, spec, images, seed=0):
+    """Install the rank-one components requested by `spec` ("qk_sink" and/or "fc1_gate", see the section comment).
+    `images`: (n, 3, H, W) on the model's device. Modifies attn.qkv.weight / mlp.fc1.weight of the listed blocks in place.
+    Returns {block: {"qk_sink": report, "fc1_gate": report}}."""
+    sink, gate = spec.get("qk_sink") or {}, spec.get("fc1_gate") or {}
+    sink_targets = {int(b): float(v) for b, v in sink.get("entropy", {}).items()}
+    gate_targets = {int(b): float(v) for b, v in gate.get("pre_activation_mean", {}).items()}
+    was_training = model.training
+    model.eval()
+    stream, report = block_input_stream(model, images), {}
+    last = max(list(sink_targets) + list(gate_targets))
+    for index, block in enumerate(model.blocks):
+        if index > last:
+            break
+        if index in sink_targets:
+            report.setdefault(index, {})["qk_sink"] = _install_rank_one_sink(
+                block, stream, sink_targets[index], bool(sink.get("renormalize", True)), seed, index)
+        if index in gate_targets:
+            report.setdefault(index, {})["fc1_gate"] = _install_fc1_gate(
+                block, stream, gate_targets[index], bool(gate.get("renormalize", True)))
+        stream = block(stream)
+    if was_training:
+        model.train()
+    return report

@@ -67,6 +67,20 @@ ingredients are read off:
    is absent, so that key is provenance here). --no_layernorm omits them (gains stay 1, biases 0: the
    ftbana form).
 
+3. Optional joint statistics (--qk_sink, --fc1_gate): how a weight matrix is aligned with the residual stream, which no
+   per-tensor moment expresses. In both procedural prefixes two alignments dominate blocks 1..8:
+     * W_q maps the direction all tokens share onto one query, so attention is a sink (entropy 0.4 to 1.0 nats on kdyck
+       against 5.2 for any random q/k pair; the top singular component holds 22% of W_q's energy, 0.5% if random);
+     * the average row of fc1 (22 to 30% of its energy on kdyck, 0.03% if random; the per-tensor scalar mean is only 1% of
+       the std, which is why "zero mean" looked safe) points against the stream's common direction and shifts every
+       pre-activation by -2 to -2.7, so the GELU is off.
+   Each is written as one functional target per block (attention entropy; mean fc1 pre-activation), measured with a
+   forward pass of the checkpoint prefix on training images -- the only data-dependent ingredients. main.py realises them
+   with one rank-one component per tensor along the initialised model's own stream direction
+   (utils.calibrate_joint_statistics), rescaling the random part so every effective scale above stays exact.
+   8 + 8 numbers. On kdyck neither is needed for the accuracy gain (second moments suffice, ftbanap 80.24); they make the
+   initialisation reproduce the prefix's function, not only its moments.
+
 Output: a profile specification for
     --init_method analytic_profile --profile_spec OUT --init_method_scaled_blocks 0,...,8
 
@@ -97,7 +111,7 @@ each line sits from the measurement.
 usage: .venv/bin/python extract_profile.py CHECKPOINT OUT.json [--blocks 0-8] [--exact] [--no_layernorm]
                                             [--query_key_flat X] [--fc2_end Y] [--init_standard_deviation 0.02]
                                             [--query_key separate|pooled] [--gain_fold product|exact]
-                                            [--fit_upto B]
+                                            [--fit_upto B] [--qk_sink] [--fc1_gate] [--data_path D] [--joint_images 256] [--seed 0]
 for example (the ftbanap specification, derived, no hand constant):
        .venv/bin/python extract_profile.py results/pr_vitb_n/pr_6066174_final.pth /tmp/kdyck.json --query_key pooled --fit_upto 7
 """
@@ -171,6 +185,60 @@ def layernorm_statistics(state_dict, block):
     return statistics
 
 
+# ----------------------------------------------------------------------------- attention-sink targets (forward pass)
+
+def mean_row_energy_share(state_dict, block):
+    """Share of fc1's energy (gain folded) carried by its average row: n * ||mean row||^2 / ||W diag(gain)||_F^2.
+    A random matrix has 1/n = 0.0003; the kdyck checkpoint 0.22 to 0.30 in blocks 1..8. Weights only, no data."""
+    folded = state_dict[f"blocks.{block}.mlp.fc1.weight"].float() * state_dict[f"blocks.{block}.norm2.weight"].float()[None, :]
+    return float(folded.shape[0] * folded.mean(0).pow(2).sum() / folded.pow(2).sum())
+
+
+def measure_joint_targets(arguments, state_dict, blocks):
+    """Functional targets of the two joint statistics, read off the checkpoint prefix at initialisation.
+
+    The prefix is built as main.py builds it for the prefix arms (ftb3i): a fresh timm ViT-B with the checkpoint's tensors
+    in `blocks`, everything else (later blocks, ImageNet patch and position embeddings, head) random. Measured on TRAINING
+    images under the evaluation transform, chosen by utils.calibration_images -- the protocol main.py uses when it
+    calibrates -- for blocks[1:]: block 0 reads the raw embeddings, has no sink (entropy ~4.8) and its MLP is on.
+    Imports are local: this is the only part of the script that needs the model code and data."""
+    import os
+    from torchvision import datasets as torchvision_datasets
+    import main as training_main
+    import utils
+    from datasets import build_transform
+
+    model_arguments = training_main.get_args_parser().parse_args(
+        ["--model", "vit_base", "--data_set", "IMNET", "--data_path", arguments.data_path, "--input_size", "224", "--nb_classes", "1000"])
+    model_arguments.nb_classes = 1000
+    torch.manual_seed(arguments.seed)
+    model = utils.build_model(model_arguments)
+    prefix = {name: tensor for name, tensor in state_dict.items()
+              if name.startswith("blocks.") and int(name.split(".")[1]) in blocks}
+    model.load_state_dict(prefix, strict=False)
+
+    train_folder = torchvision_datasets.ImageFolder(os.path.join(arguments.data_path, "train"))
+    images = utils.calibration_images(train_folder.samples, train_folder.loader, build_transform(False, model_arguments),
+                                      arguments.joint_images, arguments.seed)
+    measured = utils.joint_statistics_per_block(model, images, blocks[1:])
+    print(f"joint-statistic targets (checkpoint prefix, {arguments.joint_images} training images, evaluation transform):")
+    for block, values in measured.items():
+        print(f"  b{block}: attention entropy {values['entropy']:.3f} nats (top key {values['sink_share']:.2f} of the mass) | "
+              f"mean fc1 pre-activation {values['pre_activation_mean']:+.3f} (active units {values['active_units']:.4f}, "
+              f"mean-row energy share {mean_row_energy_share(state_dict, block):.3f})")
+    protocol = "training images, evaluation transform, utils.calibration_images"
+    targets = {}
+    if arguments.qk_sink:
+        targets["qk_sink"] = {"entropy": {str(block): round(values["entropy"], 3) for block, values in measured.items()},
+                              "images": arguments.joint_images, "renormalize": True, "protocol": protocol}
+    if arguments.fc1_gate:
+        targets["fc1_gate"] = {"pre_activation_mean": {str(block): round(values["pre_activation_mean"], 3) for block, values in measured.items()},
+                               "images": arguments.joint_images, "renormalize": True, "protocol": protocol,
+                               # reference only (weights-only reading; the calibration reports what it needed):
+                               "checkpoint_mean_row_energy_share": {str(block): round(mean_row_energy_share(state_dict, block), 3) for block in measured}}
+    return targets
+
+
 # ----------------------------------------------------------------------------- linear fit
 
 def fit_line(values):
@@ -235,6 +303,8 @@ def build_profile_specification(arguments):
             "stats": {str(block): layernorm_statistics(state_dict, block) for block in blocks},
             "ckpt": arguments.checkpoint,
         }
+    if arguments.qk_sink or arguments.fc1_gate:
+        specification.update(measure_joint_targets(arguments, state_dict, blocks))
     return specification, blocks, rows
 
 
@@ -290,6 +360,17 @@ def build_parser(description=__doc__, output_required=True):
     parser.add_argument("--gain_fold", choices=("product", "exact"), default="product",
                         help="how the LayerNorm gain enters q, k, v, fc1: 'product' = root mean square(W) * root mean square(gain), "
                              "the units of every existing specification; 'exact' = root mean square(W diag(gain))")
+    parser.add_argument("--qk_sink", action="store_true",
+                        help="joint statistic 1: also measure the checkpoint prefix's per-block attention entropy at initialisation "
+                             "and write it as 'qk_sink' targets; main.py then installs a rank-one coupled q/k sink "
+                             "(utils.calibrate_joint_statistics; effective scales preserved)")
+    parser.add_argument("--fc1_gate", action="store_true",
+                        help="joint statistic 2: also measure the prefix's per-block mean fc1 pre-activation and write it as 'fc1_gate' "
+                             "targets; main.py then installs a rank-one mean-row component in fc1 (the GELU gate)")
+    parser.add_argument("--data_path", default="/data/datasets/ILSVRC2012",
+                        help="ImageNet root with a train/ folder; --qk_sink and --fc1_gate are the only parts of this script that run a forward pass")
+    parser.add_argument("--joint_images", type=int, default=256, help="training images used to measure the targets and, in main.py, to calibrate")
+    parser.add_argument("--seed", type=int, default=0, help="seed of the random parts of the prefix model and of the image choice")
     parser.add_argument("--init_standard_deviation", type=float, default=0.02,
                         help="standard deviation of timm's truncated-normal initialisation that the scales are relative to")
     return parser
@@ -343,7 +424,9 @@ def main():
     form = "exact per-block" if arguments.exact else "block 0 + linear fit"
     layernorm_note = ("" if arguments.no_layernorm
                       else f" + {8 * len(blocks)} LayerNorm statistics inline (no checkpoint needed at initialisation)")
-    print(f"wrote {arguments.out}: {form} scales{layernorm_note}")
+    sink_note = ("" if not arguments.qk_sink else f" + {len(specification['qk_sink']['entropy'])} attention-sink targets") + \
+                ("" if not arguments.fc1_gate else f" + {len(specification['fc1_gate']['pre_activation_mean'])} fc1-gate targets")
+    print(f"wrote {arguments.out}: {form} scales{layernorm_note}{sink_note}")
 
 
 if __name__ == "__main__":

@@ -1458,6 +1458,37 @@ prediction held; the `ftbanag`-analogue does not transfer either, so it is not t
 worth ~0.4 over `ftbanak` and no more, as predicted from its epoch-9 traces (gate gone) and its block-7 transient (32).
 `ftbqmlnvok` (twin recipe on ksd) at 77.83 at epoch 294, final 07:25. All three continuations cancelled.
 
+**Joint statistics as rank-one components: the full reconstruction arms (2026-09-17, set up and verified, NOT launched).**
+*Finding.* "Zero mean" was checked per tensor as a scalar (|mean|/std <= 0.017) and is misleading: in blocks 1-8 of the kdyck
+checkpoint the AVERAGE ROW of fc1 carries 22-30% of the tensor's energy (32-41% gain-folded; ksd 9-22%; a random matrix 0.03%),
+is anti-aligned with the stream's mean direction (cosine -0.53 to -0.69) and alone accounts for the measured mean
+pre-activation of -2.0 to -2.7 (GELU off, 0.0-0.3% active units). Likewise the top singular component holds 22% of W_q's, 10%
+of W_k's and 36% of fc2's energy (random: 0.5%). Second-moment recipes scramble these away and keep the gain on kdyck; a
+faithful reconstruction needs them.
+*Construction* (`utils.calibrate_joint_statistics`, section "joint statistics: rank-one components"; call site in `main.py`'s
+`analytic_profile` branch; targets written by `extract_profile.py --qk_sink --fc1_gate`). One rank-one component per tensor,
+along the initialised model's OWN stream direction, sized by bisection on training images (evaluation transform) until a
+functional target read off the checkpoint prefix is met: attention entropy per block -> W_q += alpha P c1^T, W_k += alpha P r^T;
+mean fc1 pre-activation per block -> W_fc1 -= beta (1/sqrt n) 1 c2^T. The random part is rescaled so every EFFECTIVE scale
+rms(W diag gamma) stays exactly at the specification's value (raw rms moves 1-6% for q, 1-4% for fc1). Calibrated on rank 0,
+weights broadcast, equality asserted across ranks.
+*Arms* (all from `extract_profile.py --gain_fold exact --exact`, kdyck project, run scripts written, not submitted):
+`ftbanaperg` = exact scales (54) + LN statistics (72) + sink (8) + gate (8): the full reconstruction; `ftbanaper` = without the
+gate; `ftbanaer` = exact scales with gains 1 + sink (does the sink replace the slow steps?); `ftbanae` = its no-sink control.
+*Verification.* `plots/verify/verify_joint_statistics.py`, CPU unit test and dump mode on dumps made through `main.py`: PASS for
+all three (exactly the expected qkv/fc1 tensors change, v rows identical, effective q/k/fc1 ratios 1.00000, residuals rank one
+at 1e-6, fc1's left vector constant, targets hit to 1e-3, forward finite, max |logit| 182). Two-rank fp16 smoke training of
+`ftbanaperg`: 16 calibrated tensors identical on both ranks, loss 7.07 -> 6.94 in one epoch. On unseen images (calibration on 256)
+the entropy stays within ~0.1 nats and the gate within 0.02. The rank-one share fc1 needs is 0.35-0.66 against the checkpoint's
+0.32-0.41, because the recipe's tokens share less (token cosine 0.62-0.67 vs 0.91).
+*Figures* (`plot_reconstruction.py CHECKPOINT SPEC`): `plots/out/reconstruction_<arm>.png` (ten functional panels) and
+`_scales.png` (effective scales read back from the initialised model: equal to the checkpoint's to three digits). With both
+statistics blocks 1-8 match the prefix in entropy, top-key mass, common-query share, token-specific attention write, mean
+pre-activation, active units, GELU rms, and MLP write within 2x. NOT reproduced: block 0's amplitude (attention write 1.5 vs 3.9,
+MLP write 2.7 vs 28.8) and, as its consequence, the token cosine (0.62-0.68 vs 0.91) and the relative size of the random top
+blocks' writes (0.12 vs 0.007). Test-partition notes: the first NCCL collective hung on dlc2gpu06 (and probably dlc2gpu35); not
+code-related, excluded.
+
 **The sink is a joint statistic, not unsampleable structure (2026-09-17, 32 training images at init).** Decomposing the query
 into the part common to all tokens of an image and the rest: common share of the query energy in blocks 1-8 is 0.97-0.99 in the
 kdyck prefix, 0.79-0.95 in the ksd prefix, 0.73-0.77 in `ftbanap`, 0.47-0.60 in random, 1.00 in `ftbanaks`; and the logits
