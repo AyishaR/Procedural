@@ -102,7 +102,7 @@ def get_args_parser():
     parser.add_argument('--weight_decay_end', type=float, default=None, help="""Final value of the
         weight decay. We use a cosine schedule for WD and using a larger decay by
         the end of training improves performance for ViTs.""")
-    parser.add_argument('--custom_lr_layer', type=bool, default=False,
+    parser.add_argument('--custom_lr_layer', type=str2bool, default=False,
                         help='Whether to use custom layer-wise learning rates, which is used for testing whether the block-wise learning rate decay contributes to the performance of procedural pretraining')
     parser.add_argument('--custom_lr_transition_start', type=int, default=0,
                         help='Epoch to start transition to custom layer-wise learning rates, used for testing whether the block-wise learning rate decay contributes to the performance of procedural pretraining')
@@ -336,7 +336,7 @@ def get_args_parser():
                              'orthonormal U and V (QR of a Gaussian). Also preserves ||W||_F.')
     parser.add_argument('--custom_init_blocks', default="", type=str,
                         help='Comma separated list of layer indices to apply custom init, e.g. "0,1,2" to apply custom init to the first 3 layers; supports "all" to apply custom init to all layers and "" to not apply custom init to any layers (default: "")')
-    parser.add_argument('--save_for_analysis', default=True, type=bool,
+    parser.add_argument('--save_for_analysis', default=True, type=str2bool,
                         help='Whether to save model checkpoints and training data for further analysis, which will be used for the paper but is set to False by default to save storage space and speed up training')
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -463,10 +463,10 @@ def get_args_parser():
     parser.add_argument('--spectral_blocks', type=str, default="",
                         help='Comma separated list of layer indices that --init_method "spectral_truncate_random"/"spectral_swap_spectrum" apply their SVD intervention to, e.g. "0,1,2" for the first 3 layers; '
                              'supports "all" for every layer and "" (default) to also apply to every layer.')
-    parser.add_argument('--simultaneous_init_scaling', type=bool, default=False, help='Scale all blocks simultaneously during initialization, instead of scaling each block individually')
-    parser.add_argument('--init_method_bias_scaling', type=bool, default=False, help='Scale bias too')
+    parser.add_argument('--simultaneous_init_scaling', type=str2bool, default=False, help='Scale all blocks simultaneously during initialization, instead of scaling each block individually')
+    parser.add_argument('--init_method_bias_scaling', type=str2bool, default=False, help='Scale bias too')
     parser.add_argument('--mute_mlp', type=str, default="", help='Init mlp to zero')
-    parser.add_argument('--post_hoc_act_norm_track', type=bool, default=False, help='Rerun old models to track act norms before training starts')
+    parser.add_argument('--post_hoc_act_norm_track', type=str2bool, default=False, help='Rerun old models to track act norms before training starts')
 
     parser.add_argument('--weight_shuffle', type=str, default="",
                         help='format - <layer_number>[<segment1>,<segment2>];, e.g. "0[attn.qkv.weight,attn.qkv.bias,attn.proj.weight,attn.proj.bias];2[attn.qkv.weight,attn.qkv.bias]" to shuffle weights in the specified segments of the specified layers')
@@ -479,7 +479,7 @@ def get_args_parser():
     parser.add_argument('--attention_out_scaling', type=str, default="",
                         help='format - <layer_number>[<scale_ratio>];, e.g. "0[0.5];2[0.5]" to scale residuals in the specified layers by the specified ratios')
 
-    parser.add_argument('--learning_rate_scaling', type=bool, default=False)
+    parser.add_argument('--learning_rate_scaling', type=str2bool, default=False)
     parser.add_argument('--learning_rate_scaling_params', type=str, default="",
                         help='format = <param_name>[<scale_ratio>];, e.g. "blocks.11.attn.qkv.weight[0.5];blocks.11.attn.qkv.bias[0.5]" to scale learning rates for the specified parameters by the specified ratios')
     
@@ -712,6 +712,31 @@ def main(args):
     else:
         wandb_logger = None
 
+    def sync_initialisation(stage):
+        """Broadcast rank 0's floating-point tensors to every rank.
+
+        pr_load_model wraps the model in DDP and returns model.module, so every initialisation edit runs on
+        each rank's own replica -- and DDP re-syncs gradients, never weights. Combined with
+        `seed = args.seed + get_rank()`, any edit drawing from the torch RNG (weight_shuffle, the 1-D
+        quantile permutation) leaves the ranks holding different models. Broadcasting fixes every such
+        site at once and is a no-op when the ranks already agree. The log marker "[init-sync] broadcast"
+        is what plots/audit_rank_bug.py looks for."""
+        if not args.distributed:
+            return
+        n_sync = 0
+        for _, tensor in sorted(model_without_ddp.state_dict().items()):
+            if torch.is_tensor(tensor) and tensor.is_floating_point():
+                torch.distributed.broadcast(tensor.data, src=0)
+                n_sync += 1
+        torch.distributed.barrier()
+        if utils.is_main_process():
+            print(f"[init-sync] broadcast {n_sync} tensors from rank 0 ({stage})", flush=True)
+
+    def update_wandb_config(key, value):
+        """wandb_logger is None when W&B is disabled; configuration updates are then skipped."""
+        if wandb_logger:
+            wandb_logger.update_config(key, value)
+
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, sampler=sampler_train,
         batch_size=args.batch_size,
@@ -937,7 +962,10 @@ def main(args):
     if args.init_method_scaled_blocks == "":
         args.init_method_scaled_blocks = []
     else:
-        args.init_method_scaled_blocks = [int(x) for x in args.init_method_scaled_blocks.split(",")]
+        if args.init_method_scaled_blocks == "all":
+            args.init_method_scaled_blocks = list(range(args.num_blocks))
+        else:
+            args.init_method_scaled_blocks = [int(x) for x in args.init_method_scaled_blocks.split(",")]
         if args.init_method_scaled_attributes == "":
             args.init_method_scaled_attributes = ["v", "proj","fc2"]
         else:
@@ -1570,13 +1598,13 @@ def main(args):
         max_accuracy_ema = 0.0
 
     if args.start_epoch==0 and shuffled_block_order is not None:
-        wandb_logger.update_config("block_order", shuffled_block_order)
+        update_wandb_config("block_order", shuffled_block_order)
 
     if args.start_epoch==0 and args.custom_lr_layer:
         for bi, blrs in enumerate(custom_block_targets):
-            wandb_logger.update_config(f"block_{bi}_scale", blrs)
+            update_wandb_config(f"block_{bi}_scale", blrs)
         for npname, nplrs in custom_non_block_targets.items():
-            wandb_logger.update_config(f"{npname}_scale", nplrs)
+            update_wandb_config(f"{npname}_scale", nplrs)
 
     if len(args.attention_residual_scaling)>0 or len(args.attention_out_scaling)>0:
         for layer_num in range(len(model_without_ddp.blocks)):
@@ -1742,9 +1770,9 @@ def main(args):
                         "proj": scale if "proj" in args.init_method_scaled_attributes else 1.0
                     }
                     for s, sw in scale_weights.items():
-                        wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
-                    wandb_logger.update_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
-                    wandb_logger.update_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                        update_wandb_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                    update_wandb_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                    update_wandb_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
                     utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
 
             else:    
@@ -1772,9 +1800,9 @@ def main(args):
                             "proj": scale if "proj" in args.init_method_scaled_attributes else 1.0
                         }
                         for s, sw in scale_weights.items():
-                            wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
-                        wandb_logger.update_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
-                        wandb_logger.update_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                            update_wandb_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                        update_wandb_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                        update_wandb_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
 
                     else:
                         scale_weights = {}
@@ -1830,9 +1858,9 @@ def main(args):
                     }
 
                     for s, sw in scale_weights.items():
-                        wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
-                    wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
-                    wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                        update_wandb_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                    update_wandb_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                    update_wandb_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
                     utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
 
             else:    
@@ -1860,9 +1888,9 @@ def main(args):
                         }
 
                         for s, sw in scale_weights.items():
-                            wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
-                        wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
-                        wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                            update_wandb_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                        update_wandb_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                        update_wandb_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
 
                     else:
                         scale_weights = {}
@@ -1919,9 +1947,9 @@ def main(args):
                                 "proj": scale if "proj" in args.init_method_scaled_attributes else 1.0
                             }
                             for s, sw in scale_weights.items():
-                                wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
-                            wandb_logger.update_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
-                            wandb_logger.update_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                                update_wandb_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                            update_wandb_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                            update_wandb_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
 
                         elif sub_idx == "mlp": # mlp
                             scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
@@ -1935,9 +1963,9 @@ def main(args):
                                 "fc2": scale if "fc2" in args.init_method_scaled_attributes else 1.0
                             }
                             for s, sw in scale_weights.items():
-                                wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
-                            wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
-                            wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                                update_wandb_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                            update_wandb_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                            update_wandb_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
 
                         utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
 
@@ -1968,9 +1996,9 @@ def main(args):
                                     "proj": scale if "proj" in args.init_method_scaled_attributes else 1.0
                                 }
                                 for s, sw in scale_weights.items():
-                                    wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
-                                wandb_logger.update_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
-                                wandb_logger.update_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                                    update_wandb_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                                update_wandb_config(f"current_layer_{block_idx}_attn_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                                update_wandb_config(f"target_layer_{block_idx}_attn_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
                             elif sub_idx == "mlp": # mlp
                                 scale_sq = target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]/current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"]
                                 print(f"Scale squared for layer {block_idx} delta norm ratio: {scale_sq}", flush=True)
@@ -1984,9 +2012,9 @@ def main(args):
                                     "fc2": scale if "fc2" in args.init_method_scaled_attributes else 1.0
                                 }
                                 for s, sw in scale_weights.items():
-                                    wandb_logger.update_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
-                                wandb_logger.update_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
-                                wandb_logger.update_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                                    update_wandb_config(f"calculated_layer_{block_idx}_scale_{s}", sw)
+                                update_wandb_config(f"current_layer_{block_idx}_mlp_delta_in_norm_ratio", current_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                                update_wandb_config(f"target_layer_{block_idx}_mlp_delta_in_norm_ratio", target_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
 
                         else:
                             scale_weights = {}
@@ -1999,7 +2027,7 @@ def main(args):
 
         if args.init_method == "ortho":
             
-            for block_id in range(len(args.init_method_scaled_blocks)):
+            for block_id in args.init_method_scaled_blocks:
                 torch.nn.init.orthogonal_(model_without_ddp.blocks[block_id].attn.qkv.weight)
                 torch.nn.init.orthogonal_(model_without_ddp.blocks[block_id].attn.proj.weight)
 
@@ -2017,13 +2045,21 @@ def main(args):
                 utils.scale_layer_weights(model_without_ddp, [block_idx], scale_weights, args.init_method_bias_scaling)
 
 
-        for block_id in range(len(args.mute_mlp)):
+        for block_id in args.mute_mlp:
             torch.nn.init.zeros_(model_without_ddp.blocks[block_id].mlp.fc1.weight)
             torch.nn.init.zeros_(model_without_ddp.blocks[block_id].mlp.fc2.weight)
 
 
 
         print("Completed initialization and scaling of weights based on attention residual analysis")
+        # Sync BEFORE the analyses below: they would otherwise run on per-rank replicas (and the rank / CKA
+        # analyses sum Gram matrices across ranks) whenever an edit above drew from the per-rank torch RNG.
+        sync_initialisation("after the initialisation edits")
+        if model_ema is not None:
+            # ModelEma was constructed before the edits above (auto_load_model needs it for resumes), so its
+            # copy still holds the pre-edit weights; start the average from the initialisation actually trained.
+            model_ema.ema.load_state_dict(model_without_ddp.state_dict())
+            print("[init-sync] EMA weights re-copied from the initialised model", flush=True)
         # vit_base skips this during training for speed; post-hoc analysis jobs still need it
         if args.model != "vit_base" or args.post_hoc_act_norm_track:
             updated_stats = attention_residual_analysis(
@@ -2036,9 +2072,9 @@ def main(args):
                 detailed=False
             )
             for block_idx in range(len(model_without_ddp.blocks)):
-                wandb_logger.update_config(f"final_layer_{block_idx}_attn_delta_in_norm_ratio", updated_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
-                wandb_logger.update_config(f"final_layer_{block_idx}_mlp_delta_in_norm_ratio", updated_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
-                # wandb_logger.update_config(f"final_attn_delta_in_norm_ratio", updated_stats[11]["norm_ratio_attn_delta_in_mean"])
+                update_wandb_config(f"final_layer_{block_idx}_attn_delta_in_norm_ratio", updated_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
+                update_wandb_config(f"final_layer_{block_idx}_mlp_delta_in_norm_ratio", updated_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
+                # update_wandb_config(f"final_attn_delta_in_norm_ratio", updated_stats[11]["norm_ratio_attn_delta_in_mean"])
         print("Custom model analysis before training")
         model_analyse(
             model=model_without_ddp,
@@ -2062,20 +2098,9 @@ def main(args):
     if args.post_hoc_act_norm_track: return
     # return
     
-    # pr_load_model wraps the model in DDP and returns model.module, so every init edit above
-    # runs on each rank's own replica -- and DDP re-syncs gradients, never weights. Combined
-    # with `seed = args.seed + get_rank()`, any edit drawing from the torch RNG (weight_shuffle,
-    # the 1-D quantile permutation) leaves the ranks training different models. Broadcasting
-    # here fixes every such site at once and is a no-op when the ranks already agree.
-    if args.distributed:
-        n_sync = 0
-        for _, t in sorted(model_without_ddp.state_dict().items()):
-            if torch.is_tensor(t) and t.is_floating_point():
-                torch.distributed.broadcast(t.data, src=0)
-                n_sync += 1
-        torch.distributed.barrier()
-        if utils.is_main_process():
-            print(f"[init-sync] broadcast {n_sync} tensors from rank 0", flush=True)
+    # Safety net before training (and the only sync on the resume path, where it is a no-op);
+    # fresh starts were already synced right after the initialisation edits, see sync_initialisation.
+    sync_initialisation("before training")
 
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()
@@ -2096,7 +2121,7 @@ def main(args):
             use_amp=args.use_amp,
             custom_lr_layer=args.custom_lr_layer,
             custom_lr_transition_start=args.custom_lr_transition_start,
-            custom_lr_transition_end=args.custom_lr_transition_start,
+            custom_lr_transition_end=args.custom_lr_transition_end,
             custom_block_targets=custom_block_targets,
             custom_non_block_targets=custom_non_block_targets, args=args
         )

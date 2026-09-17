@@ -1489,6 +1489,24 @@ MLP write 2.7 vs 28.8) and, as its consequence, the token cosine (0.62-0.68 vs 0
 blocks' writes (0.12 vs 0.007). Test-partition notes: the first NCCL collective hung on dlc2gpu06 (and probably dlc2gpu35); not
 code-related, excluded.
 
+**`main.py` review fixes (2026-09-17, refactor session; no recorded run affected).** An external review found seven defects.
+All are real; the argument dumps of all 922 logged runs show none was exercised in a way that changes a result.
+(1) `train_one_epoch` received `custom_lr_transition_start` as the transition end -- `custom_lr_layer` is False in every
+run. (2) the `ortho` init and `--mute_mlp` looped over list positions instead of block ids -- neither was ever used.
+(3) six `type=bool` flags (`bool("False")` is True) -> `str2bool`, also in `main_lp.py`, `main_stats.py`, `main_stats_pr.py`
+-- no script passes any of them. (4) `--init_method_scaled_blocks all` raised -> implemented. (5) ~30 bare
+`wandb_logger.update_config` calls -> one guarded helper, so W&B-disabled runs no longer crash in the matching code.
+(6) the `[init-sync]` broadcast ran AFTER `model_analyse` / `calculate_rank_final` / `calculate_cka_final`, so for the 32
+post-fix runs with per-rank RNG edits (ftb4e3fix, ftb11isfix, ftbqks, ftbqm1d*, ftbqmln*, ftbqmlnvo*) those in-run analyses
+saw per-rank replicas. Training was never affected (the broadcast precedes it), and the only by-products, the `rank_*.json`
+/ `cka_*.json` files of those runs, feed no figure or table -- do not start using them for those 32 runs. Now
+`sync_initialisation()` runs right after the init edits and again before training (resume path; the log marker text is
+unchanged for `plots/audit_rank_bug.py`). (7) `ModelEma` is built before the init edits (needed by `auto_load_model`);
+its weights are now re-copied after the sync -- EMA was never enabled. *Test* (`results/init_dumps/smoke_sync_check.py`,
+job 29727393, 2 ranks, ftb4e3fix arguments, W&B off): tensors differing across ranks at the first pre-training analysis
+108 of 152 with the old `main.py`, 0 of 152 with the fixed one. Pending continuations resume with `start_epoch > 0` and
+skip the init block, so their behaviour is unchanged.
+
 **The sink is a joint statistic, not unsampleable structure (2026-09-17, 32 training images at init).** Decomposing the query
 into the part common to all tokens of an image and the rest: common share of the query energy in blocks 1-8 is 0.97-0.99 in the
 kdyck prefix, 0.79-0.95 in the ksd prefix, 0.73-0.77 in `ftbanap`, 0.47-0.60 in random, 1.00 in `ftbanaks`; and the logits

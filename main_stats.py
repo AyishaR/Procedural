@@ -110,7 +110,7 @@ def get_args_parser():
     parser.add_argument('--weight_decay_end', type=float, default=None, help="""Final value of the
         weight decay. We use a cosine schedule for WD and using a larger decay by
         the end of training improves performance for ViTs.""")
-    parser.add_argument('--custom_lr_layer', type=bool, default=False,
+    parser.add_argument('--custom_lr_layer', type=str2bool, default=False,
                         help='Whether to use custom layer-wise learning rates, which is used for testing whether the block-wise learning rate decay contributes to the performance of procedural pretraining')
     parser.add_argument('--custom_lr_transition_start', type=int, default=0,
                         help='Epoch to start transition to custom layer-wise learning rates, used for testing whether the block-wise learning rate decay contributes to the performance of procedural pretraining')
@@ -308,7 +308,7 @@ def get_args_parser():
                         help="Parameters to control custom init")
     parser.add_argument('--custom_init_blocks', default="", type=str,
                         help='Comma separated list of layer indices to apply custom init, e.g. "0,1,2" to apply custom init to the first 3 layers; supports "all" to apply custom init to all layers and "" to not apply custom init to any layers (default: "")')
-    parser.add_argument('--save_for_analysis', default=True, type=bool,
+    parser.add_argument('--save_for_analysis', default=True, type=str2bool,
                         help='Whether to save model checkpoints and training data for further analysis, which will be used for the paper but is set to False by default to save storage space and speed up training')
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
