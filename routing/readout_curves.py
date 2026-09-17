@@ -103,38 +103,58 @@ def plot_trajectories(runs, path):
     print("wrote", path)
 
 
-def plot_curves(logs, path):
+def plot_curves(logs, path, routed=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     bases = [load_jsonl(p) for p in BASE if p.exists()]
-    b0 = {d["epoch"]: d for d in bases[0]} if bases else {}
+    # per-epoch base mean and seed range at the eval epochs every seed has
+    acc = {}
+    for b in bases:
+        for d in b:
+            if d.get("test_acc1") is not None:
+                acc.setdefault(d["epoch"], []).append(d["test_acc1"])
+    bmean = {e: float(np.mean(v)) for e, v in acc.items() if len(v) == len(bases)}
+    brange = {e: (min(v) - bmean[e], max(v) - bmean[e]) for e, v in acc.items() if e in bmean}
     fig, ax = plt.subplots(1, 3, figsize=(18, 4.6), layout="constrained")
     for i, b in enumerate(bases):
         be = [(d["epoch"], d["test_acc1"]) for d in b if d.get("test_acc1") is not None]
         ax[0].plot(*zip(*be), color="0.5", lw=1, label="base (3 seeds)" if i == 0 else None)
         ax[2].plot([d["epoch"] for d in b], [d["train_loss"] for d in b], color="0.5", lw=1,
                    label="base (3 seeds)" if i == 0 else None)
+    es = sorted(bmean)
+    ax[1].fill_between(es, [brange[e][0] for e in es], [brange[e][1] for e in es], color="0.85",
+                       label="base seed range (3 seeds)")
     if len(bases) == 3:
         fin = [[d for d in b if d["epoch"] == 299][-1]["test_acc1"] for b in bases]
-        sd = float(np.std(fin, ddof=1))
-        ax[1].axhspan(-sd, sd, color="0.85", label=f"base seed sd at 299 (±{sd:.2f})")
+        ax[1].axhline(float(np.std(fin, ddof=1)), color="0.6", lw=0.8, ls=":")
+        ax[1].axhline(-float(np.std(fin, ddof=1)), color="0.6", lw=0.8, ls=":",
+                      label=f"±1 sd of base at 299 (±{np.std(fin, ddof=1):.2f})")
     ax[1].axhline(0, color="k", lw=0.8)
+
+    def gap_series(r):
+        last = {d["epoch"]: d for d in r}
+        re = [(e, last[e]["test_acc1"]) for e in sorted(last) if last[e].get("test_acc1") is not None]
+        return re, [(e, a - bmean[e]) for e, a in re if e in bmean]
+
+    if routed is not None:
+        re, de = gap_series(load_jsonl(routed))
+        ax[0].plot(*zip(*re), color="0.3", lw=1, ls="--", label="free router (all 325 edges)")
+        ax[1].plot(*zip(*de), color="0.3", lw=1, ls="--", label="free router (all 325 edges)")
     for arm, r in logs.items():
-        last = {d["epoch"]: d for d in r}                        # last-wins per epoch
-        r = [last[e] for e in sorted(last)]
-        re = [(d["epoch"], d["test_acc1"]) for d in r if d.get("test_acc1") is not None]
+        re, de = gap_series(r)
+        last = {d["epoch"]: d for d in r}
+        rr = [last[e] for e in sorted(last)]
         if re:
             ax[0].plot(*zip(*re), color=COLORS[arm], lw=1.6, label=ARM_NAMES[arm])
-            de = [(e, a - b0[e]["test_acc1"]) for e, a in re if e in b0 and b0[e].get("test_acc1") is not None]
-            if de:
-                ax[1].plot(*zip(*de), "o-", color=COLORS[arm], ms=2.5, lw=1.2, label=ARM_NAMES[arm])
-        ax[2].plot([d["epoch"] for d in r], [d["train_loss"] for d in r], color=COLORS[arm], lw=1.4,
+        if de:
+            ax[1].plot(*zip(*de), "o-", color=COLORS[arm], ms=2.5, lw=1.2, label=ARM_NAMES[arm])
+        ax[2].plot([d["epoch"] for d in rr], [d["train_loss"] for d in rr], color=COLORS[arm], lw=1.4,
                    label=ARM_NAMES[arm])
     ax[0].set_xlabel("epoch"); ax[0].set_ylabel("test top-1"); ax[0].legend(); ax[0].set_title("test accuracy")
-    ax[1].set_xlabel("epoch"); ax[1].set_ylabel("arm − base s0 (top-1)"); ax[1].legend()
-    ax[1].set_title("accuracy gap at matched epochs")
+    ax[1].set_xlabel("epoch"); ax[1].set_ylabel("arm − base mean (top-1)"); ax[1].legend(fontsize=8)
+    ax[1].set_title("accuracy gap to the base seed mean at matched epochs")
     ax[2].set_xlabel("epoch"); ax[2].set_ylabel("train loss"); ax[2].legend(); ax[2].set_title("train loss")
     fig.savefig(path, dpi=130)
     print("wrote", path)
@@ -145,6 +165,7 @@ if __name__ == "__main__":
     p.add_argument("--run", action="append", required=True,
                    help="ARM=<run dir holding log.txt and readout.jsonl>, ARM in A/B/C; repeatable")
     p.add_argument("--out", required=True)
+    p.add_argument("--routed", default=None, help="log.txt of the free-router run, drawn as a reference")
     a = p.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -158,4 +179,4 @@ if __name__ == "__main__":
         plot_rows(runs, out / "readout_rows.png")
         plot_trajectories(runs, out / "readout_trajectories.png")
     if logs:
-        plot_curves(logs, out / "readout_curves.png")
+        plot_curves(logs, out / "readout_curves.png", routed=a.routed)
