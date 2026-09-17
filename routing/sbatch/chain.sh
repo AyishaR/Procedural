@@ -20,6 +20,18 @@ if [[ "$READOUT" != "off" ]]; then RUN_PREFIX=${RUN_PREFIX:-readout_$READOUT}; e
 OUT_ROOT=${OUT_ROOT:-/work/dlc2workfs3/schrodi-procedural/kempfe/routing}
 MAX_RETRIES=${MAX_RETRIES:-5}
 SCRIPT="$(dirname "$(readlink -f "$0")")/train_route.sh"
+# Partitions. Segments are submitted to the script's own #SBATCH partition (alldlc2), whose jobs
+# get PREEMPTED by lmb jobs. After a preemption every later segment is WIDENED right after
+# submission to PARTITION=$PREEMPT_PARTITION via scontrol (swrap rejects a comma list at submit
+# time, scontrol does not -- see layer-scale/slurm/clip-lmb-mover.sh), so Slurm starts it in
+# whichever partition has a slot first: lmb (PreemptMode=OFF) when its 13-GPU account cap has
+# room, alldlc2 otherwise instead of waiting on MaxGRESPerAccount. PARTITION=<list> widens from
+# the start.
+PARTITION=${PARTITION:-}
+PREEMPT_PARTITION=${PREEMPT_PARTITION:-alldlc2_gpu-h200,lmbdlc2_gpu-h200}
+# WAIT_JOB: attach to a segment that is already running (a driver restarted with new settings)
+# instead of submitting one; the loop continues normally when it ends. Needs SLURM_ID too.
+WAIT_JOB=${WAIT_JOB:-}
 umask 002
 # pidfile so liveness is checked by pid, not by grepping process lists (which matches the
 # grep itself). Launch with setsid so the driver is in its own session and survives the
@@ -42,12 +54,25 @@ finished() {      # main.py wrote the final epoch
 retries=0
 while true; do
     before=$(epochs_done)
-    EXPORT="ALL,SEED=$SEED,ROUTING_IMPL=$ROUTING_IMPL,READOUT=$READOUT,RUN_PREFIX=$RUN_PREFIX,OUT_ROOT=$OUT_ROOT"
-    if [[ "$SLURM_ID" -ne 0 ]]; then EXPORT="$EXPORT,SLURM_ID=$SLURM_ID"; fi
-    echo "$(date) submitting (SLURM_ID=$SLURM_ID seed=$SEED readout=$READOUT impl=$ROUTING_IMPL prefix=$RUN_PREFIX epochs_done=$before)"
-    JOB_ID=$(sbatch --parsable -J "$RUN_PREFIX" --export="$EXPORT" "$SCRIPT" | awk '{print $1}' | tr -d ':')
-    [[ -z "$JOB_ID" ]] && { echo "sbatch failed - stopping chain"; exit 1; }
-    [[ "$SLURM_ID" -eq 0 ]] && SLURM_ID=$JOB_ID
+    if [[ -n "$WAIT_JOB" ]]; then
+        JOB_ID=$WAIT_JOB; WAIT_JOB=""
+        [[ "$SLURM_ID" -eq 0 ]] && { echo "WAIT_JOB needs SLURM_ID (the first job of the chain)"; exit 1; }
+        echo "$(date) attaching to running job $JOB_ID (SLURM_ID=$SLURM_ID prefix=$RUN_PREFIX epochs_done=$before partition after preemption: $PREEMPT_PARTITION)"
+    else
+        EXPORT="ALL,SEED=$SEED,ROUTING_IMPL=$ROUTING_IMPL,READOUT=$READOUT,RUN_PREFIX=$RUN_PREFIX,OUT_ROOT=$OUT_ROOT"
+        if [[ "$SLURM_ID" -ne 0 ]]; then EXPORT="$EXPORT,SLURM_ID=$SLURM_ID"; fi
+        echo "$(date) submitting (SLURM_ID=$SLURM_ID seed=$SEED readout=$READOUT impl=$ROUTING_IMPL prefix=$RUN_PREFIX epochs_done=$before)"
+        JOB_ID=$(sbatch --parsable -J "$RUN_PREFIX" --export="$EXPORT" "$SCRIPT" | awk '{print $1}' | tr -d ':')
+        [[ -z "$JOB_ID" ]] && { echo "sbatch failed - stopping chain"; exit 1; }
+        [[ "$SLURM_ID" -eq 0 ]] && SLURM_ID=$JOB_ID
+        if [[ -n "$PARTITION" ]]; then
+            if out=$(scontrol update JobId="$JOB_ID" Partition="$PARTITION" 2>&1); then
+                echo "job $JOB_ID widened to Partition=$PARTITION"
+            else
+                echo "could not widen job $JOB_ID to $PARTITION ($out) - it stays on the script partition"
+            fi
+        fi
+    fi
 
     mins=0
     while true; do
@@ -60,6 +85,10 @@ while true; do
 
     if finished; then echo "reached epoch 299 - chain complete"; exit 0; fi
 
+    if [[ "$STATE" == PREEMPTED* && "$PARTITION" != "$PREEMPT_PARTITION" ]]; then
+        PARTITION=$PREEMPT_PARTITION
+        echo "preempted -> every later segment is widened to Partition=$PARTITION"
+    fi
     case "$STATE" in
         COMPLETED|TIMEOUT)
             retries=0 ;;
