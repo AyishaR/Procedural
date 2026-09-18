@@ -60,8 +60,11 @@ def extract(models, dataset, split, batch_size, workers, limit=None):
         d = cache_dir(e["name"], dataset, split)
         if not (d / "_DONE").exists():
             return False
-        have_limit = json.load(open(d / "meta.json")).get("limit")
-        return have_limit == limit                        # a limited (smoke) cache never counts as the full one
+        meta = json.load(open(d / "meta.json"))
+        if meta.get("limit") != limit:                    # a limited (smoke) cache never counts as the full one
+            return False
+        mt = meta.get("ckpt_mtime")                       # provenance: the cache must come from the current checkpoint file
+        return mt is None or abs(mt - os.path.getmtime(registry.ckpt_path(e))) < 1.0
     todo = [e for e in models if not cached(e)]
     if not todo:
         print(f"[{dataset}/{split}] all {len(models)} models cached", flush=True)
@@ -71,6 +74,7 @@ def extract(models, dataset, split, batch_size, workers, limit=None):
     if limit is not None:
         ds = torch.utils.data.Subset(ds, list(range(N)))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=workers, pin_memory=True, drop_last=False, persistent_workers=False)
+    ents = {e["name"]: e for e in todo}
     nets = {e["name"]: registry.load_model(e, "cuda") for e in todo}
     want_lowlevel = dataset in ("imnet", "places365")
     writers = {}
@@ -117,8 +121,9 @@ def extract(models, dataset, split, batch_size, workers, limit=None):
         np.save(d / "index.npy", w["index"])
         if w["lowlevel"] is not None:
             np.save(d / "lowlevel.npy", w["lowlevel"])
-        e = registry.BY_NAME[name]
-        info = dict(model=name, arm=e["arm"], seed=e["seed"], ckpt=str(registry.ckpt_path(e)),
+        e = ents[name]
+        info = dict(model=name, arm=e["arm"], seed=e["seed"], ckpt=str(registry.ckpt_path(e)), epoch=e.get("epoch", 299),
+                    k_bias_removed=getattr(nets[name], "k_bias_removed", {}),
                     ckpt_mtime=os.path.getmtime(registry.ckpt_path(e)), dataset=dataset, split=split, N=N, n_classes=C,
                     limit=limit, subset_sha256=meta["subset_sha256"], crop_pct=meta["crop_pct"],
                     depth_maxabs=w["maxabs"].tolist(), depth_mean_cls_norm=(w["sumnorm"] / N).tolist(),

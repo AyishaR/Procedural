@@ -3,10 +3,13 @@
 Everything the pipeline writes goes under PROBE_ROOT (default: the kempfe/probes folder on the shared workspace),
 never into the repo or the collaborator's results tree, which is only read.  A model is evaluated only if its
 epoch-299 weight file exists AND the run's log.txt ends at epoch 299 (`finished`).  No init dumps, no
-checkpoint-best, no intermediate epochs.
+checkpoint-best.  Intermediate epochs of FINISHED runs are reachable for the training-dynamics analysis through
+`with_epoch` / names of the form `<arm>_s<seed>@e<file index>` (file index = 0-based epoch after which the dump
+was written); the `dynamics` package is the only consumer.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +28,9 @@ DATASETS_ROOT = Path(os.environ.get("DATASETS_ROOT", "/data/datasets"))
 DEPTHS = list(range(13))          # 0 = patch+pos embedding, d = output of block d-1
 DEPTH_LABELS = ["emb"] + [f"b{i}" for i in range(12)]
 
-ARM_ORDER = ["r", "ftblrm", "ftbrhos", "ftb4o", "ftbrho", "ftb3b", "ftb3i", "ftbqmlnvo", "p"]
+ARM_ORDER = ["r", "ftblrm", "ftbrhos", "ftb4o", "ftbrho", "ftb3b", "ftb3i", "ftbqmlnvo", "p",
+             # dynamics-only arms (complete per-epoch ladders; see dynamics/registry.py)
+             "ftbqu", "ftbrhop", "ftbrhopl", "ftbcomp1", "ftb4i", "ftb4is", "ftb4"]
 ARM_LABEL = {
     "r": "random",
     "ftblrm": "random, Adam steps matched to proc 0-8",
@@ -36,17 +41,38 @@ ARM_LABEL = {
     "ftb3i": "proc 0-8, random 9-11",
     "ftbqmlnvo": "proc marginals rank-mapped 0-8",
     "p": "proc (all 12)",
+    "ftbqu": "random, q/k x2.18 in 0-8",
+    "ftbrhop": "random, 9-11 to rho 1.4 (analytic profile)",
+    "ftbrhopl": "ftbrhop + per-tensor lr, bf16",
+    "ftbcomp1": "random + proc block 0, 9-11 to rho 0.25",
+    "ftb4i": "proc 0-7, random 8-11",
+    "ftb4is": "proc 0-7 (kdyck-shuffled ckpt), random 8-11",
+    "ftb4": "proc (all 12, kdyck-shuffled ckpt)",
 }
 ARM_COLOR = {
     "r": "0.15", "ftblrm": "#1b9e77", "ftbrhos": "#a6761d", "ftb4o": "#66a61e",
     "ftbrho": "#e6ab02", "ftb3b": "#d95f02", "ftb3i": "#7570b3", "ftbqmlnvo": "#e7298a", "p": "#1f78b4",
+    "ftbqu": "#969696", "ftbrhop": "#ff7f00", "ftbrhopl": "#b2182b", "ftbcomp1": "#fb9a99",
+    "ftb4i": "#6baed6", "ftb4is": "#9ecae1", "ftb4": "#08519c",
 }
 # accuracies from log.txt (last epoch) are read at runtime; these are only for labelling
-_IB = "imnet_base/results_IMNET_BASE_{sid}/s{seed}/checkpoint-299-model.pth"
+_IB = "imnet_base/results_IMNET_BASE_{sid}/s{seed}/checkpoint-{epoch}-model.pth"
 
 
-def _e(arm, seed, sid):
-    return dict(name=f"{arm}_s{seed}", arm=arm, seed=seed, slurm_id=str(sid), ckpt=_IB.format(sid=sid, seed=seed))
+def _e(arm, seed, sid, epoch=299, **flags):
+    d = dict(name=f"{arm}_s{seed}", arm=arm, seed=seed, slurm_id=str(sid), epoch=int(epoch),
+             ckpt=_IB.format(sid=sid, seed=seed, epoch=int(epoch)))
+    d.update(flags)
+    return d
+
+
+def with_epoch(entry, epoch):
+    """Copy of an entry pointing at the dump written after 0-based epoch `epoch` (checkpoint-<epoch>-model.pth).
+
+    The name becomes `<base>@e<epoch>`; `base` keeps the run name so results can be grouped per run."""
+    base = entry.get("base", entry["name"])
+    return dict(entry, name=f"{base}@e{int(epoch)}", base=base, epoch=int(epoch),
+                ckpt=_IB.format(sid=entry["slurm_id"], seed=entry["seed"], epoch=int(epoch)))
 
 
 MODELS = [
@@ -60,7 +86,20 @@ MODELS = [
     _e("ftbrhos", 0, 29538140),
     _e("ftblrm", 0, 29545846),
 ]
-BY_NAME = {m["name"]: m for m in MODELS}
+# Runs used only by the training-dynamics analysis (complete 0..299 dump ladders; not part of the section-0e
+# "all" set).  Every dynamics entry zeroes the softmax-invariant k-bias at load (see zero_k_bias_).
+DYN_MODELS = [
+    *[_e("ftbqu", s, 29518360, dyn_only=True, zero_k_bias=True) for s in range(3)],
+    _e("ftb4", 0, 29547831, dyn_only=True, zero_k_bias=True),
+    _e("ftb4i", 1, 29448854, dyn_only=True, zero_k_bias=True),
+    _e("ftb4i", 2, 29448854, dyn_only=True, zero_k_bias=True),
+    _e("ftb4is", 0, 29547835, dyn_only=True, zero_k_bias=True),
+    _e("ftbrhopl", 0, 29632673, dyn_only=True, zero_k_bias=True),
+    _e("ftbrhop", 0, 29626634, dyn_only=True, zero_k_bias=True),
+    *[_e("ftbcomp1", s, 29498148, dyn_only=True, zero_k_bias=True) for s in range(3)],
+]
+BY_NAME = {m["name"]: m for m in MODELS + DYN_MODELS}
+_EPOCH_NAME = re.compile(r"^(.+)@e(\d+)$")
 
 
 def ckpt_path(entry):
@@ -68,6 +107,9 @@ def ckpt_path(entry):
 
 
 def log_path(entry):
+    """The run's log.txt (next to the checkpoint, or the entry's explicit `log` for init dumps stored elsewhere)."""
+    if "log" in entry:
+        return RESULTS / entry["log"]
     return ckpt_path(entry).parent / "log.txt"
 
 
@@ -87,9 +129,11 @@ def _log_lines(entry):
 
 
 def final_test_acc(entry):
-    """Last-epoch (299) test top-1 from log.txt, the repo's authoritative accuracy source (never wandb)."""
+    """Test top-1 at the entry's epoch (299 for final entries) from log.txt, the repo's authoritative accuracy
+    source (never wandb).  None when that epoch was not evaluated (vit_base evaluates every 5th epoch only)."""
+    want = int(entry.get("epoch", 299))
     for rec in reversed(_log_lines(entry)):
-        if rec.get("epoch") == 299 and rec.get("test_acc1") is not None:
+        if rec.get("epoch") == want and rec.get("test_acc1") is not None:
             return float(rec["test_acc1"])
     return None
 
@@ -108,7 +152,7 @@ def arm_truth():
 def finished(entry):
     """(ok, reason).  ok only if the epoch-299 weights exist and log.txt ends at epoch 299 (and arm_truth agrees)."""
     if not ckpt_path(entry).exists():
-        return False, "no checkpoint-299-model.pth"
+        return False, f"no {Path(entry['ckpt']).name}"
     lines = _log_lines(entry)
     if not lines:
         return False, "no log.txt"
@@ -137,10 +181,14 @@ def resolve_models(spec, quiet=False):
     out = []
     for name in [s for s in spec.split(",") if s]:
         if name not in BY_NAME:
-            raise SystemExit(f"unknown model {name!r}; known: {sorted(BY_NAME)}")
+            m = _EPOCH_NAME.match(name)
+            if m and m.group(1) in BY_NAME:
+                BY_NAME[name] = with_epoch(BY_NAME[m.group(1)], int(m.group(2)))   # extract_features looks it up by name
+            else:
+                raise SystemExit(f"unknown model {name!r}; known: {sorted(BY_NAME)}")
         ok, why = finished(BY_NAME[name])
         if not ok:
-            raise SystemExit(f"model {name} has not finished training ({why}); only final checkpoints are evaluated")
+            raise SystemExit(f"model {name}: run not finished or dump missing ({why}); only finished runs are evaluated")
         out.append(BY_NAME[name])
     return out
 
@@ -155,20 +203,58 @@ def build_args(extra=()):
     return args
 
 
-def load_model(entry, device="cuda"):
-    """ViT-B/16 with the run's epoch-299 weights; asserts the state dict matches the model exactly."""
-    import torch
+def new_model():
+    """An untrained ViT-B/16 exactly as the training script builds it (timm registry, 1000 classes)."""
     sys.path.insert(0, str(ROOT))
     import models.vision_transformer  # noqa: F401  (registers vit_base with timm)
     import utils
-    args = build_args()
-    model = utils.build_model(args)
-    sd = torch.load(ckpt_path(entry), map_location="cpu", weights_only=False)
+    return utils.build_model(build_args())
+
+
+def load_state_dict_file(path):
+    """fp32 flat state dict from a per-epoch dump (bare fp16 dict) or a full checkpoint ({'model': ...})."""
+    import torch
+    sd = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(sd, dict) and "model" in sd and isinstance(sd["model"], dict):
         sd = sd["model"]
-    sd = {k: v.float() for k, v in sd.items() if hasattr(v, "float")}
+    return {k: v.float() for k, v in sd.items() if hasattr(v, "float")}
+
+
+def zero_k_bias_(sd):
+    """Zero the k rows of every `attn.qkv.bias` in place; returns {block index: removed L2 norm}.
+
+    The key bias adds q.b_k to every attention logit of a query, a constant over keys, so the softmax and the
+    model output are exactly invariant to it.  AdamW performs a random walk on it (no gradient, weight decay,
+    Adam normalisation), reaching norms of several hundred in block 10 of random-init runs; three runs were
+    hand-patched mid-run.  Removing it keeps parameter norms and weight deltas meaningful and avoids the
+    bf16 precision loss of the large cancelling q.b_k term."""
+    out = {}
+    for k, v in sd.items():
+        if k.endswith("attn.qkv.bias"):
+            D = v.shape[0] // 3
+            out[k.split(".")[1] if k.startswith("blocks.") else k] = float(v[D:2 * D].float().norm())
+            v[D:2 * D] = 0
+    return out
+
+
+def load_state(model, entry, zero_k_bias=None):
+    """Load the entry's weights into an existing model (strict); returns {block: removed k-bias norm} or {}.
+
+    zero_k_bias=None takes the entry's own flag (True for every dynamics entry, unset for the section-0e ones)."""
+    if zero_k_bias is None:
+        zero_k_bias = bool(entry.get("zero_k_bias", False))
+    sd = load_state_dict_file(ckpt_path(entry))
+    info = zero_k_bias_(sd) if zero_k_bias else {}
     missing, unexpected = model.load_state_dict(sd, strict=False)
     assert not missing and not unexpected, (entry["name"], missing[:5], unexpected[:5])
+    model.k_bias_removed = info
+    return info
+
+
+def load_model(entry, device="cuda", zero_k_bias=None):
+    """ViT-B/16 with the entry's weights (epoch 299 unless the entry carries an epoch); strict load."""
+    model = new_model()
+    load_state(model, entry, zero_k_bias)
     return model.eval().to(device)
 
 

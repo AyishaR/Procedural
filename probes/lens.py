@@ -106,10 +106,17 @@ def run(entry, steps, batch, device="cuda"):
     lp_te, pred_te = final_dist(Xte)
     cached_pred = torch.from_numpy(te["preds"].astype(np.int64)).to(device)
     agree_cached = float((pred_te == cached_pred).float().mean())
-    assert agree_cached >= 0.995, f"{name}: final-depth lens disagrees with cached predictions ({agree_cached:.4f})"
+    ep = entry.get("epoch", 299)
+    if ep == 299:
+        assert agree_cached >= 0.995, f"{name}: final-depth lens disagrees with cached predictions ({agree_cached:.4f})"
+    else:   # intermediate epochs: near-flat logits early on make the fp32-from-fp16-cache vs bf16 argmax disagree
+        floor = 0.9 if ep < 20 else 0.98
+        assert agree_cached >= floor, f"{name}: final-depth lens disagrees with cached predictions ({agree_cached:.4f} < {floor})"
+        if agree_cached < 0.995:
+            print(f"[lens] {name}: final-depth lens agrees with cached predictions on {agree_cached:.4f} (epoch file {ep})", flush=True)
 
     out = dict(model=name, arm=entry["arm"], seed=entry["seed"], ckpt=str(registry.ckpt_path(entry)), depths=registry.DEPTHS,
-               final_top1_logtxt=registry.final_test_acc(entry), agree_with_cached_preds=agree_cached,
+               epoch=entry.get("epoch", 299), final_top1_logtxt=registry.final_test_acc(entry), agree_with_cached_preds=agree_cached,
                config=dict(steps=steps, batch=batch, lr=1e-3, warmup=100), git=registry.git_commit(), date=datetime.now().isoformat(timespec="seconds"))
     out["logit_lens"] = metrics(lens, Xte, yte, pred_te, lp_te)
     r = feat.load(name, "imagenet_r", "test") if feat.is_done(name, "imagenet_r", "test") else None
