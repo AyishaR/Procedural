@@ -399,3 +399,80 @@ Three chains launched 2026-09-17 01:02 from the stable clone at `cbfd7ae`
 Drivers: `kempfe/routing/logs/chain_readout_<arm>.log`, pidfiles `chain_readout_<arm>_s0.pid`.
 The result is epoch-299 `test_acc1` in each `log.txt` against 78.079 ± 0.189; figures via
 `python routing/readout_curves.py --run A=<dir> --run B=<dir> --run C=<dir> --out kempfe/routing/figures`.
+
+## Result (2026-09-18): a free readout row does not hurt; the router's loss came from the block rows
+
+Last-epoch (299) test top-1, the repo convention, one seed per arm:
+
+| arm | top-1 | vs base 78.079 ± 0.189 | top-5 | train loss |
+|---|---|---|---|---|
+| **A** `fixed_last4` (head on blocks 8–11's outputs, fixed) | **78.156** | +0.08 (+0.4 sd) | 92.53 | 2.212 |
+| **B** `learn_last4` (same init, trainable) | **78.380** | +0.30 (+1.6 sd) | 92.90 | 2.207 |
+| **C** `learn_ones` (all ones, trainable — control) | **78.420** | +0.34 (+1.8 sd) | 93.47 | 2.317 |
+| base r s0 / s1 / s2 | 78.284 / 78.040 / 77.912 | | 93.48 / 92.43 / 92.71 | 2.289 / 2.192 / 2.195 |
+| free router (all 325 edges), for reference | 76.144 | −1.94 | 91.60 | 2.129 |
+
+Figures: `kempfe/routing/figures/readout_{curves,rows,trajectories}.png`
+(`python routing/readout_curves.py --run A=… --run B=… --run C=… --routed <free-router log.txt> --out …`).
+
+**Answers to the three questions.**
+
+1. *Can the head live on blocks 8–11's deltas alone?* **Yes.** Reading `x12 − x8` instead of `x12`
+   — no embedding, no blocks 0–7 in the readout — ends at +0.08, i.e. at the base mean. It even
+   helps early (+0.54 mean gap over epochs 0–50, +1.7 at epoch 9), then converges onto the base
+   trajectory from epoch ~60 on. The early sources still shape the late blocks through the stream;
+   the classifier itself does not need them.
+2. *Does a trainable row started from that init put the embedding or blocks 6–7 back?* **No.** B
+   keeps all 17 early sources within −0.10…+0.04 of zero to the end (embedding −0.08) and instead
+   re-weights *within* blocks 8–11: `mlp_11` 1.97, `attn_11` 0.86, `mlp_8` 0.99, `attn_8` 0.32.
+   It ends +0.30.
+3. *Does a free readout row alone hurt (the control)?* **No — it ends +0.34**, the best of the
+   three. This is the opposite sign of the free router's −1.94 and settles the attribution: the
+   router's loss came from the **24 block-level rows** (each block reading a local mix instead of
+   the uniform stream), not from the readout row. C's learned row has the *shape* of the free
+   router's final readout row — late-heavy, early sources suppressed, embedding kept above every
+   early block (emb 0.65; blocks 0–5 at 0.07–0.41; mlp_6/mlp_7 0.84/0.96; blocks 8–11 at 0.7–1.3;
+   `mlp_11` 2.73) — at a milder depth, and here that shape is harmless.
+
+**What the trajectories add.** C sits *below* the base mean for most of training (−0.4 to −0.5 mean
+gap over epochs 0–200, at the edge of the base seed band) and catches up only in the cosine tail
+(200–299: +0.02 mean, the last five evals all +0.3). A and B never leave the band after epoch 50.
+The free router's gap opened at epoch ~110 and never closed; nothing like it happens for any arm.
+
+**Train loss is not a discriminator here.** The base seeds themselves span 2.19–2.29 at epoch 299;
+A/B at 2.21 are inside that spread and C at 2.32 is above it. The smoke-section remark that A and
+B carry "the free router's lower-train-loss signature" compared against s0 alone and should be
+read with that spread in mind.
+
+**How the rows moved (`readout.jsonl`).** Two regimes, cleanly separated by the per-epoch
+gradient-sign consistency:
+
+* *Epochs 0–14*: a real signal — mean consistency 0.56 (B) / 0.61 (C), individual sources up to
+  0.85 — during which the rows take most of their shape (C's early sources fall to ~0.5, `mlp_11`
+  passes 1.9 by epoch 50).
+* *Epochs 15–299*: consistency 0.515 on average and never above 0.61 for any source in any epoch,
+  i.e. inside or barely outside the chance band (0.50 ± 0.03 for 312 steps). The rows nevertheless
+  keep drifting slowly and monotonically — `mlp_11` 1.66 → 1.97 (B) and 2.01 → 2.73 (C) between
+  epochs 50 and 299, `attn_8` 0.62 → 0.32 (B). Over ~89k optimizer steps a persistent sign bias of
+  ~1.5% is worth ~2.7k net Adam steps, i.e. O(1) of movement at the LRs of that phase, whereas a
+  pure random walk would give ~0.3. So the late drift is a small but persistent bias, not noise,
+  and it is invisible at per-epoch resolution.
+* The embedding weight in C never receives a consistent gradient (0.51 in both regimes) and ends
+  at 0.65 only because everything around it moved; in B it stays at −0.08.
+
+**Numerics.** All three arms: zero non-finite readout-weight gradients, `amp_scale` between 16384
+and 2^21 with the usual handful of overflow back-offs, cost +1.6–2.1% per micro-step (compiled
+mixer). A was preempted once at epoch 136 and resumed from `checkpoint-135.pth` without a
+discontinuity (the driver widened the resubmission to `alldlc2,lmbdlc2`; it started on alldlc2).
+
+### Caveats
+
+* One seed per arm against a 3-seed base with sd 0.19. +0.30 / +0.34 are 1.6–1.8 sd — suggestive of
+  a small real gain from up-weighting `mlp_11`, not established; the writeup's own bar was ±0.4.
+  Two more seeds of C (and of base, ideally) would settle whether a learned readout row is a free
+  +0.3. A's +0.08 is a null result with the same caveat.
+* Everything downstream of the readout (`blk_acc_layer{i}`, `ece`, rank/CKA at start) is computed
+  on the vanilla stream, which for A/B is not the tensor the head was trained on; `test_acc1` is
+  the model's accuracy.
+* The mixer weights carry no decay and no projection; negative weights did appear (B: 11 of 25,
+  all small, ≥ −0.10) and needed no control run.
