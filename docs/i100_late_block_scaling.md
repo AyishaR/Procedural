@@ -178,6 +178,56 @@ class (the absolute numbers are below full-train linear-probe numbers but every 
 dense metrics are on the 14x14 patch grid; the transfer mean weights EuroSAT (saturated at 98 %) like the
 others — dropping it lowers every arm's mean by ~5 points and only swaps `ftbrho` / `ftb3b` (0.1 apart).
 
+**Effective robustness of the model itself (added 2026-09-22; code `probes/ood_data.py`, `probes/ood_eval.py`,
+`probes/fig_ood.py`, launcher `probes/sbatch/ood.sh`, job 29755644; outputs `results/ood/<model>.json` +
+per-image predictions, `figures/fig22_ood_effective_robustness.png`, `fig23_ood_imagenet_c.png`,
+`ood_offsets.csv`, `ood_models.csv`, `ood_summary.md`).** The same question asked of the trained model with its
+OWN head, nothing tuned on shifted data: for each of the 21 finals x = ImageNet val top-1 (50k, one centre crop;
+matches `log.txt` within 0.06 for every model), y = top-1 on ImageNet-V2 (10k), ImageNet-R (30k, logits masked to
+its 200 classes) and ImageNet-C (the 15 extracted corruptions x 5 severities on one seeded draw of 5 val images
+per class shared by every cell, 375k images per model; the C images are the 224x224 crops already, so they get
+CenterCrop 224 only, Hendrycks' protocol, while V2 / R / val use Resize 256 / CenterCrop 224). Probit axes; the
+reference line has slope 1 in probit space through random's three-seed mean, effective robustness = a model's
+vertical distance from it at its own x in accuracy points (stage 1 of the plan; the slope is to come from the
+`ftblrm` / `ftbqmlnvo` trajectories in stage 2 — the OLS over the 21 finals gives 1.02 on V2, 0.99 on R and 1.17
+on C, but that C slope is confounded with the arm effect because the arms *are* the ID range). Results:
+
+* *ImageNet-V2 is the null and it holds*: every arm within ±0.25 of random's line (random's own seed sd 0.23).
+* *ImageNet-R*: random's seeds land at 38.7 / 34.8 / 35.1 (sd 2.0), so every offset from its line is inside one
+  random sd — `ftb3i` +0.7, `ftbqmlnvo` −0.1, `p` −0.4, `ftbrhos` +0.4, `ftblrm` −1.4, `ftb4o` −1.4, `ftbrho`
+  −1.6, `ftb3b` −1.5. The probe-level ImageNet-R excess of the previous paragraph (+0.9 over b7-b11) is not
+  visible in the model's own head against random. What *is* visible is the matched-accuracy contrast that needs
+  neither random's seeds nor a slope: the proc-front arms (`p`, `ftb3i`; ID 80.0) score 39.0 on R where the late
+  recipe (`ftb3b`, `ftbrho`; ID 79.8) scores 37.0, +1.8 points at identical ImageNet accuracy (six models each,
+  Welch p = 0.001), with no such contrast on V2 (+0.2, p = 0.4).
+* *ImageNet-C mean* (fig22 right): `p` +0.7 ± 0.1, `ftbqmlnvo` +0.5 ± 0.8, `ftb3i` +0.3 ± 0.4; late recipe
+  −0.1 / −0.2; `ftb4o` +0.2, `ftblrm` −0.6, `ftbrhos` −0.9 — small, and under the OLS slope of 1.17 `p`'s offset
+  shrinks to +0.2, so the mean is not a result. The breakdown is (fig23):
+  **blur is the effect.** `p` +2.6 ± 0.3 and `ftb3i` +2.7 ± 0.3 above random's line on every blur corruption
+  (defocus +2.5 / +2.8, glass +3.1 / +3.1, motion +2.7 / +2.9, zoom +2.0 / +2.3), largest at severity 3 (+3.4 /
+  +3.6) and still +2.2 / +2.3 at severity 5; `ftbqmlnvo` +1.0 ± 0.7; everything else on the line (`ftb3b` +0.3,
+  `ftbrho` −0.1, `ftb4o` +0.2, `ftblrm` +0.1, `ftbrhos` −0.5). At identical ImageNet accuracy the proc-front arms
+  average 47.7 on the blur group against 45.3 / 44.5 for `ftb3b` / `ftbrho` (+2.5, Welch p = 1e-4), and even
+  the confounded OLS blur slope (1.38) leaves `p` +1.5 above the line. Noise: no consistent effect (`ftb3i` −0.9
+  ± 1.0, `p` −0.1; the proc front is slightly worse on impulse noise, −1.9 / −0.8; `ftbrhos` collapses at
+  severities 4-5, n=1). Weather: every accurate arm −0.5 … −0.8, `fog` −2.2 / −3.2 for `p` / `ftb3i` but also
+  −1.8 for `ftbrho` — uniform across arms, i.e. a weather slope below 1 rather than an arm effect. Digital: `p`
+  +0.8 ± 0.2 and `ftbqmlnvo` +0.8 ± 0.9 (elastic +2.4 / +1.3 for `p` / `ftb3i`, jpeg +1.5 for `p`, pixelate +2.9
+  for `ftbqmlnvo` but −1.5 for `ftb3i`) — mixed.
+
+*Reading.* Zero-shot, with the model's own head, the proc initialisation buys no general effective robustness:
+V2 is on the line, R and the C mean are within random's seed noise. The one clear gain is under **blur**, and it
+has a different signature from everything else in this section: it needs proc's actual block 0-8 weights (`p`,
+`ftb3i` identical at +2.6 / +2.7), is half there with the rank-mapped marginals (`ftbqmlnvo` +1.0), and is absent
+from the late recipe (`ftbrho`, `ftb3b`) and from every random-front variant — the first readout where the front
+lever, not the top-block lever, carries the effect. The front-specific property measured earlier in this
+section is that proc's blocks keep the low-level image statistics further up the stack (R² 0.93 vs 0.83 at b8);
+whether that is the same property as the blur tolerance (a front that carries the low spatial frequencies deeper
+loses less when the high ones are removed) is open — a per-band spectral probe of the residual stream would
+decide it. Caveats: the finals span only 75-80 % ID, so any slope-dependent statement waits for the stage-2
+trajectories; random's 2-point seed spread on ImageNet-R sets the noise floor there; ImageNet-C cells are 5k images
+(random's per-group seed sd ≈ 1 point), `ftb4o` / `ftbrhos` / `ftblrm` are n=1.
+
 ## 0c. CURRENT UNDERSTANDING: the early blocks carry the VALUE DISTRIBUTION (2026-09-02, rev 2)
 
 > **2026-09-05: read §0d first.** A run-by-run verification pass (configs re-read from every run's own

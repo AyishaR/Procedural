@@ -137,7 +137,7 @@ def main():
             c = registry.ARM_COLOR[a]
             ax.errorbar(i, m, yerr=s if n > 1 else 0, fmt="o" if a not in N1 else "o", color=c, mfc=c if a not in N1 else "white", mec=c, ms=6, capsize=3, lw=1.2)
             ax.scatter([i] * n, [lines[k].offset_pts(R[nn]["imnet_val"], R[nn][k]) for nn in per_arm[a]], s=9, color=c, alpha=0.6, zorder=3)
-            ax.text(i, m + (s if n > 1 else 0) + 0.25, f"{m:+.1f}", ha="center", va="bottom", fontsize=6.5, color="0.2")
+            ax.annotate(f"{m:+.1f}", (i, m + (s if n > 1 else 0)), xytext=(0, 5), textcoords="offset points", ha="center", va="bottom", fontsize=6.5, color="0.2")
         ax.axhline(0, color="0.15", lw=1)
         ax.set_xticks(range(len(arms))); ax.set_xticklabels(arms, fontsize=7, rotation=30, ha="right")
         ax.set_ylabel("offset from random's line (top-1 pts)", fontsize=8); ax.tick_params(labelsize=7); ax.grid(alpha=0.3, axis="y")
