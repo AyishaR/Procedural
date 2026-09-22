@@ -126,8 +126,9 @@ def _save_subset(dataset, split, items, n_classes, kind="path"):
     rec = dict(dataset=dataset, split=split, seed=SEED, kind=kind, n=len(items), n_classes=n_classes,
                items=[[ser(p), int(y)] for p, y in items])
     rec["sha256"] = hashlib.sha256(json.dumps(rec["items"]).encode()).hexdigest()
-    tmp = _subset_file(dataset, split).with_suffix(".tmp")
-    json.dump(rec, open(tmp, "w"))
+    tmp = _subset_file(dataset, split).with_suffix(f".{os.getpid()}.tmp")   # unique per writer: concurrent jobs may race
+    with open(tmp, "w") as f:
+        json.dump(rec, f)
     os.replace(tmp, _subset_file(dataset, split))
     return rec
 
