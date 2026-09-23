@@ -36,8 +36,9 @@ arm D (fixed_emb_last3) and arm E (fixed_b0_last3) against the same-seed baselin
 Writes <out>/gate.json and <out>/gate.png and prints GATE PASSED as its last line.
 Run it on a GPU (the login node has none):
     sbatch -J readout-gate --export=ALL,GATE_SCRIPT=routing/readout_gate.py routing/sbatch/gate.sh
-    sbatch -J readout-skip-gate --export=ALL,GATE_SCRIPT=routing/readout_gate.py routing/sbatch/gate.sh \
-        --arms DE --out /work/dlc2workfs3/schrodi-procedural/kempfe/routing/gate_readout_skip
+    # swrap eats script arguments like --out (as sbatch -o), so pass them through the environment:
+    sbatch -J readout-skip-gate --export=ALL,GATE_SCRIPT=routing/readout_gate.py,READOUT_GATE_ARMS=DE,\
+ROUTING_GATE_OUT=/work/dlc2workfs3/schrodi-procedural/kempfe/routing/gate_readout_skip routing/sbatch/gate.sh
 """
 
 import argparse
@@ -405,7 +406,7 @@ if __name__ == "__main__":
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", default=os.environ.get("ROUTING_GATE_OUT", DEFAULT_OUT))
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--arms", choices=("ABC", "DE"), default="ABC",
+    p.add_argument("--arms", choices=("ABC", "DE"), default=os.environ.get("READOUT_GATE_ARMS", "ABC"),
                    help="ABC: the readout-routing arms; DE: the fixed skip arms (emb / block 0 + last 3)")
     p.add_argument("--batch", type=int, default=128, help="the real per-GPU batch")
     p.add_argument("--n-batches", type=int, default=2)
