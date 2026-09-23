@@ -20,9 +20,24 @@ seed through the training code path (utils.build_model) and hard-fails unless:
   6  cost         median fwd+bwd time and peak memory at the real per-GPU batch for base / A / B / C
                   (the mixer is a torch.compile-fused sum on CUDA; eager was +11.5%, compiled +1.9%).
 
+--arms DE gates the skip follow-up instead (docs/residual_routing.md, "Readout cut + input skip"):
+arm D (fixed_emb_last3) and arm E (fixed_b0_last3) against the same-seed baseline --
+
+  1  weights      as above (buffers, 0 trainable parameters, init vector = the arm's definition);
+  2  fp32         D == head(fc_norm(pool(norm(x_entering_block_0 + x_after_block_11 -
+                  x_after_block_8)))) and E == the same with x_after_block_0, both from the
+                  baseline's own stream to 1e-5, and == the weighted sum of the hooked sources;
+  3  fp16 AMP     the same under autocast;
+  4  gradients    finite fp32 backbone gradients, no readout parameter; one real AMP step leaves
+                  the GradScaler in the baseline's state with a finite grad norm;
+  5  collectors   HookCollector on D: block activations equal the baseline's, no hooks left;
+  6  cost         base / D / E.
+
 Writes <out>/gate.json and <out>/gate.png and prints GATE PASSED as its last line.
 Run it on a GPU (the login node has none):
     sbatch -J readout-gate --export=ALL,GATE_SCRIPT=routing/readout_gate.py routing/sbatch/gate.sh
+    sbatch -J readout-skip-gate --export=ALL,GATE_SCRIPT=routing/readout_gate.py routing/sbatch/gate.sh \
+        --arms DE --out /work/dlc2workfs3/schrodi-procedural/kempfe/routing/gate_readout_skip
 """
 
 import argparse
@@ -49,6 +64,8 @@ from routing.gate import (  # noqa: E402
 
 DEFAULT_OUT = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/gate_readout"
 ARMS = {"A": "fixed_last4", "B": "learn_last4", "C": "learn_ones"}
+SKIP_ARMS = {"D": "fixed_emb_last3", "E": "fixed_b0_last3"}
+ALL_ARMS = {**ARMS, **SKIP_ARMS}
 
 
 def build(seed, mode="off"):
@@ -69,7 +86,7 @@ def check_weights(base, arms, depth):
         bad = [k for k in sb if not torch.equal(sb[k], sd[k])]
         assert not bad, f"{tag}: same-seed backbone differs in {bad[:5]} -- do not train"
         w = sd["readout_mixer.weight"]
-        ref, trainable = readout_init(ARMS[tag], depth)
+        ref, trainable = readout_init(ALL_ARMS[tag], depth)
         assert w.shape == (2 * depth + 1,) and torch.equal(w.cpu(), ref), f"{tag}: init vector"
         assert m.readout_mixer.trainable == trainable
         n_params = sum(p.numel() for n, p in m.named_parameters() if n.startswith("readout_mixer."))
@@ -119,6 +136,29 @@ def check_fixed_arm(base, A, B, batches, amp, tol, label):
     return dict(max_dev_vs_stream_diff=dev, max_dev_vs_summed_branches=dev_hist, B_equals_A=True)
 
 
+def check_skip_arm(base, M, mode, batches, amp, tol, label):
+    """A skip arm == head(fc_norm(pool(norm(head_state + x_L - x_{L-3})))) built from the
+    baseline's stream (head_state = x entering block 0 for D, x after block 0 for E), and == the
+    readout of the weighted sum of the hooked sources [x entering block 0] + branch outputs."""
+    depth = len(base.blocks)
+    w, _ = readout_init(mode, depth)
+    head_state = {"fixed_emb_last3": 0, "fixed_b0_last3": 1}[mode]
+    dev, dev_hist = 0.0, 0.0
+    for x, _ in batches:
+        states = stream_states(base, x, amp)
+        ref = readout(base, states[head_state] + (states[depth] - states[depth - 3]), amp)
+        srcs = [states[0]] + list(branch_outputs(base, x, amp))
+        mixed = sum(float(w[j]) * srcs[j].float() for j in range(len(srcs)) if w[j] != 0)
+        ref2 = readout(base, mixed.to(states[0].dtype), amp)
+        with torch.no_grad():
+            lm = _forward(M, x, amp)
+        assert torch.isfinite(lm).all(), f"{label}: non-finite output"
+        dev, dev_hist = max(dev, _maxdev(lm, ref)), max(dev_hist, _maxdev(lm, ref2))
+    assert dev <= tol, f"{label}: deviates from the hand computation by {dev:.3e} > {tol:.1e}"
+    assert dev_hist <= tol, f"{label}: deviates from the summed sources by {dev_hist:.3e}"
+    return dict(max_dev_vs_stream=dev, max_dev_vs_summed_sources=dev_hist)
+
+
 def grad_dev(ga, gb, names):
     worst, where = 0.0, None
     for n in names:
@@ -128,15 +168,20 @@ def grad_dev(ga, gb, names):
     return worst, where
 
 
-def check_collector(base, C, x):
-    """HookCollector on the mixed model: Block.forward runs, so the per-block stream is there."""
+def check_collector(base, C, x, same_output=True):
+    """HookCollector on the mixed model: Block.forward runs, so the per-block stream is there.
+    same_output: arm C's logits equal base's (a fixed arm's do not; its output under the
+    collector must equal its own plain output instead)."""
     states = stream_states(base, x, False)
     C.eval()
     with utils.HookCollector(C) as acts:
         with torch.no_grad():
             out = C(x)
     with torch.no_grad():
-        assert torch.equal(out, base(x)), "arm C under HookCollector no longer equals base"
+        if same_output:
+            assert torch.equal(out, base(x)), "arm C under HookCollector no longer equals base"
+        else:
+            assert torch.equal(out, C(x)), "the collector's re-run changed the arm's output"
     for i in range(len(C.blocks)):
         assert torch.equal(acts[i]["blk"], states[i + 1]), f"block {i} activation differs"
         assert torch.equal(acts[i]["inp"], states[i]), f"block {i} input differs"
@@ -155,24 +200,86 @@ def plot(res, path):
     labels = source_labels(depth)
     fig, ax = plt.subplots(1, 3, figsize=(17, 4.4), layout="constrained")
     xs = np.arange(len(labels))
-    for i, (tag, col) in enumerate((("A", "C0"), ("B", "C1"), ("C", "C2"))):
+    tags = list(res["weights"])
+    width = 0.8 / len(tags)
+    for i, tag in enumerate(tags):
         w = np.array(res["weights"][tag]["weight"])
-        ax[0].bar(xs + (i - 1) * 0.27, w, width=0.27, color=col, label=f"{tag} = {ARMS[tag]}")
+        ax[0].bar(xs + (i - (len(tags) - 1) / 2) * width, w, width=width, color=f"C{'ABCDE'.index(tag)}",
+                  label=f"{tag} = {ALL_ARMS[tag]}")
     ax[0].set_xticks(xs); ax[0].set_xticklabels(labels, rotation=70, fontsize=7)
     ax[0].set_ylabel("readout weight at init"); ax[0].legend(); ax[0].set_title("readout rows at init")
     t = res.get("timing", {})
     if t:
         tags = list(t)
-        ax[1].bar(tags, [t[k]["ms_micro"] for k in tags], color=["0.5", "C0", "C1", "C2"][:len(tags)])
+        colors = ["0.5" if k == "base" else f"C{'ABCDE'.index(k)}" for k in tags]
+        ax[1].bar(tags, [t[k]["ms_micro"] for k in tags], color=colors)
         for i, k in enumerate(tags):
             ax[1].text(i, t[k]["ms_micro"], f"{t[k]['ms_micro']:.1f}", ha="center", va="bottom", fontsize=8)
         ax[1].set_ylabel("ms per fwd+bwd micro-step (batch %d)" % res["meta"]["batch"])
         ax[1].set_title("cost, fp16 AMP (mixer: compiled on CUDA)")
-        ax[2].bar(tags, [t[k]["peak_gb"] for k in tags], color=["0.5", "C0", "C1", "C2"][:len(tags)])
+        ax[2].bar(tags, [t[k]["peak_gb"] for k in tags], color=colors)
         ax[2].set_ylabel("peak GB allocated"); ax[2].set_title("memory")
     fig.suptitle("readout-routing gate -- " + res["meta"]["device"])
     fig.savefig(path, dpi=130)
     print("wrote", path)
+
+
+def main_gate_skip(a, base, batches, device):
+    """--arms DE: the two fixed skip arms (see the module docstring)."""
+    arms = {tag: build(a.seed, mode).to(device).eval() for tag, mode in SKIP_ARMS.items()}
+    depth = len(base.blocks)
+    res = {"meta": dict(seed=a.seed, batch=a.batch, n_batches=a.n_batches, probe=a.probe,
+                        device=torch.cuda.get_device_name(0), torch=torch.__version__,
+                        depth=depth, argv=" ".join(BASE_ARGV), arms=SKIP_ARMS)}
+
+    res["weights"] = check_weights(base, arms, depth)
+    for tag, v in res["weights"].items():
+        assert not v["trainable"] and v["n_params"] == 0, f"{tag} must be a fixed buffer"
+    print("[1/6] weights   OK  " + "; ".join(f"{t}: {SKIP_ARMS[t]} buffer, sources = 1 at "
+                                            f"{[j for j, w in enumerate(v['weight']) if w == 1.0]}"
+                                            for t, v in res["weights"].items()))
+
+    for key, amp, tol, step in (("fp32", False, a.tol_fixed, "2/6"), ("fp16", True, a.tol_fixed_amp, "3/6")):
+        res[key] = {tag: check_skip_arm(base, arms[tag], mode, batches, amp, tol, f"{key} {tag}")
+                    for tag, mode in SKIP_ARMS.items()}
+        print(f"[{step}] {key}      OK  " + "; ".join(
+            f"{t} vs hand {v['max_dev_vs_stream']:.2e} / vs summed sources {v['max_dev_vs_summed_sources']:.2e}"
+            for t, v in res[key].items()))
+    with torch.no_grad():
+        la, ld, le = (_forward(m, batches[0][0], False) for m in (base, arms["D"], arms["E"]))
+    assert not torch.equal(la, ld) and not torch.equal(ld, le), "the arms must be distinct functions"
+
+    x, y = batches[0]
+    lb, gbse, sb, nb, _ = amp_step_grads(build(a.seed).to(device), x, y)
+    grads = {}
+    for tag, mode in SKIP_ARMS.items():
+        l32, g32 = plain_grads(build(a.seed, mode).to(device), x, y)
+        assert "readout_mixer.weight" not in g32, f"{tag}: the fixed readout must not be trained"
+        assert all(torch.isfinite(g).all() for g in g32.values()), f"{tag}: non-finite fp32 grad"
+        l, g, s, n, _ = amp_step_grads(build(a.seed, mode).to(device), x, y)
+        assert s == sb, f"GradScaler state diverged: base {sb}, {tag} {s}"
+        assert np.isfinite(float(n)), f"{tag}: non-finite grad norm"
+        grads[tag] = dict(fp32_loss=l32, fp16_loss=l, scale=s, grad_norm=float(n))
+    res["grads"] = dict(base_loss=lb, base_scale=sb, base_grad_norm=float(nb), arms=grads)
+    print(f"[4/6] grads     OK  scale {sb:g} on all arms; grad norm base {float(nb):.3f} " +
+          " ".join(f"{t} {v['grad_norm']:.3f}" for t, v in grads.items()))
+
+    res["collector"] = check_collector(base, arms["D"], x, same_output=False)
+    print(f"[5/6] collector OK  HookCollector on arm D: {res['collector']['layers']} blocks, "
+          f"block activations equal to base")
+
+    res["timing"] = {}
+    if not a.no_timing:
+        makers = [("base", lambda: build(a.seed))] + \
+                 [(tag, (lambda m=mode: build(a.seed, m))) for tag, mode in SKIP_ARMS.items()]
+        for tag, mk in makers:
+            res["timing"][tag] = timing(mk, batches, a.n_timed, device)
+            print(f"[6/6] timing    {tag:5s} {res['timing'][tag]['ms_micro']:7.1f} ms   "
+                  f"peak {res['timing'][tag]['peak_gb']:6.2f} GB")
+        b = res["timing"]["base"]["ms_micro"]
+        for tag in SKIP_ARMS:
+            res["timing"][tag]["overhead_frac"] = res["timing"][tag]["ms_micro"] / b - 1
+    return res
 
 
 def main_gate(a):
@@ -188,6 +295,15 @@ def main_gate(a):
     print(f"[gate] {len(batches)} probe batches of {a.batch} ({a.probe}) on {torch.cuda.get_device_name(0)}")
 
     base = build(a.seed).to(device).eval()
+    if a.arms == "DE":
+        res = main_gate_skip(a, base, batches, device)
+        out = Path(a.out)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "gate.json").write_text(json.dumps(res, indent=1))
+        print(f"wrote {out / 'gate.json'}")
+        plot(res, out / "gate.png")
+        print("GATE PASSED")
+        return
     arms = {tag: build(a.seed, mode).to(device).eval() for tag, mode in ARMS.items()}
     A, B, C = arms["A"], arms["B"], arms["C"]
     depth = len(base.blocks)
@@ -289,6 +405,8 @@ if __name__ == "__main__":
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", default=os.environ.get("ROUTING_GATE_OUT", DEFAULT_OUT))
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--arms", choices=("ABC", "DE"), default="ABC",
+                   help="ABC: the readout-routing arms; DE: the fixed skip arms (emb / block 0 + last 3)")
     p.add_argument("--batch", type=int, default=128, help="the real per-GPU batch")
     p.add_argument("--n-batches", type=int, default=2)
     p.add_argument("--probe", choices=("imnet", "random"), default="imnet")

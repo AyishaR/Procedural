@@ -3,6 +3,8 @@ per-source trajectories with the gradient-sign consistency, and the accuracy tra
 the base arm. Reads readout.jsonl and log.txt per run; no GPU.
 
     python routing/readout_curves.py --run A=<dir> --run B=<dir> --run C=<dir> --out kempfe/routing/figures
+    # the skip follow-up (fixed rows, so only the curves figure), with arm A for reference:
+    python routing/readout_curves.py --run A=<dir> --run D=<dir> --run E=<dir> --prefix readout_skip --out ...
 """
 import argparse
 import sys
@@ -15,8 +17,9 @@ sys.path.insert(0, str(REPO))
 from models.residual_routing import source_labels  # noqa: E402
 from routing.curves import BASE, load_jsonl, pick  # noqa: E402
 
-ARM_NAMES = {"A": "A fixed_last4", "B": "B learn_last4", "C": "C learn_ones"}
-COLORS = {"A": "C0", "B": "C1", "C": "C2"}
+ARM_NAMES = {"A": "A fixed_last4", "B": "B learn_last4", "C": "C learn_ones",
+             "D": "D fixed_emb_last3", "E": "E fixed_b0_last3"}
+COLORS = {"A": "C0", "B": "C1", "C": "C2", "D": "C3", "E": "C4"}
 
 
 def load_readout(p):
@@ -163,20 +166,23 @@ def plot_curves(logs, path, routed=None):
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--run", action="append", required=True,
-                   help="ARM=<run dir holding log.txt and readout.jsonl>, ARM in A/B/C; repeatable")
+                   help="ARM=<run dir holding log.txt and readout.jsonl>, ARM in A-E; repeatable")
     p.add_argument("--out", required=True)
+    p.add_argument("--prefix", default="readout", help="figure file-name prefix")
     p.add_argument("--routed", default=None, help="log.txt of the free-router run, drawn as a reference")
     a = p.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     dirs = dict(kv.split("=", 1) for kv in a.run)
     assert set(dirs) <= set(ARM_NAMES), dirs
-    runs = {arm: load_readout(Path(d) / "readout.jsonl") for arm, d in dirs.items()
-            if (Path(d) / "readout.jsonl").exists()}
+    # a fixed arm's row never moves, so rows / trajectories are drawn only when it changed
+    runs = {arm: rec for arm, rec in ((arm, load_readout(Path(d) / "readout.jsonl"))
+                                      for arm, d in dirs.items() if (Path(d) / "readout.jsonl").exists())
+            if any(r["n_steps"] for r in rec.values())}
     logs = {arm: load_jsonl(Path(d) / "log.txt") for arm, d in dirs.items()
             if (Path(d) / "log.txt").exists()}
     if runs:
-        plot_rows(runs, out / "readout_rows.png")
-        plot_trajectories(runs, out / "readout_trajectories.png")
+        plot_rows(runs, out / f"{a.prefix}_rows.png")
+        plot_trajectories(runs, out / f"{a.prefix}_trajectories.png")
     if logs:
-        plot_curves(logs, out / "readout_curves.png", routed=a.routed)
+        plot_curves(logs, out / f"{a.prefix}_curves.png", routed=a.routed)

@@ -25,12 +25,17 @@ fp16 autocast. The backward is the same maths but not the same graph -- every br
 has a direct edge to the readout next to its path through the stream, so autograd accumulates
 dL/dh_j in a different order: fp32 gradients agree to ~4e-7 relative (fp64: 5e-16), not bit for bit.
 
-Modes ("last 4 layers" = blocks L-4 .. L-1 = sources 2(L-4)+1 .. 2L, i.e. 17..24 at L=12; the
-embedding is excluded, so the fixed readout input is x_after_block_{L-1} - x_after_block_{L-5}):
+Modes ("last k blocks" = blocks L-k .. L-1 = sources 2(L-k)+1 .. 2L, i.e. 17..24 for k=4 and
+19..24 for k=3 at L=12; x_b denotes the stream after block b, x_{-1} the embedding):
 
-    fixed_last4   w = [0]*(2L-7) + [1]*8, a buffer    -- can the head live on those deltas alone?
-    learn_last4   same init, nn.Parameter              -- does it put the embedding / earlier back?
-    learn_ones    w = all ones, nn.Parameter           -- CONTROL: does a free readout row alone hurt?
+    fixed_last4      w = [0]*(2L-7) + [1]*8, a buffer -- can the head live on x_{L-1} - x_{L-5}?
+    learn_last4      same init, nn.Parameter           -- does it put the embedding / earlier back?
+    learn_ones       w = all ones, nn.Parameter        -- CONTROL: does a free readout row alone hurt?
+    fixed_last3      w = [0]*(2L-5) + [1]*6, a buffer  -- the harder cut x_{L-1} - x_{L-4} alone
+    fixed_emb_last3  fixed_last3 + the embedding (source 0), a buffer
+                     -- readout input emb + (x_{L-1} - x_{L-4}): the input tokens skip to the head
+    fixed_b0_last3   fixed_last3 + sources 0..2, a buffer
+                     -- readout input x_0 + (x_{L-1} - x_{L-4}): the stream after block 0 skips to it
 
 The weight is 1-D, so optim_factory.get_parameter_groups puts it in the no_decay group at the
 backbone LR (no decay toward init, by decision). Gradient SIGN consistency per weight is counted
@@ -45,8 +50,17 @@ import torch.nn as nn
 
 from models.residual_routing import source_labels
 
-READOUT_MODES = ("off", "fixed_last4", "learn_last4", "learn_ones")
-LAST_BLOCKS = 4
+# mode -> (head sources that read 1, number of last blocks that read 1, trainable);
+# None = every source reads 1
+_SPECS = {
+    "fixed_last4": ((), 4, False),
+    "learn_last4": ((), 4, True),
+    "learn_ones": (None, None, True),
+    "fixed_last3": ((), 3, False),
+    "fixed_emb_last3": ((0,), 3, False),
+    "fixed_b0_last3": ((0, 1, 2), 3, False),
+}
+READOUT_MODES = ("off",) + tuple(_SPECS)
 
 
 def _mix(w, sources):
@@ -73,17 +87,26 @@ _COMPILE_MIXER = os.environ.get("READOUT_MIXER_COMPILE", "1") != "0"
 _mix_compiled = torch.compile(_mix)   # lazy: costs nothing until called (~5 s, once per shape)
 
 
+def first_late_source(mode, depth):
+    """Index of the first source of the mode's late-block window (0 for learn_ones)."""
+    last = _SPECS[mode][1]
+    return 0 if last is None else 2 * (depth - last) + 1
+
+
 def readout_init(mode, depth):
     """(initial weight vector of length 2*depth+1, trainable) for a mode; 'off' is refused."""
-    assert mode in READOUT_MODES and mode != "off", f"readout_routing mode {mode!r}"
+    assert mode in _SPECS, f"readout_routing mode {mode!r}"
+    head, last, trainable = _SPECS[mode]
     n = 2 * depth + 1
-    if mode == "learn_ones":
-        return torch.ones(n), True
-    assert depth >= LAST_BLOCKS, \
-        f"{mode} reads the last {LAST_BLOCKS} blocks, but depth is {depth}"
+    if head is None:
+        return torch.ones(n), trainable
+    # the head sources must end before the late window, i.e. not overlap it
+    assert depth >= last and all(j < first_late_source(mode, depth) for j in head), \
+        f"{mode} reads the last {last} blocks, but depth is {depth}"
     w = torch.zeros(n)
-    w[2 * (depth - LAST_BLOCKS) + 1:] = 1.0     # blocks depth-4 .. depth-1, embedding excluded
-    return w, mode == "learn_last4"
+    w[first_late_source(mode, depth):] = 1.0    # blocks depth-last .. depth-1
+    w[list(head)] = 1.0                         # embedding / block 0 skip to the head
+    return w, trainable
 
 
 class ReadoutMixer(nn.Module):
@@ -96,7 +119,9 @@ class ReadoutMixer(nn.Module):
         self.depth = int(depth)
         self.n_sources = 2 * self.depth + 1
         self.trainable = bool(trainable)
-        self.first_late = 2 * (self.depth - min(LAST_BLOCKS, self.depth)) + 1  # first "late" source
+        # first "late" source for summary(); learn_ones has no window and keeps the last-4 split
+        self.first_late = (first_late_source(self.mode, self.depth) if self.mode != "learn_ones"
+                           else 2 * (self.depth - min(4, self.depth)) + 1)
         if self.trainable:
             self.weight = nn.Parameter(w)
         else:

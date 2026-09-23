@@ -138,8 +138,11 @@ def get_args_parser():
     # Readout-only routing (models/readout_routing.py): the block loop stays vanilla and only the
     # readout reads a weighted mix of the embedding and the 24 branch outputs. Linear weights.
     parser.add_argument('--readout_routing', type=str, default='off',
-                        choices=('off', 'fixed_last4', 'learn_last4', 'learn_ones'),
+                        choices=('off', 'fixed_last4', 'learn_last4', 'learn_ones',
+                                 'fixed_last3', 'fixed_emb_last3', 'fixed_b0_last3'),
                         help="fixed_last4: readout = sum of blocks 8-11's branch outputs (buffer); "
+                             "fixed_last3: blocks 9-11's; fixed_emb_last3 / fixed_b0_last3: that "
+                             "plus the embedding / the stream after block 0 (buffers); "
                              "learn_last4: same init, trainable; learn_ones: all ones (== vanilla "
                              "at init), trainable -- the control. Refuses to compose with "
                              "--resid_routing.")

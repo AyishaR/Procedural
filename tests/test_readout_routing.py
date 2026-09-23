@@ -5,11 +5,14 @@ Regression guards: the flag off is bit-identical to vanilla; the mixer draws no 
 backbone shared bit for bit); 'learn_ones' reproduces the vanilla logits EXACTLY in fp32 (same
 summation order) and its backbone gradients up to fp32 summation order (fp64 agrees to 1e-14);
 'fixed_last4' equals the hand-computed head(fc_norm(pool(norm(x_after_last - x_after_last-4))));
+the skip arms 'fixed_emb_last3' / 'fixed_b0_last3' equal the same with the last 3 blocks plus the
+embedding / the stream after block 0;
 Block.forward still runs, so utils.HookCollector works on the mixed model; the weight lands in
 optim_factory's no_decay group; the isolation guard, the strict=False resume hazard, the half
 dump and the gradient-sign counters are covered.
 
-Toy depth is 6 so that "the last 4 blocks" (sources 5..12 of 13) is a proper subset.
+Toy depth is 6 so that "the last 4 blocks" (sources 5..12 of 13) and "the last 3 blocks"
+(sources 7..12) are proper subsets that do not overlap block 0 (sources 1, 2).
 """
 
 import sys
@@ -35,7 +38,10 @@ DEPTH, IMG, NCLS = 6, 32, 8
 ARGS = dict(pretrained=False, num_classes=NCLS, drop_path_rate=0.0, depth=DEPTH, img_size=IMG)
 N = 2 * DEPTH + 1                      # sources: emb + 2*depth branch outputs
 FIRST_LATE = 2 * (DEPTH - 4) + 1       # first source of the last 4 blocks (17 at depth 12)
-ARMS = {"A": "fixed_last4", "B": "learn_last4", "C": "learn_ones"}
+FIRST_LATE3 = 2 * (DEPTH - 3) + 1      # first source of the last 3 blocks (19 at depth 12)
+ARMS = {"A": "fixed_last4", "B": "learn_last4", "C": "learn_ones",
+        "D": "fixed_emb_last3", "E": "fixed_b0_last3", "L3": "fixed_last3"}
+FIXED = ("fixed_last4", "fixed_last3", "fixed_emb_last3", "fixed_b0_last3")
 
 
 def _model(seed, **kw):
@@ -108,10 +114,24 @@ def test_readout_init_vectors():
     assert source_labels(12)[17] == "attn_8" and source_labels(12)[24] == "mlp_11"
     with pytest.raises(AssertionError, match="last 4"):
         readout_init("fixed_last4", 3)
+    w, t = readout_init("fixed_last3", 12)
+    assert not t and w.tolist() == [0.0] * 19 + [1.0] * 6
+    w, t = readout_init("fixed_emb_last3", 12)
+    assert not t and w.tolist() == [1.0] + [0.0] * 18 + [1.0] * 6
+    w, t = readout_init("fixed_b0_last3", 12)
+    assert not t and w.tolist() == [1.0] * 3 + [0.0] * 16 + [1.0] * 6
+    assert source_labels(12)[19] == "attn_9" and source_labels(12)[1:3] == ["attn_0", "mlp_0"]
+    w, _ = readout_init("fixed_b0_last3", DEPTH)
+    assert w.tolist() == [1.0] * 3 + [0.0] * (FIRST_LATE3 - 3) + [1.0] * 6
+    with pytest.raises(AssertionError, match="last 3"):
+        readout_init("fixed_last3", 2)
+    with pytest.raises(AssertionError, match="last 3"):     # block 0 would be inside the window
+        readout_init("fixed_b0_last3", 3)
     for bad in ("off", "learn_last3"):
         with pytest.raises(AssertionError):
             readout_init(bad, 12)
-    assert READOUT_MODES == ("off", "fixed_last4", "learn_last4", "learn_ones")
+    assert READOUT_MODES == ("off", "fixed_last4", "learn_last4", "learn_ones",
+                             "fixed_last3", "fixed_emb_last3", "fixed_b0_last3")
 
 
 def test_default_off_bit_identical():
@@ -132,7 +152,7 @@ def test_rng_neutral_keys_and_buffer_vs_parameter():
         assert set(sd) - set(sv) == {"readout_mixer.weight"}, arm
         assert all(torch.equal(sv[k], sd[k]) for k in sv), f"{arm}: same-seed backbone differs"
         params = dict(m.named_parameters())
-        if mode == "fixed_last4":
+        if mode in FIXED:
             assert "readout_mixer.weight" not in params and not m.readout_mixer.trainable
             assert "readout_mixer.weight" in dict(m.named_buffers())
         else:
@@ -179,6 +199,31 @@ def test_fixed_last4_is_the_last_four_blocks_delta():
     with torch.no_grad():
         ref2 = _readout(v, sum(hist[FIRST_LATE - 1:]))
     assert torch.allclose(la, ref2, atol=1e-5, rtol=1e-5)
+
+
+def test_skip_arms_are_emb_or_block0_plus_the_last_three_blocks_delta():
+    x, _ = _batch()
+    v = _model(0)
+    states = _stream_states(v, x)
+    hist = _history(v, x)
+    late3 = states[DEPTH] - states[DEPTH - 3]                     # x_after_last - x_after_last-3
+    refs = {"fixed_last3": late3,
+            "fixed_emb_last3": states[0] + late3,                 # the input tokens skip
+            "fixed_b0_last3": states[1] + late3}                  # the stream after block 0 skips
+    sums = {"fixed_last3": sum(hist[FIRST_LATE3 - 1:]),
+            "fixed_emb_last3": states[0] + sum(hist[FIRST_LATE3 - 1:]),
+            "fixed_b0_last3": states[0] + hist[0] + hist[1] + sum(hist[FIRST_LATE3 - 1:])}
+    outs = {}
+    for mode, mixed in refs.items():
+        m = _model(0, readout_routing=mode)
+        with torch.no_grad():
+            outs[mode] = m(x)
+            ref, ref2 = _readout(v, mixed), _readout(v, sums[mode])
+        assert torch.allclose(outs[mode], ref, atol=1e-5, rtol=1e-5), (mode, (outs[mode] - ref).abs().max())
+        assert torch.allclose(outs[mode], ref2, atol=1e-5, rtol=1e-5), mode
+    # the three are different functions of the same backbone
+    assert not torch.allclose(outs["fixed_last3"], outs["fixed_emb_last3"])
+    assert not torch.allclose(outs["fixed_emb_last3"], outs["fixed_b0_last3"])
 
 
 def test_mixer_reference_and_dtype():
@@ -230,11 +275,13 @@ def test_gradients_and_sign_counters():
         mx.reset_grad_stats()
         st = mx.grad_stats()
         assert st["n_steps"] == 0 and st["pos_frac"] is None and st["sign_consistency"] is None
-    a = _model(0, readout_routing="fixed_last4")
-    _, g = _grads(a, x, y)
-    assert "readout_mixer.weight" not in g
-    a.readout_mixer.record_grad_sign()          # no-op for the fixed arm
-    assert a.readout_mixer.grad_stats()["n_steps"] == 0
+    for mode in FIXED:
+        a = _model(0, readout_routing=mode)
+        _, g = _grads(a, x, y)
+        assert "readout_mixer.weight" not in g
+        assert all(torch.isfinite(t).all() for t in g.values())
+        a.readout_mixer.record_grad_sign()      # no-op for the fixed arms
+        assert a.readout_mixer.grad_stats()["n_steps"] == 0
 
 
 def test_summary_at_init():
@@ -249,6 +296,10 @@ def test_summary_at_init():
     assert s["late_early_ratio"] == 1.0
     assert set(s) == {"mean", "min", "max", "emb", "early_mean", "late_mean",
                       "late_early_ratio", "n_neg", "n_zero"}
+    mx = _model(0, readout_routing="fixed_b0_last3").readout_mixer
+    s = mx.summary()                                   # the late window is the last 3 blocks
+    assert mx.first_late == FIRST_LATE3 and s["late_mean"] == 1.0
+    assert s["emb"] == 1.0 and s["early_mean"] == pytest.approx(3 / FIRST_LATE3) and s["n_zero"] == FIRST_LATE3 - 3
 
 
 # --------------------------------------------------------------------------------------
@@ -373,7 +424,7 @@ def test_auto_load_model_guards_the_mode(tmp_path):
         return _model(0) if mode == "off" else _model(0, readout_routing=mode)
 
     dirs = {}
-    for mode in ("off", "fixed_last4", "learn_last4"):
+    for mode in ("off", "fixed_last4", "learn_last4", "fixed_emb_last3", "fixed_b0_last3"):
         d = tmp_path / mode
         d.mkdir()
         m = build(mode)
@@ -397,8 +448,14 @@ def test_auto_load_model_guards_the_mode(tmp_path):
     assert a.start_epoch == 4 and m.readout_mixer.weight[0].item() == 0.25
     run("fixed_last4", "fixed_last4")
     run("off", "off")
+    for mode in ("fixed_emb_last3", "fixed_b0_last3"):
+        _, m = run(mode, mode)
+        assert torch.equal(m.readout_mixer.weight, readout_init(mode, DEPTH)[0])
+    # fixed <-> fixed swaps are shape-compatible buffers: only the mode string catches them
     for ckpt, mode in (("off", "learn_last4"), ("learn_last4", "off"),
-                       ("fixed_last4", "learn_last4"), ("learn_last4", "fixed_last4")):
+                       ("fixed_last4", "learn_last4"), ("learn_last4", "fixed_last4"),
+                       ("fixed_emb_last3", "fixed_b0_last3"), ("fixed_b0_last3", "fixed_emb_last3"),
+                       ("fixed_last4", "fixed_emb_last3"), ("off", "fixed_b0_last3")):
         with pytest.raises(AssertionError, match="readout_routing"):
             run(ckpt, mode)
 

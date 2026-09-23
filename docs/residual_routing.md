@@ -476,3 +476,32 @@ discontinuity (the driver widened the resubmission to `alldlc2,lmbdlc2`; it star
   the model's accuracy.
 * The mixer weights carry no decay and no projection; negative weights did appear (B: 11 of 25,
   all small, ≥ −0.10) and needed no control run.
+
+## Follow-up 2 (2026-09-23): readout cut + input skip
+
+Arm A showed the head can live on blocks 8–11's deltas alone. This follow-up makes the cut harder,
+to the **last 3 blocks (9–11)**, and gives the head a direct path from the bottom of the network.
+Both arms are fixed (a buffer, like A); every block connection stays vanilla:
+
+| arm | `--readout_routing` | readout input (pre-norm) | sources = 1 |
+|-----|---------------------|--------------------------|-------------|
+| D   | `fixed_emb_last3`   | `emb + (x12 − x9)` — the input tokens skip to the head | 0, 19..24 |
+| E   | `fixed_b0_last3`    | `x_after_block0 + (x12 − x9)` = `emb + attn_0 + mlp_0 + (x12 − x9)` | 0, 1, 2, 19..24 |
+
+(`x_b` = the stream after block `b−1`, so `x12 − x9` = `sum(h[19..24])` = `attn_9 .. mlp_11`.)
+D ⊂ E, so E − D is what block 0 adds on top of the raw tokens. The comparison points are base
+(78.079 ± 0.189) and A (78.156, last 4, no skip). One seed per arm, same recipe.
+
+**Missing control, by decision.** There is no `fixed_last3` run (last 3 without a skip), so a
+D/E result cannot be split into "the last-3 cut costs X" and "the skip recovers Y". The mode
+exists in the code (`--readout_routing fixed_last3`, a one-line chain launch) if that split turns
+out to be needed.
+
+**Code.** `models/readout_routing.py` now builds each mode's init vector from a spec table
+(head sources, number of last blocks, trainable). The old three modes produce unchanged vectors,
+and the mixer, the compiled sum and the forward path are untouched. `fixed_last3`,
+`fixed_emb_last3` and `fixed_b0_last3` are new. `tests/test_readout_routing.py` pins the new
+vectors, checks that D/E equal the hand-computed `head(fc_norm(pool(norm(x0 + x6 − x3))))` (and
+the same with `x_after_block0`) at toy depth 6, and extends the fixed-arm, summary and resume-guard
+tests. That makes 15 tests. `routing/readout_gate.py --arms DE` gates the two arms on the real
+ViT-B.

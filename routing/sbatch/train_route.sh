@@ -1,8 +1,9 @@
 #!/bin/bash
 # Residual-routing ImageNet arm: the r-arm recipe (slurm 29384839, random init, vit_base, 300
 # epochs) with --resid_routing true and nothing else changed. Submitted by routing/sbatch/chain.sh.
-# READOUT=<fixed_last4|learn_last4|learn_ones> switches the arm to --readout_routing (readout-only
-# routing, models/readout_routing.py) with no routing flags; RUN_PREFIX names the output dir
+# READOUT=<any --readout_routing mode, e.g. fixed_last4, fixed_emb_last3> switches the arm to
+# --readout_routing (readout-only routing, models/readout_routing.py) with no routing flags;
+# RUN_PREFIX names the output dir
 # ($OUT_ROOT/runs/${RUN_PREFIX}_${SLURM_ID}/s$SEED), default route / readout_$READOUT.
 #SBATCH --job-name route
 #SBATCH --partition alldlc2_gpu-h200
