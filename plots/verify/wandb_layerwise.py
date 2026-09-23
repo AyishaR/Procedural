@@ -54,8 +54,38 @@ ARMS = {  # arm -> [(slurm_id, seed)]
     "ftbanaksg": [(29720205, 0, SHUF)],  # sink + persistent gate
     "ftbanakbs": [(29720207, 0, SHUF)],  # persistent gate
     "ftbanakd": [(29720209, 0, SHUF)],   # diffuse q/k + persistent gate
+    # 2026-09-17: kdyck prefix 0-7 (the reference of the blocks-0-7 family) and the blocks-0-7 recipe family
+    "ftb4i_kdyck": [(29448854, 0), (29448854, 1), (29448854, 2)],   # kdyck blocks 0-7, random 8-11 (79.89)
+    "ftbanaperab7": [(29729545, 0)],            # scales (all six) + entropy + active-unit gate
+    "ftbanaperab7w": [(29729541, 0)],           # + v, proj, fc2 write-matched
+    "ftbanaperab7i": [(29733656, 0)],           # v, proj, fc2 at timm (fresh start on the group partition; the shared-partition job 29729560 never ran)
+    "ftbanapermb7": [(29729553, 0)],            # mean-gate control
+    "ftbanapermb7w": [(29729556, 0)],           # mean-gate control, write-matched
+    "ftbanapermb7i": [(29737095, 0)],           # mean gate, v / proj / fc2 at timm (kdyck); resumed on the group partition as 29737711, same results id
+    "ftbanakpermb7i": [(29736861, 0, SHUF)],         # mean gate, v / proj / fc2 at timm (ksd)
+    "ftbanakpermb7": [(29737097, 0, SHUF)],          # mean gate, checkpoint effective scales on the write side (ksd)
+    "ftbanakperab7": [(29729543, 0, SHUF)],     # ksd
+    "ftbanakperab7w": [(29729547, 0, SHUF)],
+    "ftbanakperab7i": [(29729558, 0, SHUF)],
+    # 2026-09-20: mechanism study (docs/early_lever_mechanism_plan.md): plain random with per-epoch checkpoints, and wave 1
+    "r0": [(29744580, 0)],
+    "ftbc7sg": [(29745254, 0)], "ftbck7sgb": [(29746035, 0, SHUF)],      # structure only (sink + mean gate on timm); the ksd cell in bf16
+    "ftbck7sg": [(29745248, 0, SHUF)],                                   # its fp16 original, dead at epoch 10 (non-finite loss)
+    "ftbc7a1": [(29745240, 0)], "ftbck7a1": [(29745242, 0, SHUF)],       # committed init, compensated steps on q, k rows and fc1
+    "ftbck7ps": [(29745244, 0, SHUF)], "ftbck7pg": [(29745246, 0, SHUF)], "ftbck7p": [(29745250, 0, SHUF)], "ftbc7p": [(29745252, 0)],
+    "ftbc7ps": [(29745319, 0)], "ftbc7pg": [(29745320, 0)], "ftbc7a1g": [(29745321, 0)], "ftbck7a1g": [(29745322, 0, SHUF)],   # 40-epoch screens (8 L40S)
+    "ftbc7a2": [(29745327, 0)], "ftbck7a3qk": [(29745324, 0, SHUF)], "ftbck7a3f": [(29745325, 0, SHUF)],
+    # 2026-09-21, wave 2: forced readability (C1), its two converses on plain random, single-component cells
+    "ftbc7c1": [(29751052, 0)], "ftbck7c1": [(29751067, 0, SHUF)], "r0sup": [(29751150, 0)], "r0frz": [(29751165, 0)], "r0frzl": [(29760130, 0)],
+    "ftbc7s": [(29751055, 0)], "ftbc7g": [(29751058, 0)], "ftbck7s": [(29751061, 0, SHUF)], "ftbck7g": [(29751064, 0, SHUF)],
+    "ftb4c1": [(29754117, 0)], "ftb4kc1": [(29754123, 0, SHUF)],      # C1 on the FULL procedural checkpoints (2026-09-22)
+    "ftbc7l": [(29756597, 0)],                                          # compose arm: C (0-7) + late lever (9-11), v+proj+fc2
 }
+# arms whose cache is re-pulled even if present (running arms): REFRESH=arm1,arm2 ; ONLY=arm1,arm2 restricts the loop
+REFRESH = set(x for x in os.environ.get("REFRESH", "").split(",") if x)
+ONLY = set(x for x in os.environ.get("ONLY", "").split(",") if x)
 FAMS = ["acc", "delta_norm_ratio", "attn_entropy", "attn_delta_norm_ratio"] + ([] if os.environ.get("FAST") else ["grad_norm", "blk_act_rms"])
+FAMS += [f for f in os.environ.get("EXTRA_FAMS", "").split(",") if f]      # e.g. EXTRA_FAMS=attn_mad,cls_attn_entropy (other per-block keys of engine.model_analyse)
 # `Epoch-wise/delta_norm_ratio_layer{l}` is logged twice per epoch and layer (engine.py:563 attention row,
 # engine.py:599 MLP row, same key). The last row wins in `delta_norm_ratio` (= MLP write ratio); the
 # family `attn_delta_norm_ratio` re-reads the same key and keeps the FIRST row per epoch (= attention).
@@ -63,10 +93,12 @@ WANDB_KEY = {"attn_delta_norm_ratio": "delta_norm_ratio"}
 api = wandb.Api(timeout=120)
 cache = json.load(open(OUT)) if os.path.exists(OUT) else {}
 for arm, ids in ARMS.items():
+    if ONLY and arm not in ONLY:
+        continue
     for entry in ids:
         sid, seed = entry[0], entry[1]; project = entry[2] if len(entry) > 2 else PROJECT
         have = cache.get(arm, {}).get(str(seed), {})
-        missing = [f for f in FAMS if not any(k.startswith(f + "_layer") for e in have.values() for k in e)]
+        missing = list(FAMS) if arm in REFRESH else [f for f in FAMS if not any(k.startswith(f + "_layer") for e in have.values() for k in e)]
         if not missing:
             continue
         runs = sorted(api.runs(project, filters={"config.slurm_id": sid, "config.seed": seed, "display_name": "GPU 0"}),

@@ -1,0 +1,82 @@
+{
+ "realise": "exact",
+ "gain_fold": "exact",
+ "qk_entropy": {
+  "entropy": {
+   "1": 0.421,
+   "2": 0.611,
+   "3": 0.553,
+   "4": 0.535,
+   "5": 0.674,
+   "6": 0.831,
+   "7": 1.012
+  },
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "entropy_sd_over_seeds": {
+   "1": 0.0311,
+   "2": 0.0974,
+   "3": 0.0554,
+   "4": 0.0197,
+   "5": 0.0519,
+   "6": 0.0482,
+   "7": 0.0647
+  },
+  "images": 256,
+  "renormalize": false,
+  "protocol": "training images, evaluation transform, utils.calibration_images"
+ },
+ "fc1_gate": {
+  "pre_activation_mean": {
+   "1": -1.967,
+   "2": -2.182,
+   "3": -2.299,
+   "4": -2.53,
+   "5": -2.594,
+   "6": -2.625,
+   "7": -2.66
+  },
+  "checkpoint_active_units": {
+   "1": 0.0036513,
+   "2": 0.00025564,
+   "3": 0.00070709,
+   "4": 0.00025347,
+   "5": 0.00077535,
+   "6": 0.00053476,
+   "7": 0.0005284
+  },
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "target_sd_over_seeds": {
+   "1": 0.0322,
+   "2": 0.0259,
+   "3": 0.0232,
+   "4": 0.0204,
+   "5": 0.0193,
+   "6": 0.02,
+   "7": 0.0205
+  },
+  "images": 256,
+  "renormalize": false,
+  "protocol": "training images, evaluation transform, utils.calibration_images",
+  "checkpoint_mean_row_energy_share": {
+   "1": 0.363,
+   "2": 0.405,
+   "3": 0.415,
+   "4": 0.381,
+   "5": 0.352,
+   "6": 0.35,
+   "7": 0.334
+  }
+ }
+}

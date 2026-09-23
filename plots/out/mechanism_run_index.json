@@ -1,0 +1,974 @@
+[
+ {
+  "sid": 29448854,
+  "seed": 1,
+  "arm": "ftb4i",
+  "task": "kdyck",
+  "final": 80.0040025390625,
+  "train_loss": 2.5593661011602635,
+  "dir": "results/imnet_base/results_IMNET_BASE_29448854/s1"
+ },
+ {
+  "sid": 29448854,
+  "seed": 2,
+  "arm": "ftb4i",
+  "task": "kdyck",
+  "final": 79.75200249023437,
+  "train_loss": 2.6456264406562044,
+  "dir": "results/imnet_base/results_IMNET_BASE_29448854/s2"
+ },
+ {
+  "sid": 29498141,
+  "seed": 0,
+  "arm": "ftbqm",
+  "task": "kdyck",
+  "final": 78.09400259765626,
+  "train_loss": 2.234832998806945,
+  "dir": "results/imnet_base/results_IMNET_BASE_29498141/s0"
+ },
+ {
+  "sid": 29498141,
+  "seed": 1,
+  "arm": "ftbqm",
+  "task": "kdyck",
+  "final": 78.29400266601563,
+  "train_loss": 2.252652037041023,
+  "dir": "results/imnet_base/results_IMNET_BASE_29498141/s1"
+ },
+ {
+  "sid": 29498141,
+  "seed": 2,
+  "arm": "ftbqm",
+  "task": "kdyck",
+  "final": 78.08800259277344,
+  "train_loss": 2.2521465590390832,
+  "dir": "results/imnet_base/results_IMNET_BASE_29498141/s2"
+ },
+ {
+  "sid": 29498148,
+  "seed": 0,
+  "arm": "ftbcomp1",
+  "task": "kdyck",
+  "final": 80.18600233398438,
+  "train_loss": 2.3498616881358125,
+  "dir": "results/imnet_base/results_IMNET_BASE_29498148/s0"
+ },
+ {
+  "sid": 29498148,
+  "seed": 1,
+  "arm": "ftbcomp1",
+  "task": "kdyck",
+  "final": 79.73400244140625,
+  "train_loss": 2.3515325903128357,
+  "dir": "results/imnet_base/results_IMNET_BASE_29498148/s1"
+ },
+ {
+  "sid": 29498148,
+  "seed": 2,
+  "arm": "ftbcomp1",
+  "task": "kdyck",
+  "final": 80.0180028125,
+  "train_loss": 2.3541793203435075,
+  "dir": "results/imnet_base/results_IMNET_BASE_29498148/s2"
+ },
+ {
+  "sid": 29514777,
+  "seed": 0,
+  "arm": "ftb11d",
+  "task": "kdyck",
+  "final": 77.79600260253906,
+  "train_loss": 2.206688481908387,
+  "dir": "results/imnet_base/results_IMNET_BASE_29514777/s0"
+ },
+ {
+  "sid": 29514777,
+  "seed": 1,
+  "arm": "ftb11d",
+  "task": "kdyck",
+  "final": 77.566002578125,
+  "train_loss": 2.1978295078047383,
+  "dir": "results/imnet_base/results_IMNET_BASE_29514777/s1"
+ },
+ {
+  "sid": 29514777,
+  "seed": 2,
+  "arm": "ftb11d",
+  "task": "kdyck",
+  "final": 77.76200239746093,
+  "train_loss": 2.1953932476015043,
+  "dir": "results/imnet_base/results_IMNET_BASE_29514777/s2"
+ },
+ {
+  "sid": 29514778,
+  "seed": 2,
+  "arm": "ftb11s",
+  "task": "kdyck",
+  "final": 76.59200251464844,
+  "train_loss": 2.2630050060554194,
+  "dir": "results/imnet_base/results_IMNET_BASE_29514778/s2"
+ },
+ {
+  "sid": 29518354,
+  "seed": 0,
+  "arm": "ftbslice",
+  "task": "kdyck",
+  "final": 78.27800255859376,
+  "train_loss": 2.2288918843588386,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518354/s0"
+ },
+ {
+  "sid": 29518354,
+  "seed": 1,
+  "arm": "ftbslice",
+  "task": "kdyck",
+  "final": 78.57800257324219,
+  "train_loss": 2.2514180701154354,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518354/s1"
+ },
+ {
+  "sid": 29518354,
+  "seed": 2,
+  "arm": "ftbslice",
+  "task": "kdyck",
+  "final": 78.84400270996093,
+  "train_loss": 2.237507285729337,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518354/s2"
+ },
+ {
+  "sid": 29518357,
+  "seed": 0,
+  "arm": "ftbvd",
+  "task": "kdyck",
+  "final": 78.66800264648438,
+  "train_loss": 2.2963308841467667,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518357/s0"
+ },
+ {
+  "sid": 29518357,
+  "seed": 1,
+  "arm": "ftbvd",
+  "task": "kdyck",
+  "final": 78.69600231445312,
+  "train_loss": 2.269837011404049,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518357/s1"
+ },
+ {
+  "sid": 29518357,
+  "seed": 2,
+  "arm": "ftbvd",
+  "task": "kdyck",
+  "final": 78.86200243652344,
+  "train_loss": 2.2868379150660565,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518357/s2"
+ },
+ {
+  "sid": 29518360,
+  "seed": 0,
+  "arm": "ftbqu",
+  "task": "kdyck",
+  "final": 77.97800240722657,
+  "train_loss": 2.1889307835163216,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518360/s0"
+ },
+ {
+  "sid": 29518360,
+  "seed": 1,
+  "arm": "ftbqu",
+  "task": "kdyck",
+  "final": 78.15400259765624,
+  "train_loss": 2.193089812528342,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518360/s1"
+ },
+ {
+  "sid": 29518360,
+  "seed": 2,
+  "arm": "ftbqu",
+  "task": "kdyck",
+  "final": 78.01000256347656,
+  "train_loss": 2.1934782690846193,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518360/s2"
+ },
+ {
+  "sid": 29518363,
+  "seed": 0,
+  "arm": "ftbvu",
+  "task": "kdyck",
+  "final": 77.72200258300781,
+  "train_loss": 2.191294327306633,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518363/s0"
+ },
+ {
+  "sid": 29518363,
+  "seed": 1,
+  "arm": "ftbvu",
+  "task": "kdyck",
+  "final": 77.61200252929687,
+  "train_loss": 2.1931056027682736,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518363/s1"
+ },
+ {
+  "sid": 29518363,
+  "seed": 2,
+  "arm": "ftbvu",
+  "task": "kdyck",
+  "final": 77.62000263183593,
+  "train_loss": 2.190863789501003,
+  "dir": "results/imnet_base/results_IMNET_BASE_29518363/s2"
+ },
+ {
+  "sid": 29520491,
+  "seed": 0,
+  "arm": "ftb7e",
+  "task": "kdyck",
+  "final": 79.38600250488281,
+  "train_loss": 2.459365882886908,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520491/s0"
+ },
+ {
+  "sid": 29520492,
+  "seed": 0,
+  "arm": "ftb9e",
+  "task": "kdyck",
+  "final": 80.13600256835937,
+  "train_loss": 2.412432987111597,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520492/s0"
+ },
+ {
+  "sid": 29520493,
+  "seed": 0,
+  "arm": "ftb10e",
+  "task": "kdyck",
+  "final": 79.73200245117188,
+  "train_loss": 2.416859172738324,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520493/s0"
+ },
+ {
+  "sid": 29520494,
+  "seed": 0,
+  "arm": "ftb11e",
+  "task": "kdyck",
+  "final": 79.92000244140625,
+  "train_loss": 2.427686876557672,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520494/s0"
+ },
+ {
+  "sid": 29520495,
+  "seed": 0,
+  "arm": "ftb9b",
+  "task": "kdyck",
+  "final": 78.94200255859376,
+  "train_loss": 2.226911652319802,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520495/s0"
+ },
+ {
+  "sid": 29520496,
+  "seed": 0,
+  "arm": "ftb10b",
+  "task": "kdyck",
+  "final": 78.66800283203125,
+  "train_loss": 2.231113142130944,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520496/s0"
+ },
+ {
+  "sid": 29520497,
+  "seed": 0,
+  "arm": "ftb11b",
+  "task": "kdyck",
+  "final": 78.68200241210937,
+  "train_loss": 2.228779483037308,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520497/s0"
+ },
+ {
+  "sid": 29520499,
+  "seed": 0,
+  "arm": "ftbqmvo",
+  "task": "kdyck",
+  "final": 78.45000237304687,
+  "train_loss": 2.272324908226251,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520499/s0"
+ },
+ {
+  "sid": 29520499,
+  "seed": 1,
+  "arm": "ftbqmvo",
+  "task": "kdyck",
+  "final": 78.69600266601563,
+  "train_loss": 2.275362231195546,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520499/s1"
+ },
+ {
+  "sid": 29520499,
+  "seed": 2,
+  "arm": "ftbqmvo",
+  "task": "kdyck",
+  "final": 78.68200243652343,
+  "train_loss": 2.2654468904798613,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520499/s2"
+ },
+ {
+  "sid": 29520505,
+  "seed": 0,
+  "arm": "ftbcfg",
+  "task": "kdyck",
+  "final": 76.96000213378906,
+  "train_loss": 2.215642837401575,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520505/s0"
+ },
+ {
+  "sid": 29520505,
+  "seed": 1,
+  "arm": "ftbcfg",
+  "task": "kdyck",
+  "final": 78.03200244140625,
+  "train_loss": 2.1970216414938943,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520505/s1"
+ },
+ {
+  "sid": 29520505,
+  "seed": 2,
+  "arm": "ftbcfg",
+  "task": "kdyck",
+  "final": 77.52000260742187,
+  "train_loss": 2.1910856977367823,
+  "dir": "results/imnet_base/results_IMNET_BASE_29520505/s2"
+ },
+ {
+  "sid": 29523306,
+  "seed": 0,
+  "arm": "ftb4e3fix",
+  "task": "kdyck",
+  "final": 79.330002734375,
+  "train_loss": 2.2925105249055493,
+  "dir": "results/imnet_base/results_IMNET_BASE_29523306/s0"
+ },
+ {
+  "sid": 29523306,
+  "seed": 1,
+  "arm": "ftb4e3fix",
+  "task": "kdyck",
+  "final": 79.26200229003906,
+  "train_loss": 2.27879767666738,
+  "dir": "results/imnet_base/results_IMNET_BASE_29523306/s1"
+ },
+ {
+  "sid": 29523306,
+  "seed": 2,
+  "arm": "ftb4e3fix",
+  "task": "kdyck",
+  "final": 79.9080026953125,
+  "train_loss": 2.3249942779254456,
+  "dir": "results/imnet_base/results_IMNET_BASE_29523306/s2"
+ },
+ {
+  "sid": 29523309,
+  "seed": 0,
+  "arm": "ftb11isfix",
+  "task": "kdyck",
+  "final": 76.7660024169922,
+  "train_loss": 2.2953395689718232,
+  "dir": "results/imnet_base/results_IMNET_BASE_29523309/s0"
+ },
+ {
+  "sid": 29523309,
+  "seed": 1,
+  "arm": "ftb11isfix",
+  "task": "kdyck",
+  "final": 75.902002421875,
+  "train_loss": 2.3119983878941874,
+  "dir": "results/imnet_base/results_IMNET_BASE_29523309/s1"
+ },
+ {
+  "sid": 29523309,
+  "seed": 2,
+  "arm": "ftb11isfix",
+  "task": "kdyck",
+  "final": 76.39800252441407,
+  "train_loss": 2.25048685602796,
+  "dir": "results/imnet_base/results_IMNET_BASE_29523309/s2"
+ },
+ {
+  "sid": 29523316,
+  "seed": 0,
+  "arm": "ftbqmlnvo",
+  "task": "kdyck",
+  "final": 80.14000234375,
+  "train_loss": 2.3473613313757458,
+  "dir": "results/imnet_base/results_IMNET_BASE_29523316/s0"
+ },
+ {
+  "sid": 29523316,
+  "seed": 1,
+  "arm": "ftbqmlnvo",
+  "task": "kdyck",
+  "final": 80.184002578125,
+  "train_loss": 2.333636241666495,
+  "dir": "results/imnet_base/results_IMNET_BASE_29523316/s1"
+ },
+ {
+  "sid": 29523316,
+  "seed": 2,
+  "arm": "ftbqmlnvo",
+  "task": "kdyck",
+  "final": 79.48000251953125,
+  "train_loss": 2.3040061730724304,
+  "dir": "results/imnet_base/results_IMNET_BASE_29523316/s2"
+ },
+ {
+  "sid": 29529147,
+  "seed": 0,
+  "arm": "ftbqmln",
+  "task": "kdyck",
+  "final": 78.12200254882812,
+  "train_loss": 2.230225558858365,
+  "dir": "results/imnet_base/results_IMNET_BASE_29529147/s0"
+ },
+ {
+  "sid": 29529147,
+  "seed": 1,
+  "arm": "ftbqmln",
+  "task": "kdyck",
+  "final": 78.05800245117187,
+  "train_loss": 2.2198380579312262,
+  "dir": "results/imnet_base/results_IMNET_BASE_29529147/s1"
+ },
+ {
+  "sid": 29529147,
+  "seed": 2,
+  "arm": "ftbqmln",
+  "task": "kdyck",
+  "final": 78.35000239257812,
+  "train_loss": 2.2431077675368543,
+  "dir": "results/imnet_base/results_IMNET_BASE_29529147/s2"
+ },
+ {
+  "sid": 29529150,
+  "seed": 0,
+  "arm": "ftbqm1dvo",
+  "task": "kdyck",
+  "final": 79.26400260253907,
+  "train_loss": 2.2690329618322163,
+  "dir": "results/imnet_base/results_IMNET_BASE_29529150/s0"
+ },
+ {
+  "sid": 29529150,
+  "seed": 1,
+  "arm": "ftbqm1dvo",
+  "task": "kdyck",
+  "final": 79.26400220703125,
+  "train_loss": 2.2866771672732935,
+  "dir": "results/imnet_base/results_IMNET_BASE_29529150/s1"
+ },
+ {
+  "sid": 29529150,
+  "seed": 2,
+  "arm": "ftbqm1dvo",
+  "task": "kdyck",
+  "final": 78.81200257324218,
+  "train_loss": 2.275975173088507,
+  "dir": "results/imnet_base/results_IMNET_BASE_29529150/s2"
+ },
+ {
+  "sid": 29529154,
+  "seed": 0,
+  "arm": "ftbqm1d",
+  "task": "kdyck",
+  "final": 78.13600251464844,
+  "train_loss": 2.2300858856775823,
+  "dir": "results/imnet_base/results_IMNET_BASE_29529154/s0"
+ },
+ {
+  "sid": 29529154,
+  "seed": 1,
+  "arm": "ftbqm1d",
+  "task": "kdyck",
+  "final": 77.8680026611328,
+  "train_loss": 2.2110322507050557,
+  "dir": "results/imnet_base/results_IMNET_BASE_29529154/s1"
+ },
+ {
+  "sid": 29529154,
+  "seed": 2,
+  "arm": "ftbqm1d",
+  "task": "kdyck",
+  "final": 78.01400256347657,
+  "train_loss": 2.2304069596486022,
+  "dir": "results/imnet_base/results_IMNET_BASE_29529154/s2"
+ },
+ {
+  "sid": 29535764,
+  "seed": 0,
+  "arm": "ftbqks",
+  "task": "kdyck",
+  "final": 79.14600247070312,
+  "train_loss": 2.2816335253584654,
+  "dir": "results/imnet_base/results_IMNET_BASE_29535764/s0"
+ },
+ {
+  "sid": 29535764,
+  "seed": 1,
+  "arm": "ftbqks",
+  "task": "kdyck",
+  "final": 79.06000246582032,
+  "train_loss": 2.2856386065339813,
+  "dir": "results/imnet_base/results_IMNET_BASE_29535764/s1"
+ },
+ {
+  "sid": 29535764,
+  "seed": 2,
+  "arm": "ftbqks",
+  "task": "kdyck",
+  "final": 79.81800237792969,
+  "train_loss": 2.3295539014208586,
+  "dir": "results/imnet_base/results_IMNET_BASE_29535764/s2"
+ },
+ {
+  "sid": 29538122,
+  "seed": 0,
+  "arm": "ftbqmlnvog",
+  "task": "kdyck",
+  "final": 79.20000234863281,
+  "train_loss": 2.306671152655513,
+  "dir": "results/imnet_base/results_IMNET_BASE_29538122/s0"
+ },
+ {
+  "sid": 29538122,
+  "seed": 1,
+  "arm": "ftbqmlnvog",
+  "task": "kdyck",
+  "final": 80.40400248046875,
+  "train_loss": 2.3630905407003295,
+  "dir": "results/imnet_base/results_IMNET_BASE_29538122/s1"
+ },
+ {
+  "sid": 29538122,
+  "seed": 2,
+  "arm": "ftbqmlnvog",
+  "task": "kdyck",
+  "final": 79.05800254882813,
+  "train_loss": 2.294491509202486,
+  "dir": "results/imnet_base/results_IMNET_BASE_29538122/s2"
+ },
+ {
+  "sid": 29538140,
+  "seed": 0,
+  "arm": "ftbrhos",
+  "task": "kdyck",
+  "final": 75.06600244506836,
+  "train_loss": 2.1950422468213127,
+  "dir": "results/imnet_base/results_IMNET_BASE_29538140/s0"
+ },
+ {
+  "sid": 29543647,
+  "seed": 0,
+  "arm": "?",
+  "task": "?",
+  "final": 80.35800255554199,
+  "train_loss": 2.3559116695004585,
+  "dir": "results/imnet_base/results_IMNET_BASE_29543647/s0"
+ },
+ {
+  "sid": 29545846,
+  "seed": 0,
+  "arm": "ftblrm",
+  "task": "kdyck",
+  "final": 77.73000258300782,
+  "train_loss": 2.252902694213658,
+  "dir": "results/imnet_base/results_IMNET_BASE_29545846/s0"
+ },
+ {
+  "sid": 29547822,
+  "seed": 0,
+  "arm": "ftb4e",
+  "task": "ksd",
+  "final": 76.61800260253906,
+  "train_loss": 2.264316059744511,
+  "dir": "results/imnet_base/results_IMNET_BASE_29547822/s0"
+ },
+ {
+  "sid": 29547831,
+  "seed": 0,
+  "arm": "ftb4",
+  "task": "ksd",
+  "final": 80.21200254882812,
+  "train_loss": 2.452820715900415,
+  "dir": "results/imnet_base/results_IMNET_BASE_29547831/s0"
+ },
+ {
+  "sid": 29547832,
+  "seed": 0,
+  "arm": "ftb4b",
+  "task": "ksd",
+  "final": 78.58800252929687,
+  "train_loss": 2.2155934903197565,
+  "dir": "results/imnet_base/results_IMNET_BASE_29547832/s0"
+ },
+ {
+  "sid": 29547833,
+  "seed": 0,
+  "arm": "ftb4f",
+  "task": "ksd",
+  "final": 79.95600256835938,
+  "train_loss": 2.455740024228222,
+  "dir": "results/imnet_base/results_IMNET_BASE_29547833/s0"
+ },
+ {
+  "sid": 29547834,
+  "seed": 0,
+  "arm": "ftb4h",
+  "task": "ksd",
+  "final": 77.88400246582032,
+  "train_loss": 2.3113134723419373,
+  "dir": "results/imnet_base/results_IMNET_BASE_29547834/s0"
+ },
+ {
+  "sid": 29547835,
+  "seed": 0,
+  "arm": "ftb4i",
+  "task": "ksd",
+  "final": 80.05400245117187,
+  "train_loss": 2.5006135171876314,
+  "dir": "results/imnet_base/results_IMNET_BASE_29547835/s0"
+ },
+ {
+  "sid": 29547836,
+  "seed": 0,
+  "arm": "ftb4j",
+  "task": "ksd",
+  "final": 80.142002578125,
+  "train_loss": 2.5441665332525587,
+  "dir": "results/imnet_base/results_IMNET_BASE_29547836/s0"
+ },
+ {
+  "sid": 29572321,
+  "seed": 0,
+  "arm": "ftbana",
+  "task": "kdyck",
+  "final": 76.60600232910156,
+  "train_loss": 2.2090186988457274,
+  "dir": "results/imnet_base/results_IMNET_BASE_29572321/s0"
+ },
+ {
+  "sid": 29578396,
+  "seed": 0,
+  "arm": "ftbanaf",
+  "task": "kdyck",
+  "final": 76.41200262695313,
+  "train_loss": 2.2066390800218167,
+  "dir": "results/imnet_base/results_IMNET_BASE_29578396/s0"
+ },
+ {
+  "sid": 29581214,
+  "seed": 0,
+  "arm": "ftbanab",
+  "task": "kdyck",
+  "final": 76.69600250976562,
+  "train_loss": 2.194447898138792,
+  "dir": "results/imnet_base/results_IMNET_BASE_29581214/s0"
+ },
+ {
+  "sid": 29581216,
+  "seed": 0,
+  "arm": "ftbanag",
+  "task": "kdyck",
+  "final": 80.70400268554687,
+  "train_loss": 2.384069295098575,
+  "dir": "results/imnet_base/results_IMNET_BASE_29581216/s0"
+ },
+ {
+  "sid": 29592459,
+  "seed": 0,
+  "arm": "ftbanap",
+  "task": "kdyck",
+  "final": 80.24200247070313,
+  "train_loss": 2.3638581736610296,
+  "dir": "results/imnet_base/results_IMNET_BASE_29592459/s0"
+ },
+ {
+  "sid": 29602226,
+  "seed": 0,
+  "arm": "ftbanau",
+  "task": "kdyck",
+  "final": 77.35400247070312,
+  "train_loss": 2.2040686161042404,
+  "dir": "results/imnet_base/results_IMNET_BASE_29602226/s0"
+ },
+ {
+  "sid": 29602228,
+  "seed": 0,
+  "arm": "ftbanai",
+  "task": "kdyck",
+  "final": 78.11000254882812,
+  "train_loss": 2.314361528875545,
+  "dir": "results/imnet_base/results_IMNET_BASE_29602228/s0"
+ },
+ {
+  "sid": 29609180,
+  "seed": 0,
+  "arm": "?",
+  "task": "?",
+  "final": 79.7820024609375,
+  "train_loss": 2.3643900211422872,
+  "dir": "results/imnet_base/results_IMNET_BASE_29609180/s0"
+ },
+ {
+  "sid": 29620684,
+  "seed": 0,
+  "arm": "ftbanac",
+  "task": "kdyck",
+  "final": 80.54800264648438,
+  "train_loss": 2.335433607777724,
+  "dir": "results/imnet_base/results_IMNET_BASE_29620684/s0"
+ },
+ {
+  "sid": 29626632,
+  "seed": 0,
+  "arm": "ftbanak",
+  "task": "ksd",
+  "final": 77.85600250976563,
+  "train_loss": 2.191989205037363,
+  "dir": "results/imnet_base/results_IMNET_BASE_29626632/s0"
+ },
+ {
+  "sid": 29626634,
+  "seed": 0,
+  "arm": "ftbrhop",
+  "task": "kdyck",
+  "final": 79.9280023046875,
+  "train_loss": 2.2944192219501693,
+  "dir": "results/imnet_base/results_IMNET_BASE_29626634/s0"
+ },
+ {
+  "sid": 29626866,
+  "seed": 0,
+  "arm": "ftbrhosl",
+  "task": "kdyck",
+  "final": 78.3140026171875,
+  "train_loss": 2.4242624731567233,
+  "dir": "results/imnet_base/results_IMNET_BASE_29626866/s0"
+ },
+ {
+  "sid": 29626868,
+  "seed": 0,
+  "arm": "ftbanakw",
+  "task": "ksd",
+  "final": 76.6460025390625,
+  "train_loss": 2.2118040749039025,
+  "dir": "results/imnet_base/results_IMNET_BASE_29626868/s0"
+ },
+ {
+  "sid": 29632673,
+  "seed": 0,
+  "arm": "ftbrhopl",
+  "task": "kdyck",
+  "final": 80.13400244140625,
+  "train_loss": 2.316067736488409,
+  "dir": "results/imnet_base/results_IMNET_BASE_29632673/s0"
+ },
+ {
+  "sid": 29634995,
+  "seed": 0,
+  "arm": "ftbqmlnvok",
+  "task": "ksd",
+  "final": 77.83000254882812,
+  "train_loss": 2.198083116255032,
+  "dir": "results/imnet_base/results_IMNET_BASE_29634995/s0"
+ },
+ {
+  "sid": 29634997,
+  "seed": 0,
+  "arm": "ftbanakg",
+  "task": "ksd",
+  "final": 77.6420025390625,
+  "train_loss": 2.196474437434704,
+  "dir": "results/imnet_base/results_IMNET_BASE_29634997/s0"
+ },
+ {
+  "sid": 29637998,
+  "seed": 0,
+  "arm": "ftbanakb",
+  "task": "ksd",
+  "final": 78.25200241699218,
+  "train_loss": 2.2137704983544655,
+  "dir": "results/imnet_base/results_IMNET_BASE_29637998/s0"
+ },
+ {
+  "sid": 29720203,
+  "seed": 0,
+  "arm": "ftbanaksw",
+  "task": "ksd",
+  "final": 78.72600239257812,
+  "train_loss": 2.324458618111049,
+  "dir": "results/imnet_base/results_IMNET_BASE_29720203/s0"
+ },
+ {
+  "sid": 29720205,
+  "seed": 0,
+  "arm": "ftbanaksg",
+  "task": "kdyck",
+  "final": 79.91600272460937,
+  "train_loss": 2.5139338567327614,
+  "dir": "results/imnet_base/results_IMNET_BASE_29720205/s0"
+ },
+ {
+  "sid": 29720207,
+  "seed": 0,
+  "arm": "ftbanakbs",
+  "task": "kdyck",
+  "final": 78.27000247070312,
+  "train_loss": 2.2046306074764104,
+  "dir": "results/imnet_base/results_IMNET_BASE_29720207/s0"
+ },
+ {
+  "sid": 29720209,
+  "seed": 0,
+  "arm": "ftbanakd",
+  "task": "kdyck",
+  "final": 78.04200240234375,
+  "train_loss": 2.206117590160993,
+  "dir": "results/imnet_base/results_IMNET_BASE_29720209/s0"
+ },
+ {
+  "sid": 29720235,
+  "seed": 0,
+  "arm": "ftbanaks",
+  "task": "kdyck",
+  "final": 79.57600256835937,
+  "train_loss": 2.5429590372607493,
+  "dir": "results/imnet_base/results_IMNET_BASE_29720235/s0"
+ },
+ {
+  "sid": 29723431,
+  "seed": 0,
+  "arm": "ftbanakx",
+  "task": "ksd",
+  "final": 77.68200256347656,
+  "train_loss": 2.195620131225158,
+  "dir": "results/imnet_base/results_IMNET_BASE_29723431/s0"
+ },
+ {
+  "sid": 29723558,
+  "seed": 0,
+  "arm": "ftbanapx",
+  "task": "kdyck",
+  "final": 79.18000263183593,
+  "train_loss": 2.2963689141429198,
+  "dir": "results/imnet_base/results_IMNET_BASE_29723558/s0"
+ },
+ {
+  "sid": 29723598,
+  "seed": 0,
+  "arm": "ftbanape",
+  "task": "kdyck",
+  "final": 79.43600268554688,
+  "train_loss": 2.303786212638116,
+  "dir": "results/imnet_base/results_IMNET_BASE_29723598/s0"
+ },
+ {
+  "sid": 29729541,
+  "seed": 0,
+  "arm": "ftbanaperab7w",
+  "task": "kdyck",
+  "final": 78.89800254882813,
+  "train_loss": 2.269224338699132,
+  "dir": "results/imnet_base/results_IMNET_BASE_29729541/s0"
+ },
+ {
+  "sid": 29729543,
+  "seed": 0,
+  "arm": "ftbanakperab7",
+  "task": "ksd",
+  "final": 78.63600249511718,
+  "train_loss": 2.2435111162993007,
+  "dir": "results/imnet_base/results_IMNET_BASE_29729543/s0"
+ },
+ {
+  "sid": 29729545,
+  "seed": 0,
+  "arm": "ftbanaperab7",
+  "task": "kdyck",
+  "final": 79.740002265625,
+  "train_loss": 2.2889510214161604,
+  "dir": "results/imnet_base/results_IMNET_BASE_29729545/s0"
+ },
+ {
+  "sid": 29729547,
+  "seed": 0,
+  "arm": "ftbanakperab7w",
+  "task": "ksd",
+  "final": 78.09200232421875,
+  "train_loss": 2.24130707884876,
+  "dir": "results/imnet_base/results_IMNET_BASE_29729547/s0"
+ },
+ {
+  "sid": 29729553,
+  "seed": 0,
+  "arm": "ftbanapermb7",
+  "task": "kdyck",
+  "final": 80.11800244140625,
+  "train_loss": 2.432697252728618,
+  "dir": "results/imnet_base/results_IMNET_BASE_29729553/s0"
+ },
+ {
+  "sid": 29729556,
+  "seed": 0,
+  "arm": "ftbanapermb7w",
+  "task": "kdyck",
+  "final": 78.91000248046875,
+  "train_loss": 2.2611136071574993,
+  "dir": "results/imnet_base/results_IMNET_BASE_29729556/s0"
+ },
+ {
+  "sid": 29729558,
+  "seed": 0,
+  "arm": "ftbanakperab7i",
+  "task": "ksd",
+  "final": 79.64600272460937,
+  "train_loss": 2.320711935786769,
+  "dir": "results/imnet_base/results_IMNET_BASE_29729558/s0"
+ },
+ {
+  "sid": 29733656,
+  "seed": 0,
+  "arm": "ftbanaperab7i",
+  "task": "kdyck",
+  "final": 79.62800247070312,
+  "train_loss": 2.279467402229038,
+  "dir": "results/imnet_base/results_IMNET_BASE_29733656/s0"
+ },
+ {
+  "sid": 29736861,
+  "seed": 0,
+  "arm": "ftbanakpermb7i",
+  "task": "ksd",
+  "final": 79.89800233886719,
+  "train_loss": 2.37389328961189,
+  "dir": "results/imnet_base/results_IMNET_BASE_29736861/s0"
+ },
+ {
+  "sid": 29737095,
+  "seed": 0,
+  "arm": "ftbanapermb7i",
+  "task": "kdyck",
+  "final": 80.372002421875,
+  "train_loss": 2.4568548597849142,
+  "dir": "results/imnet_base/results_IMNET_BASE_29737095/s0"
+ },
+ {
+  "sid": 29737097,
+  "seed": 0,
+  "arm": "ftbanakpermb7",
+  "task": "ksd",
+  "final": 79.53600258789062,
+  "train_loss": 2.3114921513419504,
+  "dir": "results/imnet_base/results_IMNET_BASE_29737097/s0"
+ },
+ {
+  "sid": 29744580,
+  "seed": 0,
+  "arm": "r0",
+  "task": "kdyck",
+  "final": 77.42000246582032,
+  "train_loss": 2.25829349238521,
+  "dir": "results/imnet_base/results_IMNET_BASE_29744580/s0"
+ }
+]

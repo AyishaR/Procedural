@@ -1,3 +1,15 @@
+"""Layer-wise learning-rate multipliers that fade in over a window of epochs (--custom_lr_layer).
+
+At every optimisation step   lr(group) = global schedule(step) * multiplier(group, epoch) * lr_scale(group),
+with   multiplier = 1 before `transition_start`, a cosine ramp from 1 to the group's target between `transition_start` and
+`transition_end`, and the target afterwards. The ramp is evaluated per EPOCH, so the multiplier is constant within an epoch
+while the global schedule changes every step.
+
+Groups: patch_embed, pos_embed, cls_token, one per block, the final norm, the head, each split into a "decay" and a
+"no_decay" part by the rule of optim_factory.get_parameter_groups (1-D tensors, biases and the model's no_weight_decay()
+names are not decayed), so switching the option on does not change the weight decay. Every group remembers its own key
+("lr_key"), so the per-step update does not depend on the order of optimizer.param_groups.
+"""
 import math
 
 
@@ -15,176 +27,67 @@ def get_transition_factor(epoch, transition_start=90, transition_end=110):
     return (epoch - transition_start) / float(transition_end - transition_start)
 
 
-def get_layer_lr_multiplier(
-    block_idx,
-    epoch,
-    custom_block_targets,
-    transition_start=90,
-    transition_end=110,
-    num_blocks=12,
-):
+def get_layer_lr_multiplier(block_idx, epoch, custom_block_targets, transition_start=90, transition_end=110):
     factor = get_transition_factor(epoch, transition_start, transition_end)
-    target = custom_block_targets[block_idx]
-
-    return cosine_interp(1.0, target, factor)
+    return cosine_interp(1.0, custom_block_targets[block_idx], factor)
 
 
-def get_non_block_lr_multiplier(
-    param_name,
-    epoch,
-    custom_non_block_targets,
-    transition_start=90,
-    transition_end=110,
-):
+def get_non_block_lr_multiplier(param_name, epoch, custom_non_block_targets, transition_start=90, transition_end=110):
     factor = get_transition_factor(epoch, transition_start, transition_end)
-    # print(f"Transition factor for parameter '{param_name}' at epoch {epoch}: {factor:.4f}")
-    target = custom_non_block_targets.get(param_name, 1.0)
-
-    return cosine_interp(1.0, target, factor)
+    return cosine_interp(1.0, custom_non_block_targets.get(param_name, 1.0), factor)
 
 
-def build_vit_param_groups(
-    model,
-    base_lr,
-    epoch,
-    custom_block_targets,
-    custom_non_block_targets,
-    transition_start=90,
-    transition_end=110
-):
+def lr_multiplier(lr_key, epoch, custom_block_targets, custom_non_block_targets, transition_start=90, transition_end=110):
+    """Multiplier of one parameter group; `lr_key` is ("block", index) or ("non_block", name)."""
+    kind, which = lr_key
+    if kind == "block":
+        return get_layer_lr_multiplier(which, epoch, custom_block_targets, transition_start, transition_end)
+    return get_non_block_lr_multiplier(which, epoch, custom_non_block_targets, transition_start, transition_end)
+
+
+NON_BLOCK_OWNERS = ("patch_embed", "pos_embed", "cls_token", "norm", "head")
+
+
+def build_vit_param_groups(model, base_lr, epoch, custom_block_targets, custom_non_block_targets,
+                           transition_start=90, transition_end=110, weight_decay=0.0, skip_list=()):
     num_blocks = len(model.blocks)
-    param_groups = []
+    if len(custom_block_targets) != num_blocks:
+        raise ValueError(f"--custom_block_targets_scale needs one target per block: expected {num_blocks}, got {len(custom_block_targets)}")
+    unknown = set(custom_non_block_targets) - set(NON_BLOCK_OWNERS)
+    if unknown:
+        raise ValueError(f"custom_non_block_targets has keys without a parameter group: {sorted(unknown)} (known: {NON_BLOCK_OWNERS})")
 
-    patch_mult = get_non_block_lr_multiplier(
-        "patch_embed",
-        epoch,
-        custom_non_block_targets,
-        transition_start,
-        transition_end,
-    )
-    param_groups.append(
-        {
-            "params": list(model.patch_embed.parameters()),
-            "lr": base_lr * patch_mult,
-            "group_name": "patch_embed",
-            "lr_mult": patch_mult,
-        }
-    )
-
-    embed_params = []
-    if hasattr(model, "pos_embed") and model.pos_embed is not None:
-        embed_params.append(model.pos_embed)
-    if hasattr(model, "cls_token") and model.cls_token is not None:
-        embed_params.append(model.cls_token)
-
-    if embed_params:
-        embed_mult = get_non_block_lr_multiplier(
-            "embeddings",
-            epoch,
-            custom_non_block_targets,
-            transition_start,
-            transition_end
-        )
-        param_groups.append(
-            {
-                "params": embed_params,
-                "lr": base_lr * embed_mult,
-                "group_name": "embeddings",
-                "lr_mult": embed_mult,
-            }
-        )
-
-    for block_idx, block in enumerate(model.blocks):
-        block_mult = get_layer_lr_multiplier(
-            block_idx=block_idx,
-            epoch=epoch,
-            custom_block_targets=custom_block_targets,
-            transition_start=transition_start,
-            transition_end=transition_end
-        )
-        param_groups.append(
-            {
-                "params": list(block.parameters()),
-                "lr": base_lr * block_mult,
-                "group_name": f"block_{block_idx}",
-                "block_idx": block_idx,
-                "lr_mult": block_mult,
-            }
-        )
-
-    if hasattr(model, "norm") and model.norm is not None:
-        norm_mult = get_non_block_lr_multiplier(
-            "norm",
-            epoch,
-            custom_non_block_targets,
-            transition_start,
-            transition_end
-        )
-        param_groups.append(
-            {
-                "params": list(model.norm.parameters()),
-                "lr": base_lr * norm_mult,
-                "group_name": "norm",
-                "lr_mult": norm_mult,
-            }
-        )
-
-    if hasattr(model, "head") and model.head is not None:
-        head_mult = get_non_block_lr_multiplier(
-            "head",
-            epoch,
-            custom_non_block_targets,
-            transition_start,
-            transition_end
-        )
-        param_groups.append(
-            {
-                "params": list(model.head.parameters()),
-                "lr": base_lr * head_mult,
-                "group_name": "head",
-                "lr_mult": head_mult,
-            }
-        )
-
-    return param_groups
+    groups = {}
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        owner = name.split(".")[0]
+        if owner == "blocks":
+            lr_key, label = ("block", int(name.split(".")[1])), f"block_{int(name.split('.')[1])}"
+        elif owner in NON_BLOCK_OWNERS:
+            lr_key, label = ("non_block", owner), owner
+        else:       # a parameter without a group would silently never be trained
+            raise ValueError(f"--custom_lr_layer: parameter {name!r} belongs to no learning-rate group")
+        no_decay = len(param.shape) == 1 or name.endswith(".bias") or name in skip_list      # optim_factory.get_parameter_groups' rule
+        group_name = f"{label}_{'no_decay' if no_decay else 'decay'}"
+        if group_name not in groups:
+            multiplier = lr_multiplier(lr_key, epoch, custom_block_targets, custom_non_block_targets, transition_start, transition_end)
+            groups[group_name] = {"params": [], "lr": base_lr * multiplier, "weight_decay": 0.0 if no_decay else weight_decay,
+                                  "group_name": group_name, "lr_key": lr_key, "lr_mult": multiplier}
+            if lr_key[0] == "block":
+                groups[group_name]["block_idx"] = lr_key[1]
+        groups[group_name]["params"].append(param)
+    return list(groups.values())
 
 
-def apply_custom_lr_to_optimizer(
-    optimizer,
-    model,
-    base_lr,
-    epoch,
-    custom_block_targets,
-    custom_non_block_targets,
-    transition_start=90,
-    transition_end=110
-):
-    new_groups = build_vit_param_groups(
-        model=model,
-        base_lr=base_lr,
-        epoch=epoch,
-        custom_block_targets=custom_block_targets,
-        custom_non_block_targets=custom_non_block_targets,
-        transition_start=transition_start,
-        transition_end=transition_end
-    )
-
-    if len(new_groups) != len(optimizer.param_groups):
-        raise ValueError(
-            f"Param group count mismatch: expected {len(new_groups)}, got {len(optimizer.param_groups)}"
-        )
-
-    for opt_group, new_group in zip(optimizer.param_groups, new_groups):
-        opt_group["lr"] = new_group["lr"]
-        opt_group["lr_mult"] = new_group.get("lr_mult", 1.0)
-        opt_group["group_name"] = new_group.get("group_name", None)
-        if "block_idx" in new_group:
-            opt_group["block_idx"] = new_group["block_idx"]
-
-
-def get_epoch_base_lr(base_lr_schedule, epoch):
-    if epoch < 0 or epoch >= len(base_lr_schedule):
-        raise IndexError(
-            f"Epoch {epoch} is outside base_lr_schedule of length {len(base_lr_schedule)}"
-        )
-    return base_lr_schedule[epoch]
+def apply_custom_lr_to_optimizer(optimizer, base_lr, epoch, custom_block_targets, custom_non_block_targets,
+                                 transition_start=90, transition_end=110, model=None):
+    """Set every group's learning rate for this step. Groups are identified by the "lr_key" they were created with, not by
+    their position. `model` is accepted for backward compatibility and not used."""
+    for group in optimizer.param_groups:
+        if "lr_key" not in group:
+            raise ValueError("--custom_lr_layer: the optimizer has a parameter group that build_vit_param_groups did not create "
+                             f"(keys {sorted(k for k in group if k != 'params')}); the layer-wise multipliers cannot be applied to it")
+        multiplier = lr_multiplier(tuple(group["lr_key"]), epoch, custom_block_targets, custom_non_block_targets, transition_start, transition_end)
+        group["lr"] = base_lr * multiplier * group.get("lr_scale", 1.0)
+        group["lr_mult"] = multiplier

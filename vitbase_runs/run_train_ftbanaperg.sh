@@ -76,7 +76,7 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_
     --enable_wandb true \
     --project "vit base kdyck" \
     --wandb_entity_name "procedural_pretraining" \
-    --notes "full reconstruction of the kdyck prefix from statistics (extract_profile.py --gain_fold exact --exact --qk_sink --fc1_gate): exact per-block effective scales (54) + LayerNorm statistics (72, inline) + two joint statistics per block 1-8, each one rank-one component along the models own stream direction with every effective scale preserved: attention entropy target -> coupled q/k sink, mean fc1 pre-activation target -> mean-row component of fc1 (GELU gate); calibrated at init on 256 training images (utils.calibrate_joint_statistics); blocks 0-8, random 9-11, no checkpoint at init" \
+    --notes "full reconstruction of the kdyck prefix from statistics (extract_profile.py --gain_fold exact --exact --qk_entropy --fc1_gate): exact per-block effective scales (54) + LayerNorm statistics (72, inline) + two joint statistics per block 1-8, each one rank-one component along the models own stream direction with every effective scale preserved: attention entropy target -> coupled q/k sink, mean fc1 pre-activation target -> mean-row component of fc1 (GELU gate); calibrated at init on 256 training images (utils.calibrate_joint_statistics); blocks 0-8, random 9-11, no checkpoint at init" \
     --accuracy_json "results/imnet_base/accuracy_IMNET_BASE_${SLURM_ID}_s${SEED}.json" \
     --grad_norms_json "results/imnet_base/grad_norms_IMNET_BASE_${SLURM_ID}_s${SEED}.json" \
     --procedural_data "kdyck" \

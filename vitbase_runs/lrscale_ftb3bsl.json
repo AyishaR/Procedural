@@ -1,0 +1,35 @@
+{
+ "blocks.9.attn.qkv.weight": {
+  "rows": [
+   [
+    1536,
+    2304,
+    0.33466609
+   ]
+  ]
+ },
+ "blocks.9.attn.proj.weight": 0.33466609,
+ "blocks.9.mlp.fc2.weight": 0.03111288,
+ "blocks.10.attn.qkv.weight": {
+  "rows": [
+   [
+    1536,
+    2304,
+    0.10509805
+   ]
+  ]
+ },
+ "blocks.10.attn.proj.weight": 0.10509805,
+ "blocks.10.mlp.fc2.weight": 0.00302048,
+ "blocks.11.attn.qkv.weight": {
+  "rows": [
+   [
+    1536,
+    2304,
+    0.05634786
+   ]
+  ]
+ },
+ "blocks.11.attn.proj.weight": 0.05634786,
+ "blocks.11.mlp.fc2.weight": 0.00447967
+}

@@ -1,0 +1,138 @@
+{
+ "blocks.0.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    4.07332
+   ],
+   [
+    768,
+    1536,
+    3.52452
+   ]
+  ]
+ },
+ "blocks.0.mlp.fc1.weight": 3.45438,
+ "blocks.1.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    4.0441
+   ],
+   [
+    768,
+    1536,
+    4.11486
+   ]
+  ]
+ },
+ "blocks.1.mlp.fc1.weight": 2.3019,
+ "blocks.2.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    4.70895
+   ],
+   [
+    768,
+    1536,
+    4.70653
+   ]
+  ]
+ },
+ "blocks.2.mlp.fc1.weight": 3.01593,
+ "blocks.3.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    4.66568
+   ],
+   [
+    768,
+    1536,
+    4.69059
+   ]
+  ]
+ },
+ "blocks.3.mlp.fc1.weight": 3.29966,
+ "blocks.4.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    4.71252
+   ],
+   [
+    768,
+    1536,
+    5.07119
+   ]
+  ]
+ },
+ "blocks.4.mlp.fc1.weight": 3.29917,
+ "blocks.5.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    5.02107
+   ],
+   [
+    768,
+    1536,
+    5.37771
+   ]
+  ]
+ },
+ "blocks.5.mlp.fc1.weight": 3.49646,
+ "blocks.6.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    4.76444
+   ],
+   [
+    768,
+    1536,
+    5.15909
+   ]
+  ]
+ },
+ "blocks.6.mlp.fc1.weight": 3.5362,
+ "blocks.7.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    4.70867
+   ],
+   [
+    768,
+    1536,
+    5.12265
+   ]
+  ]
+ },
+ "blocks.7.mlp.fc1.weight": 3.51839,
+ "blocks.0.norm1.weight": 0.288237,
+ "blocks.0.norm2.weight": 0.421559,
+ "blocks.1.norm1.weight": 0.45705,
+ "blocks.1.norm2.weight": 0.321527,
+ "blocks.2.norm1.weight": 0.528051,
+ "blocks.2.norm2.weight": 0.419854,
+ "blocks.3.norm1.weight": 0.313295,
+ "blocks.3.norm2.weight": 0.46494,
+ "blocks.4.norm1.weight": 0.336725,
+ "blocks.4.norm2.weight": 0.491572,
+ "blocks.5.norm1.weight": 0.287068,
+ "blocks.5.norm2.weight": 0.531828,
+ "blocks.6.norm1.weight": 0.291081,
+ "blocks.6.norm2.weight": 0.570564,
+ "blocks.7.norm1.weight": 0.265464,
+ "blocks.7.norm2.weight": 0.608526
+}

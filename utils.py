@@ -10,6 +10,7 @@ from pathlib import Path
 
 import random
 import torch
+from row_lr_mask import lr_spec_of, assert_same_lr_spec
 from torch import inf
 from timm.models import create_model
 import torch.distributed as dist
@@ -294,6 +295,67 @@ def get_rank():
     return dist.get_rank()
 
 
+class AuxLensLoss:
+    """Auxiliary loss on the head's read-out of an intermediate block: the "lens" of engine.model_analyse,
+    head(fc_norm(norm(block output)))[:, 0], during training (docs/early_lever_mechanism_plan.md, group C). Active for epoch < until.
+      align     cross-entropy of the lens against the batch targets (soft targets under mixup): the class is forced to be readable at
+                that block; the final norm and the head receive this gradient as well (it is the model's own lens)
+      suppress  cross-entropy of the lens against the UNIFORM distribution minus log K = KL(uniform || lens) >= 0, zero iff the lens
+                logits are constant across classes (a logit-VARIANCE penalty: it does not act on their ordering, and the early stack
+                can satisfy it by inflating the class token along dimensions the detached final-LayerNorm gain suppresses; review
+                2026-09-22); the final norm and the head enter detached, so only the blocks up to `block` (and the embeddings) move: the
+                read-out is removed from the early stack, the classifier is not asked to look away. Bounded, unlike plain ascent.
+    The block output is taken by a forward hook on the un-wrapped model, so it works under DDP (one backward over main + aux loss)."""
+    def __init__(self, model_without_ddp, block, mode, weight, until):
+        assert mode in ("align", "suppress") and 0 <= block < len(model_without_ddp.blocks) and weight >= 0 and until >= 0, (block, mode, weight, until)
+        self.m, self.block, self.mode, self.weight, self.until = model_without_ddp, int(block), mode, float(weight), int(until)
+        self.active, self.x = False, None
+        model_without_ddp.blocks[self.block].register_forward_hook(self._keep)
+    def _keep(self, module, inputs, output):
+        self.x = output if (self.active and module.training) else None
+    def set_epoch(self, epoch):
+        self.active = epoch < self.until and self.weight > 0; self.x = None
+        return self.active
+    @staticmethod
+    def _norm(layer, x, detach):
+        if not isinstance(layer, torch.nn.LayerNorm): return layer(x)                   # Identity (token pooling)
+        w, b = (layer.weight.detach(), layer.bias.detach()) if detach else (layer.weight, layer.bias)
+        return torch.nn.functional.layer_norm(x, layer.normalized_shape, w, b, layer.eps)
+    def __call__(self, criterion, targets):
+        assert self.x is not None, "AuxLensLoss: no block output captured (call set_epoch before the forward pass)"
+        detach = self.mode == "suppress"; x = self._norm(self.m.fc_norm, self._norm(self.m.norm, self.x[:, 0], detach), detach); self.x = None
+        head = self.m.head
+        logits = torch.nn.functional.linear(x, head.weight.detach(), head.bias.detach()) if detach else head(x)
+        if self.mode == "align": return criterion(logits, targets)
+        return -torch.log_softmax(logits.float(), dim=-1).mean(dim=-1).mean() - math.log(logits.shape[-1])
+
+
+def dump_nonfinite_state(model, samples, targets, output, epoch, step, args):
+    """Diagnostics at a non-finite training loss; never raises and uses no collectives (other ranks may not be in this branch).
+    Every rank that sees the non-finite loss writes its micro-batch and output to <output_dir>/nan_dump_e<E>_it<S>_rank<R>.pt; the
+    first of them (exclusive create) also writes the weights of this moment to nan_dump_e<E>_it<S>_weights.pt. At most 2 weight and
+    8 batch dumps per run. The caller asserts afterwards; the pause lets the weight writer finish before torchrun's SIGTERM."""
+    try:
+        out_dir = getattr(args, "output_dir", None)
+        if not out_dir or not os.path.isdir(out_dir): return
+        have = os.listdir(out_dir); tag = f"nan_dump_e{epoch}_it{step}"
+        if sum(f.startswith("nan_dump_") and "_rank" in f for f in have) < 8:
+            torch.save({"samples": samples.detach().half().cpu(), "targets": targets.detach().cpu(), "output": output.detach().float().cpu(), "epoch": epoch, "step": step,
+                        "amp_dtype": str(AMP_DTYPE)}, os.path.join(out_dir, f"{tag}_rank{get_rank()}.pt"))
+            print(f"[nan-dump] rank {get_rank()}: micro-batch written ({tag})", flush=True)
+        if sum(f.endswith("_weights.pt") and f.startswith("nan_dump_") for f in have) < 2:
+            path = os.path.join(out_dir, f"{tag}_weights.pt")
+            try: fd = os.open(path + ".lock", os.O_CREAT | os.O_EXCL | os.O_WRONLY); os.close(fd); writer = True
+            except FileExistsError: writer = False
+            if writer:
+                m = model.module if hasattr(model, "module") else model
+                torch.save({k: v.detach().cpu() for k, v in m.state_dict().items()}, path); os.remove(path + ".lock")
+                print(f"[nan-dump] rank {get_rank()}: weights written to {path}", flush=True)
+        time.sleep(30)
+    except Exception as error:
+        print(f"[nan-dump] failed: {error!r}", flush=True)
+
+
 def is_main_process():
     return get_rank() == 0
 
@@ -553,6 +615,7 @@ def save_model(args, epoch, model, model_without_ddp, optimizer, loss_scaler, mo
             'epoch': epoch,
             'scaler': loss_scaler.state_dict(),
             'args': args,
+            'lr_scale_spec': lr_spec_of(optimizer),      # --lr_scale_json contents (scalar scales + row masks), validated on resume
         }
 
         if model_ema is not None:
@@ -608,6 +671,10 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
             model_without_ddp.load_state_dict(checkpoint, strict=False)
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint:
+            if 'lr_scale_spec' in checkpoint:
+                assert_same_lr_spec(checkpoint['lr_scale_spec'], lr_spec_of(optimizer), args.resume)
+            elif lr_spec_of(optimizer) is not None:
+                print(f"WARNING: {args.resume} predates the lr-specification record; resuming with {lr_spec_of(optimizer)} unvalidated")
             optimizer.load_state_dict(checkpoint['optimizer'])
             if not isinstance(checkpoint['epoch'], str): # does not support resuming with 'best', 'best-ema'
                 args.start_epoch = checkpoint['epoch'] + 1
@@ -752,7 +819,11 @@ def apply_spectral_intervention(model, intervention_type, target_k=None, args=No
 
     return model
 
-def ft_load_model(path, args, device, delete_blocks=None, model=None):
+def ft_load_model(path, args, device, delete_blocks=None, model=None, keep_all=False):
+    """Load a checkpoint into a model for fine-tuning or evaluation. With keep_all=False (the fine-tuning default) the head,
+    class token, position embedding and patch projection are dropped whenever the file name contains "pr" or
+    args.initialize_as_pr is set. Post-training evaluation of a trained checkpoint must pass keep_all=True: the trained
+    model IS the state to evaluate, and dropping those keys silently evaluates trained blocks with a random head."""
     if model is None:
         model = build_model(args)
     for block in model.blocks:
@@ -780,7 +851,9 @@ def ft_load_model(path, args, device, delete_blocks=None, model=None):
             checkpoint_model = checkpoint
         state_dict = model.state_dict()
         print("All keys in checkpoint_model", checkpoint_model.keys())
-        if "pr" in path.split("/")[-1] or args.initialize_as_pr:
+        if keep_all:
+            print("Keeping every key of the checkpoint (evaluation load)")
+        elif "pr" in path.split("/")[-1] or args.initialize_as_pr:
             for k in ['head.weight', 'head.bias', 'cls_token', 'pos_embed', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
                 if k in checkpoint_model:
                     print(f"Removing key {k} from pretrained checkpoint")
@@ -1282,20 +1355,23 @@ def shuffle_weights(model, weight_shuffle_dict):
             # keep both norms exact. Added 2026-09-04 for arm ftbqks.
             if weight_name in ["attn.qk.weight", "attn.qk.bias", "attn.v.weight", "attn.v.bias",
                                "attn.q.weight", "attn.k.weight"]:
-                weight_tensor = resolve_param_path(block, "attn.qkv.weight")
+                fused_name = "attn.qkv.bias" if weight_name.endswith(".bias") else "attn.qkv.weight"
+                weight_tensor = resolve_param_path(block, fused_name)
                 if weight_tensor is not None:
                     total_dim = weight_tensor.data.shape[0]
                     embed_dim = total_dim // 3
-                    spans = {"attn.qk.weight": (0, 2 * embed_dim),
+                    spans = {"attn.qk.weight": (0, 2 * embed_dim), "attn.qk.bias": (0, 2 * embed_dim),
                              "attn.q.weight": (0, embed_dim),
                              "attn.k.weight": (embed_dim, 2 * embed_dim),
-                             "attn.v.weight": (2 * embed_dim, 3 * embed_dim)}
+                             "attn.v.weight": (2 * embed_dim, 3 * embed_dim), "attn.v.bias": (2 * embed_dim, 3 * embed_dim)}
                     if weight_name in spans:
                         lo, hi = spans[weight_name]
-                        sl = weight_tensor.data[lo:hi, :]
+                        sl = weight_tensor.data[lo:hi]
                         flat_weights = sl.reshape(-1)
                         shuffled_weights = flat_weights[torch.randperm(flat_weights.size(0))]
-                        weight_tensor.data[lo:hi, :].copy_(shuffled_weights.view(sl.shape))
+                        weight_tensor.data[lo:hi].copy_(shuffled_weights.view(sl.shape))
+                else:
+                    print(f"WARNING: block {block_idx} has no {fused_name}; {weight_name} not shuffled")
             else:
                 weight_tensor = resolve_param_path(block, weight_name)
                 if weight_tensor is not None:
@@ -1320,130 +1396,216 @@ def patched_last_block_forward(self, x):
     return x
 
 
-def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
-    """Checkpoint-free early-block init: rescale the timm random weights of `blocks` so that every
-    slice (q, k, v, proj, fc1, fc2) has a prescribed rms relative to timm's trunc-normal std.
+_PROFILE_SLICES = ("q", "k", "v", "proj", "fc1", "fc2")
+# keys of a profile specification that are not weight slices (read below, by calibrate_joint_statistics or by main.py)
+_PROFILE_KEYS_THAT_ARE_NOT_SLICES = ("extra", "ln", "fc1_bias", "q_sink", "qk_entropy", "fc1_gate", "common_write", "write_ratio",
+                                     "realise", "gain_fold")
+_NORM_IN_FRONT_OF = {"q": "1", "k": "1", "v": "1", "fc1": "2"}    # norm1 feeds q, k, v and norm2 feeds fc1; proj and fc2 have none
 
-    `spec` is a dict {slice: {"b0": m0, "start": s, "end": e}} (or a path to such a JSON):
-    block 0 (if listed) gets multiplier m0; the remaining listed blocks ramp linearly from `s`
-    (first) to `e` (last). A slice may instead give {"per_block": {"0": m, "1": m, ...}}. An optional key "extra": {block: {slice: multiplier}} applies fixed
-    multipliers to further blocks outside `blocks` (used by ftbanaf to flatten blocks 9-11).
-    An optional key "ln": {"ckpt": path, "gain": bool, "bias": bool, "source": "permute"|"parametric"}
-    copies the checkpoint's LayerNorm gains and/or biases of the listed blocks, each vector permuted
-    across channels ("permute", default) or replaced by a Gaussian sample with that vector's mean and
-    std ("parametric", ftbanap: the checkpoint contributes two numbers per vector), with a fixed
-    generator (seed-dependent, identical on every rank). With "gain", the q/k/v
-    multipliers are divided by rms(gamma1) and fc1 by rms(gamma2) of that block, so the
-    *effective* scales stay those of the spec (ftbanag); "bias" leaves the multipliers alone (ftbanab). LayerNorm gains stay 1 and biases 0, so the multipliers are the
-    *effective* scales rms(gamma) * rms(W) / 0.02 read off the proc checkpoint (docs 0d.11).
+
+def _root_mean_square(tensor):
+    return float(tensor.detach().float().pow(2).mean().sqrt())
+
+
+def _weight_slices(block):
+    """The six weight slices of one block, as views: q, k, v are the three row groups of the fused attn.qkv.weight."""
+    fused_qkv = block.attn.qkv.weight
+    width = fused_qkv.shape[1]
+    return {"q": fused_qkv[:width], "k": fused_qkv[width:2 * width], "v": fused_qkv[2 * width:],
+            "proj": block.attn.proj.weight, "fc1": block.mlp.fc1.weight, "fc2": block.mlp.fc2.weight}
+
+
+def _declared_scale(slice_specification, block_index, ramp_blocks):
+    """The number the specification gives one slice in one block: its own per-block value, or "b0" for block 0 and a linear
+    ramp from "start" (first of `ramp_blocks`) to "end" (last) for the others."""
+    if "per_block" in slice_specification:            # explicit per-block scales, e.g. a checkpoint's exact profile (ftbanak)
+        return float(slice_specification["per_block"][str(block_index)])
+    if block_index == 0:
+        return float(slice_specification["b0"])
+    position = ramp_blocks.index(block_index)
+    fraction = position / (len(ramp_blocks) - 1) if len(ramp_blocks) > 1 else 0.0
+    return float(slice_specification["start"]) + fraction * (float(slice_specification["end"]) - float(slice_specification["start"]))
+
+
+def _write_layernorm_vectors(block, block_index, layernorm, moments_per_block, checkpoint_state, seed, width):
+    """Write new gains and / or biases into norm1 and norm2 of one block, as the specification's "ln" entry asks.
+
+    Returns {"1": rms of the gain written into norm1, "2": ... norm2}; 1.0 where no gain was written or "compensate" is false,
+    i.e. where the multipliers of the slices behind that norm are not to be divided by it.
+    The generator depends on (seed, block) only, so every rank and every call draws the same vectors. Per norm the draws are
+    always: a permutation (used by the "permute" source only, but drawn in every mode), then the gain, then the bias."""
+    gain_rms = {"1": 1.0, "2": 1.0}
+    generator = torch.Generator().manual_seed(1000 + 10 * int(seed) + block_index)
+    parametric = layernorm.get("source", "permute") == "parametric"
+    for norm_index, norm in (("1", block.norm1), ("2", block.norm2)):
+        permutation = torch.randperm(width, generator=generator)
+        # inline {"gain_mean", "gain_std", "bias_mean", "bias_std"}; without them the checkpoint's vectors are read
+        moments = moments_per_block[str(block_index)][f"norm{norm_index}"] if moments_per_block else None
+        if layernorm.get("gain"):
+            checkpoint_gain = None if moments else checkpoint_state[f"blocks.{block_index}.norm{norm_index}.weight"].float()
+            if parametric or moments:   # Gaussian with the checkpoint vector's mean and std (2 numbers), not its values
+                override = layernorm.get("gain_stats")   # optional {"mean": m, "std": s}: no checkpoint statistic at all
+                if override:
+                    mean, std = float(override["mean"]), float(override["std"])
+                elif moments:
+                    mean, std = moments["gain_mean"], moments["gain_std"]
+                else:
+                    mean, std = checkpoint_gain.mean(), checkpoint_gain.std()
+                gain = torch.randn(width, generator=generator) * std + mean
+            else:
+                gain = checkpoint_gain[permutation]
+            norm.weight.copy_(gain.to(norm.weight.dtype))
+            # "compensate" (default true): divide the input-side multipliers by rms(gamma) so the
+            # effective scales equal the spec; false leaves the weights exactly as in ftbana
+            gain_rms[norm_index] = _root_mean_square(gain) if layernorm.get("compensate", True) else 1.0
+        if layernorm.get("bias"):
+            if moments:
+                bias = torch.randn(width, generator=generator) * moments["bias_std"] + moments["bias_mean"]
+            else:
+                checkpoint_bias = checkpoint_state[f"blocks.{block_index}.norm{norm_index}.bias"].float()
+                bias = (torch.randn(width, generator=generator) * checkpoint_bias.std() + checkpoint_bias.mean()) if parametric \
+                    else checkpoint_bias[permutation]
+            norm.bias.copy_(bias.to(norm.bias.dtype))
+    return gain_rms
+
+
+def apply_analytic_profile(model, spec, blocks, timm_std=0.02, seed=0):
+    """Checkpoint-free early-block init: keep timm's random matrices, write new LayerNorm vectors, and multiply every weight
+    slice (q, k, v, proj, fc1, fc2) of `blocks` by ONE scalar so that it has the rms the specification declares, relative to
+    timm's trunc-normal std. The joint statistics (sink, gate, ...) are not installed here but by calibrate_joint_statistics.
+
+    `spec` is a dict, a path to a JSON file, or a JSON string (extract_profile.py writes it):
+
+      slice entries  {"q": ..., "k": ..., "v": ..., "proj": ..., "fc1": ..., "fc2": ...}; a slice that is not named keeps timm's
+                     initialisation. An entry is {"b0": m0, "start": s, "end": e}: block 0 (if listed) gets m0, the remaining
+                     listed blocks ramp linearly from `s` (first) to `e` (last); or {"per_block": {"0": m, "1": m, ...}}.
+                     The numbers are *effective* scales: rms(W diag(gamma)) / 0.02 for q, k, v (gamma = norm1's gain) and fc1
+                     (norm2's), rms(W) / 0.02 for proj and fc2, read off the proc checkpoint (docs/proc_init_recipe.md section 3,
+                     docs 0d.11). Without "ln" the LayerNorm gains stay 1 and biases 0, so the multipliers are these numbers.
+      "ln"           {"ckpt": path, "gain": bool, "bias": bool, "source": "permute"|"parametric"} copies the checkpoint's
+                     LayerNorm gains and/or biases of the listed blocks, each vector permuted across channels ("permute",
+                     default) or replaced by a Gaussian sample with that vector's mean and std ("parametric", ftbanap: the
+                     checkpoint contributes two numbers per vector), with a fixed generator (seed-dependent, identical on every
+                     rank). "stats": {block: {"norm1": {"gain_mean", "gain_std", "bias_mean", "bias_std"}, "norm2": {...}}}
+                     gives those moments inline; the checkpoint file is then not opened. "gain_stats": {"mean", "std"} overrides
+                     the gain moments. With "gain", the q/k/v multipliers are divided by rms(gamma1) and fc1 by rms(gamma2) of
+                     that block, so the *effective* scales stay those of the spec (ftbanag), unless "compensate" is false;
+                     "bias" leaves the multipliers alone (ftbanab).
+      "extra"        {block: {slice: multiplier}} applies fixed multipliers to further blocks outside `blocks` (used by ftbanaf
+                     to flatten blocks 9-11, and by the late-lever arms ftbrhop / ftbrhoplv with `blocks` empty).
+      "fc1_bias", "q_sink"   the data-free gate and sink of the earlier ksd arms, see the comments at the end of the function.
+
+    How a number of the spec is turned into weights ("realise"):
+      absent / "multiplier"  (every specification before 2026-09-17): W <- (e / rms(gamma)) * W_timm. The declared scale is met
+                 only as far as timm's own rms is 0.02 and the sampled gain is uncorrelated with the columns of W: within 0.2%.
+      "exact"    (written by extract_profile.py from 2026-09-17 on): after the LayerNorm vectors have been sampled, the slice is
+                 rescaled so that the quantity the spec declares is met to float precision: rms(W diag(gamma)) = e * 0.02 when
+                 the spec says "gain_fold": "exact", rms(W) * rms(gamma) = e * 0.02 when it says "product"; rms(W) = e * 0.02
+                 for proj and fc2, which have no LayerNorm in front. Still one scalar per slice, so the weights stay timm's
+                 up to that scalar.
     Deterministic, so it is safe on every rank before or after the DDP broadcast.
-    Returns {block: {slice: multiplier}} for logging / verification.
+    Returns {block: {slice: (multiplier, raw rms / 0.02, effective rms / 0.02)}} for logging / verification (two entries per
+    slice, without the effective one, for the blocks of "extra").
     """
     import json as _json
     if isinstance(spec, str):
         spec = _json.load(open(spec)) if os.path.exists(spec) else _json.loads(spec)
-    blocks = sorted(int(b) for b in blocks)
-    ramp = [b for b in blocks if b != 0]
-    D = model.blocks[0].attn.qkv.weight.shape[1]
+    realise = spec.get("realise", "multiplier")
+    if realise not in ("multiplier", "exact"):
+        raise ValueError(f"analytic profile: unknown 'realise' value {spec.get('realise')!r}")
+    gain_fold = spec.get("gain_fold", "exact")
+    slice_specifications = {name: entry for name, entry in spec.items() if name not in _PROFILE_KEYS_THAT_ARE_NOT_SLICES}
+
+    blocks = sorted(int(block) for block in blocks)
+    ramp_blocks = [block for block in blocks if block != 0]
+    width = model.blocks[0].attn.qkv.weight.shape[1]
+
+    layernorm = spec.get("ln")
+    layernorm_moments = (layernorm or {}).get("stats")
+    checkpoint_state = None
+    if layernorm and not layernorm_moments:       # otherwise the statistics are read from the checkpoint at init time
+        checkpoint = torch.load(layernorm["ckpt"], map_location="cpu", weights_only=False)
+        checkpoint_state = checkpoint.get("state", checkpoint.get("model", checkpoint))
+
     applied = {}
-    ln = spec.get("ln")
-    ln_sd = None
-    ln_stats = (ln or {}).get("stats")        # {block: {"norm1": {"gain_mean","gain_std","bias_mean","bias_std"}, "norm2": {...}}}
-    if ln and not ln_stats:                   # otherwise the statistics are read from the checkpoint at init time
-        ck = torch.load(ln["ckpt"], map_location="cpu", weights_only=False)
-        ln_sd = ck.get("state", ck.get("model", ck))
     with torch.no_grad():
-        for b in blocks:
-            blk = model.blocks[b]
-            g_rms = {"1": 1.0, "2": 1.0}
-            if ln:
-                gen = torch.Generator().manual_seed(1000 + 10 * int(seed) + b)
-                parametric = ln.get("source", "permute") == "parametric"
-                for i, norm in (("1", blk.norm1), ("2", blk.norm2)):
-                    perm = torch.randperm(D, generator=gen)
-                    st = ln_stats[str(b)][f"norm{i}"] if ln_stats else None
-                    if ln.get("gain"):
-                        gam = None if st else ln_sd[f"blocks.{b}.norm{i}.weight"].float()
-                        if parametric or st:   # Gaussian with the checkpoint vector's mean and std (2 numbers), not its values
-                            gs = ln.get("gain_stats")   # optional override {"mean": m, "std": s}: no checkpoint statistic at all
-                            mu, sd = (float(gs["mean"]), float(gs["std"])) if gs else ((st["gain_mean"], st["gain_std"]) if st else (gam.mean(), gam.std()))
-                            vec = torch.randn(D, generator=gen) * sd + mu
+        for block_index in blocks:
+            block = model.blocks[block_index]
+
+            # 1. LayerNorm vectors first: the scales below are declared behind them
+            gain_rms = {"1": 1.0, "2": 1.0}
+            if layernorm:
+                gain_rms = _write_layernorm_vectors(block, block_index, layernorm, layernorm_moments, checkpoint_state, seed, width)
+            weights = _weight_slices(block)
+            gains = {name: getattr(block, f"norm{norm_index}").weight for name, norm_index in _NORM_IN_FRONT_OF.items()}
+
+            # 2. one multiplier per named slice
+            multipliers = {}
+            for name, slice_specification in slice_specifications.items():
+                gain_rms_in_front = gain_rms[_NORM_IN_FRONT_OF[name]] if name in _NORM_IN_FRONT_OF else 1.0
+                # legacy realisation: W <- (e / rms(gamma)) * W_timm, which keeps rms(gamma) * rms(W) at e * timm_std
+                multiplier = _declared_scale(slice_specification, block_index, ramp_blocks) / gain_rms_in_front
+                if realise == "exact":
+                    # the multiplier that meets the declared quantity exactly, measured on the actual tensors. `declared` is
+                    # the spec's number again; it is recovered from the legacy multiplier (not read a second time) so that
+                    # the weights stay bit-identical to every initialisation verified so far.
+                    declared = multiplier * gain_rms_in_front
+                    weight = weights[name]
+                    if name in gains and gain_rms_in_front != 1.0:   # a written gain enters the declared scale (not with "compensate": false, nor without "ln")
+                        gamma = gains[name].detach().float()
+                        if gain_fold == "exact":
+                            current = _root_mean_square(weight.detach().float() * gamma[None, :])
                         else:
-                            vec = gam[perm]
-                        norm.weight.copy_(vec.to(norm.weight.dtype))
-                        # "compensate" (default true): divide the input-side multipliers by rms(gamma) so the
-                        # effective scales equal the spec; false leaves the weights exactly as in ftbana
-                        g_rms[i] = float(vec.pow(2).mean().sqrt()) if ln.get("compensate", True) else 1.0
-                    if ln.get("bias"):
-                        if st:
-                            vec = torch.randn(D, generator=gen) * st["bias_std"] + st["bias_mean"]
-                        else:
-                            bet = ln_sd[f"blocks.{b}.norm{i}.bias"].float()
-                            vec = (torch.randn(D, generator=gen) * bet.std() + bet.mean()) if parametric else bet[perm]
-                        norm.bias.copy_(vec.to(norm.bias.dtype))
-            mult = {}
-            for s, p in spec.items():
-                if s in ("extra", "ln", "fc1_bias", "q_sink", "qk_sink", "fc1_gate"):
-                    continue
-                if "per_block" in p:            # explicit per-block multipliers, e.g. a checkpoint's exact profile (ftbanak)
-                    m = float(p["per_block"][str(b)])
-                elif b == 0:
-                    m = float(p["b0"])
-                else:
-                    i = ramp.index(b)
-                    t = i / (len(ramp) - 1) if len(ramp) > 1 else 0.0
-                    m = float(p["start"]) + t * (float(p["end"]) - float(p["start"]))
-                # with copied LN gains, divide the input-side multipliers so rms(gamma) * rms(W) is unchanged
-                if s in ("q", "k", "v"):
-                    m = m / g_rms["1"]
-                elif s == "fc1":
-                    m = m / g_rms["2"]
-                mult[s] = m
-            W = blk.attn.qkv.weight
-            for j, s in enumerate(("q", "k", "v")):
-                if s in mult:
-                    W[j * D:(j + 1) * D].mul_(mult[s])
-            if "proj" in mult:
-                blk.attn.proj.weight.mul_(mult["proj"])
-            if "fc1" in mult:
-                blk.mlp.fc1.weight.mul_(mult["fc1"])
-            if "fc2" in mult:
-                blk.mlp.fc2.weight.mul_(mult["fc2"])
+                            current = _root_mean_square(weight) * _root_mean_square(gamma)
+                    else:
+                        current = _root_mean_square(weight)
+                    multiplier = declared * timm_std / current
+                multipliers[name] = multiplier
+
+            # 3. apply them in place (views of the fused qkv for q, k, v)
+            for name in _PROFILE_SLICES:
+                if name in multipliers:
+                    weights[name].mul_(multipliers[name])
+
             # for the log: (multiplier applied, raw rms / timm std, effective rms(W diag gamma) / timm std -- the quantity the
             # spec controls for q, k, v, fc1; equals the raw value for proj and fc2, which have no LayerNorm in front)
-            got = {"q": W[:D], "k": W[D:2 * D], "v": W[2 * D:], "proj": blk.attn.proj.weight,
-                   "fc1": blk.mlp.fc1.weight, "fc2": blk.mlp.fc2.weight}
-            gam = {"q": blk.norm1.weight, "k": blk.norm1.weight, "v": blk.norm1.weight, "fc1": blk.norm2.weight}
-            rms_ = lambda t: float(t.detach().float().pow(2).mean().sqrt())
-            applied[b] = {s: (round(mult.get(s, 1.0), 3), round(rms_(got[s]) / timm_std, 3),
-                              round(rms_(got[s].float() * gam[s].detach().float()[None, :]) / timm_std if s in gam else rms_(got[s]) / timm_std, 3)) for s in got}
-        for b_str, mult in spec.get("extra", {}).items():
-            b = int(b_str); blk = model.blocks[b]; W = blk.attn.qkv.weight
-            for j, s in enumerate(("q", "k", "v")):
-                if s in mult:
-                    W[j * D:(j + 1) * D].mul_(float(mult[s]))
-            for s, layer in (("proj", blk.attn.proj), ("fc1", blk.mlp.fc1), ("fc2", blk.mlp.fc2)):
-                if s in mult:
-                    layer.weight.mul_(float(mult[s]))
-            got = {"q": W[:D], "k": W[D:2 * D], "v": W[2 * D:], "proj": blk.attn.proj.weight,
-                   "fc1": blk.mlp.fc1.weight, "fc2": blk.mlp.fc2.weight}
-            applied[b] = {s: (round(float(mult.get(s, 1.0)), 3), round(float(got[s].pow(2).mean().sqrt()) / timm_std, 3)) for s in got}
+            applied[block_index] = {}
+            for name, weight in weights.items():
+                raw = _root_mean_square(weight) / timm_std
+                effective = _root_mean_square(weight.float() * gains[name].detach().float()[None, :]) / timm_std if name in gains else raw
+                applied[block_index][name] = (round(multipliers.get(name, 1.0), 3), round(raw, 3), round(effective, 3))
+
+        # "extra": {block: {slice: multiplier}} -- fixed multipliers on timm's weights, no LayerNorm vectors, no exact realisation
+        for block_key, fixed_multipliers in spec.get("extra", {}).items():
+            block_index = int(block_key)
+            weights = _weight_slices(model.blocks[block_index])
+            for name in _PROFILE_SLICES:
+                if name in fixed_multipliers:
+                    weights[name].mul_(float(fixed_multipliers[name]))
+            applied[block_index] = {name: (round(float(fixed_multipliers.get(name, 1.0)), 3), round(_root_mean_square(weight) / timm_std, 3))
+                                    for name, weight in weights.items()}
+
         # "fc1_bias": {block: value} -- one constant per block written into the (zero) fc1 bias, shifting every MLP
         # pre-activation by the same amount. Both procedural prefixes have their fc1 pre-activations shifted to a mean
         # of -2 to -3 rms through an alignment of the fc1 rows with the normalised stream (GELU mostly off); the shift is
         # the checkpoint-free stand-in for that alignment (ftbanakb, docs 0d.11 "Generality test").
-        for b_str, val in spec.get("fc1_bias", {}).items():
-            b = int(b_str); model.blocks[b].mlp.fc1.bias.fill_(float(val))
-            applied.setdefault(b, {})["fc1_bias"] = (round(float(val), 3), round(float(val), 3))
+        for block_key, value in spec.get("fc1_bias", {}).items():
+            block_index = int(block_key)
+            model.blocks[block_index].mlp.fc1.bias.fill_(float(value))
+            applied.setdefault(block_index, {})["fc1_bias"] = (round(float(value), 3), round(float(value), 3))
+
         # "q_sink": {block: B} -- attention sink: the q part of the (zero) qkv bias of every head is set to a random unit
         # direction (seeded) of norm B. logits_ij += (b_h . k_j) / sqrt(d), the same key ranking for every query, so all
         # queries of a head read one key: a common-mode attention write, as in both procedural prefixes at init (the
         # most-attended key receives 30-80% of the mass). One number per block (ftbanaks, docs 0d.11 "Generality test").
-        for b_str, B in spec.get("q_sink", {}).items():
-            b = int(b_str); blk = model.blocks[b]; H = blk.attn.num_heads; dh = D // H
-            dirs = sink_directions(H, dh, seed, b)
-            blk.attn.qkv.bias[:D].copy_((dirs * float(B)).reshape(-1).to(blk.attn.qkv.bias.dtype))
-            applied.setdefault(b, {})["q_sink"] = (round(float(B), 3), round(float(blk.attn.qkv.bias[:D].reshape(H, dh).norm(dim=1).mean()), 3))
+        for block_key, sink_norm in spec.get("q_sink", {}).items():
+            block_index = int(block_key)
+            attention = model.blocks[block_index].attn
+            num_heads, head_dim = attention.num_heads, width // attention.num_heads
+            directions = sink_directions(num_heads, head_dim, seed, block_index)
+            attention.qkv.bias[:width].copy_((directions * float(sink_norm)).reshape(-1).to(attention.qkv.bias.dtype))
+            realised_norm = float(attention.qkv.bias[:width].reshape(num_heads, head_dim).norm(dim=1).mean())
+            applied.setdefault(block_index, {})["q_sink"] = (round(float(sink_norm), 3), round(realised_norm, 3))
     return applied
 
 
@@ -1469,8 +1631,16 @@ def sink_directions(num_heads, head_dim, seed, block):
 # Both are reproduced here by ONE rank-one component per tensor, placed along the initialised model's OWN stream
 # direction and sized by bisection on training images until a functional target read off the checkpoint prefix is met:
 #
-#   "qk_sink":  {"entropy": {block: nats}}                W_q <- s_q W_q + alpha P c1^T ,  W_k <- s_k W_k + alpha P r^T
-#   "fc1_gate": {"pre_activation_mean": {block: value}}   W_fc1 <- s W_fc1 - beta (1/sqrt(n)) 1 c2^T
+#   "qk_entropy":      {"entropy": {block: nats}}                W_q <- s_q W_q + alpha P c1^T ,  W_k <- s_k W_k + alpha P r^T
+#   "fc1_gate":     {"active_units": {block: fraction}}       W_fc1 <- s W_fc1 - beta (1/sqrt(n)) 1 c2^T
+#                   (or {"pre_activation_mean": {block: value}}, the target of the first reconstruction arms)
+#   "common_write": {"token_cosine": {block: value}}          W_fc2 <- s W_fc2 + beta u (1/sqrt(n)) 1^T
+#
+#   The third one is block 0's job in the prefixes: its MLP writes one vector shared by all tokens (91% of the write's energy on
+#   kdyck; the mean column of fc2 holds 2.6% of its energy against 0.03% if random), which makes the tokens nearly parallel
+#   (cosine 0.91) and is the shared direction the sink and the gate of the later blocks read. The target is the token cosine of
+#   the block's OUTPUT, not the write ratio: a rank-one write is purer than the checkpoint's, so matching the ratio (28.8) would
+#   drive the cosine to 0.997 and leave the sink no token-specific content to resolve keys with. u is a seeded random unit vector.
 #
 #   c1, c2   unit direction of the token- and image-mean of norm1's / norm2's output at that block (measured)
 #   P        per-head random unit vectors stacked (sink_directions);  r  a seeded random unit direction for the keys
@@ -1480,8 +1650,24 @@ def sink_directions(num_heads, head_dim, seed, block):
 #            (c1, c2 are means of gamma * x_hat + b and hence correlated with gamma, so keeping the RAW rms instead
 #            would shift the effective scale by up to 5%; the raw rms moves by about that much, reported.)
 #
-# Blocks are processed in depth order and each block's sink is installed before its gate, because norm2 sees the
-# attention output. Data enters through c1, c2, alpha, beta only: label-free, TRAINING images, evaluation transform.
+#   "write_ratio":  {"attention": {block: ratio}, "mlp": {block: ratio}, "tensors": ["v", "proj", "fc2"] or ["proj", "fc2"]}
+#
+#   A fourth, scalar component for the OUTPUT side. proj and fc2 write into the un-normalised residual stream, so their weight
+#   scale does not carry from one network to another (the same kdyck tail weights write 0.26 of their own stream and 1.45 of a
+#   random prefix's); what carries is the write ratio mean_tokens ||sublayer output|| / ||sublayer input stream||. The listed
+#   tensors are multiplied by one scalar per sublayer until the ratio measured on the calibration images equals the target
+#   read off the checkpoint prefix: attention factor f on proj alone, or sqrt(f) on each of v and proj when "v" is listed (the
+#   split upscale_random_match_delta_norms uses for the late lever); MLP factor on fc2. The write is linear in these tensors
+#   while their biases are zero, so one step is exact; otherwise the step is repeated. No direction is added: the weights stay
+#   timm's up to a scalar. When a block carries both an MLP write ratio and a common write (block 0 of the write-matched
+#   reconstruction arms), fc2 has two targets and two free numbers and is solved jointly (_install_common_write_at_ratio):
+#   W_fc2 <- c (W_fc2 + m ||W_fc2||_F u (1/sqrt(n)) 1^T), with c fixed by the write ratio for every m (the write is linear in
+#   c) and m found by bisection on the token cosine of the block's output. fc2's scale is then an outcome, not an input.
+#   The rank-one part can only ADD shared content: if the write-matched random fc2 already makes the tokens more parallel
+#   than the target (ksd: 0.73 against 0.64), m = 0 is kept and the report says so ("exceeded_without_component").
+#
+# Blocks are processed in depth order; within a block: sink, attention write ratio, gate (norm2 sees the attention output),
+# common write (fc2 reads fc1's activations), MLP write ratio. Data enters through c1, c2, alpha, beta only: label-free, TRAINING images, evaluation transform.
 # Not rank-safe by itself: main.py runs it on rank 0 and broadcasts the calibrated weights.
 
 def calibration_images(samples, loader, transform, n, seed):
@@ -1541,10 +1727,30 @@ def fc1_input(block, stream):
     return block.norm2(stream * getattr(block, "attn_res_scale", 1.0) + attention_out * getattr(block, "attn_out_scale", 1.0))
 
 
+@torch.no_grad()
+def sublayer_write_ratios(block, stream):
+    """(attention write ratio, MLP write ratio, block output) of `block` for input `stream`: mean over images and tokens of
+    ||sublayer output|| / ||stream the sublayer adds to||, following the block's own forward (layer scale and stochastic
+    depth, the identity for the evaluation-mode ViT-B used so far)."""
+    attention_out = block.attn(block.norm1(stream))
+    for name in ("ls1", "drop_path1"):
+        if hasattr(block, name):
+            attention_out = getattr(block, name)(attention_out)
+    after_attention = stream * getattr(block, "attn_res_scale", 1.0) + attention_out * getattr(block, "attn_out_scale", 1.0)
+    mlp_out = block.mlp(block.norm2(after_attention))
+    for name in ("ls2", "drop_path2"):
+        if hasattr(block, name):
+            mlp_out = getattr(block, name)(mlp_out)
+    return (float((attention_out.norm(dim=-1) / stream.norm(dim=-1)).mean()),
+            float((mlp_out.norm(dim=-1) / after_attention.norm(dim=-1)).mean()), after_attention + mlp_out)
+
+
+@torch.no_grad()
 def joint_statistics_per_block(model, images, blocks):
-    """{block: {"entropy", "sink_share", "pre_activation_mean", "active_units"}} on `images`: the functional quantities the
-    rank-one components target (mean attention entropy in nats, share of attention mass on the most-attended key, mean fc1
-    pre-activation, fraction of positive fc1 pre-activations)."""
+    """{block: {"entropy", "sink_share", "pre_activation_mean", "active_units", "token_cosine", "attention_write",
+    "mlp_write"}} on `images`: the functional quantities the components target (mean attention entropy in nats, share of
+    attention mass on the most-attended key, mean fc1 pre-activation, fraction of positive fc1 pre-activations, mean cosine
+    between the patch tokens of the block's OUTPUT, and the two write ratios of sublayer_write_ratios)."""
     if not blocks:
         return {}
     was_training = model.training
@@ -1556,24 +1762,48 @@ def joint_statistics_per_block(model, images, blocks):
         if index in blocks:
             probabilities, _, _ = _attention_rows(block, stream, block.attn.qkv.weight)
             pre_activation = block.mlp.fc1(fc1_input(block, stream))
-            result[index] = {"entropy": float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean()),
+            output = block(stream)
+            attention_write, mlp_write, _ = sublayer_write_ratios(block, stream)
+            result[index] = {"attention_write": attention_write, "mlp_write": mlp_write,
+                             "entropy": float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean()),
                              "sink_share": float(probabilities.mean(2).max(-1).values.mean()),
                              "pre_activation_mean": float(pre_activation.mean()),
-                             "active_units": float((pre_activation > 0).float().mean())}
+                             "active_units": float((pre_activation > 0).float().mean()),
+                             "token_cosine": _token_cosine(output)}
         stream = block(stream)
     if was_training:
         model.train()
     return result
 
 
-def _rescale_to_keep_norm(base, delta, alpha):
-    """s > 0 with ||s * base + alpha * delta||_F = ||base||_F, or None when alpha is too large for that."""
-    A = float(base.pow(2).sum()); Bc = float((base * delta).sum()); Dd = float(delta.pow(2).sum())
-    disc = (alpha * Bc) ** 2 - A * (alpha ** 2 * Dd - A)
-    if disc < 0:
+def _token_cosine(stream):
+    """Mean cosine between the patch tokens of one image (class token excluded), averaged over images."""
+    tokens = torch.nn.functional.normalize(stream[:, 1:].float(), dim=-1)
+    return float((tokens @ tokens.transpose(1, 2)).mean())
+
+
+def _rescale_to_keep_norm(base, component, strength):
+    """The factor s > 0 by which `base` must shrink so that adding `strength * component` leaves its Frobenius norm unchanged,
+
+        || s * base + strength * component ||_F  =  || base ||_F ,
+
+    or None when the strength is too large for that. Expanding the square gives a quadratic in s,
+
+        ||base||^2 s^2  +  2 strength <base, component> s  +  strength^2 ||component||^2 - ||base||^2  =  0 ,
+
+    of which the larger root is returned (the other one is negative: it would flip the sign of `base`). When the component is
+    orthogonal to `base` this is Pythagoras, s = sqrt(1 - strength^2 ||component||^2 / ||base||^2): the component takes that share
+    of the squared norm and `base` keeps the rest. For strength < ||base|| / ||component|| a positive s always exists, so callers
+    that cap the strength below that bound never receive None. To keep a weighted norm, e.g. the gain-folded ||W diag(gamma)||_F,
+    pass both tensors already multiplied by the weights: the equation is linear in them."""
+    base_squared_norm = float(base.pow(2).sum())
+    overlap = float((base * component).sum())                       # <base, component>
+    component_squared_norm = float(component.pow(2).sum())
+    discriminant = (strength * overlap) ** 2 - base_squared_norm * (strength ** 2 * component_squared_norm - base_squared_norm)
+    if discriminant < 0:        # no real root: the component alone already exceeds the norm of `base`
         return None
-    s = (-alpha * Bc + disc ** 0.5) / A
-    return s if s > 0 else None
+    shrink = (-strength * overlap + discriminant ** 0.5) / base_squared_norm
+    return shrink if shrink > 0 else None
 
 
 def _bisect(value_at, target, hi, decreasing=True, steps=40, tolerance=1e-4):
@@ -1582,6 +1812,8 @@ def _bisect(value_at, target, hi, decreasing=True, steps=40, tolerance=1e-4):
     below = (lambda v: v <= target) if decreasing else (lambda v: v >= target)
     if not below(value_at(hi)):
         return hi, False
+    if below(value_at(0.0)):          # already past the target without any component: no positive strength matches it
+        return 0.0, False
     lo = 0.0
     for _ in range(steps):
         mid = 0.5 * (lo + hi)
@@ -1594,107 +1826,317 @@ def _bisect(value_at, target, hi, decreasing=True, steps=40, tolerance=1e-4):
     return hi, True
 
 
-def _install_rank_one_sink(block, stream, target_entropy, renormalize, seed, index):
-    """Rank-one coupled q/k component of one block (see the section comment). Returns its report."""
-    W = block.attn.qkv.weight.data
-    D, H = W.shape[1], block.attn.num_heads
-    base_q, base_k = W[:D].clone().float(), W[D:2 * D].clone().float()
-    c = torch.nn.functional.normalize(block.norm1(stream).mean(dim=(0, 1)), dim=0)
-    r = torch.randn(D, generator=torch.Generator().manual_seed(3000 + 10 * int(seed) + index)).to(W.device)
-    r = torch.nn.functional.normalize(r, dim=0)
-    P = sink_directions(H, D // H, int(seed), index).reshape(D, 1).to(W.device)
-    delta_q, delta_k = P * c[None, :], P * r[None, :]
-    gamma = block.norm1.weight.detach().float()[None, :]        # norms are taken in the folded metric W diag(gamma)
+def _mean_attention_entropy(probabilities):
+    """Entropy (nats) of each attention row, averaged over images, heads and queries."""
+    return float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean())
 
-    def candidate(alpha):
-        s_q = _rescale_to_keep_norm(base_q * gamma, delta_q * gamma, alpha) if renormalize else 1.0
-        s_k = _rescale_to_keep_norm(base_k * gamma, delta_k * gamma, alpha) if renormalize else 1.0
-        Wc = W.clone().float()
-        Wc[:D] = s_q * base_q + alpha * delta_q
-        Wc[D:2 * D] = s_k * base_k + alpha * delta_k
-        return Wc, s_q, s_k
 
-    def entropy_at(alpha):
-        probabilities, _, _ = _attention_rows(block, stream, candidate(alpha)[0])
-        return float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean())
+def _install_rank_one_sink(block, stream, target_entropy, renormalize, seed, index, gain_fold="exact"):
+    """Attention sink of one block: one rank-one component in W_q and one in W_k (see the section comment), sized by bisection
+    until the block's mean attention entropy on `stream` (the block's input) equals `target_entropy`.
 
-    # with renormalisation the rank-one part cannot exceed the tensor's own (folded) norm
-    hi = 0.98 * min(float((base_q * gamma).norm() / (delta_q * gamma).norm()),
-                    float((base_k * gamma).norm() / (delta_k * gamma).norm())) if renormalize else 64.0
-    alpha, reachable = _bisect(entropy_at, target_entropy, hi, decreasing=True)
-    Wc, s_q, s_k = candidate(alpha)
-    probabilities, logits, q = _attention_rows(block, stream, Wc)
-    q_flat = q.transpose(1, 2).reshape(q.shape[0], q.shape[2], -1)
-    q_mean = q_flat.mean(1, keepdim=True)
-    rms = lambda t: float(t.pow(2).mean().sqrt())
-    W.copy_(Wc.to(W.dtype))
-    return {"alpha": alpha, "s_q": s_q, "s_k": s_k, "target": target_entropy, "reachable": bool(reachable),
-            "entropy": float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean()),
-            "sink_share": float(probabilities.mean(2).max(-1).values.mean()),
-            "common_query": float((q_mean.pow(2).sum(-1) / q_flat.pow(2).sum(-1).mean(1, keepdim=True)).mean()),
+        W_q <- s_q W_q + strength * P c^T       c   unit direction of the mean of norm1's output: what every token shares
+        W_k <- s_k W_k + strength * P r^T       r   a seeded random unit direction
+                                                P   per-head random unit vectors, stacked (sink_directions)
+
+    c is common to all tokens, so every query receives the same extra vector along P; r is not, so the keys receive a
+    token-dependent amount of it. All queries of a head therefore rank the keys alike: a sink, and the entropy falls as the
+    strength grows. With `renormalize`, s_q and s_k shrink the existing weights so that the scale the specification declares
+    is unchanged; `gain_fold` names that scale: "exact" = rms(W diag(gamma)), "product" = rms(W) * rms(gamma), which for the
+    fixed sampled gamma means keeping the raw norm of W. Without it s_q = s_k = 1.
+    Writes the result into block.attn.qkv.weight (also when the target is not reachable: see "reachable" / "matched") and
+    returns its report."""
+    fused_qkv = block.attn.qkv.weight.data
+    width, num_heads = fused_qkv.shape[1], block.attn.num_heads
+    query_rows, key_rows = slice(0, width), slice(width, 2 * width)
+    own_query, own_key = fused_qkv[query_rows].clone().float(), fused_qkv[key_rows].clone().float()     # before the component
+
+    common_direction = torch.nn.functional.normalize(block.norm1(stream).mean(dim=(0, 1)), dim=0)
+    key_direction = torch.randn(width, generator=torch.Generator().manual_seed(3000 + 10 * int(seed) + index)).to(fused_qkv.device)
+    key_direction = torch.nn.functional.normalize(key_direction, dim=0)
+    head_directions = sink_directions(num_heads, width // num_heads, int(seed), index).reshape(width, 1).to(fused_qkv.device)
+    query_component, key_component = head_directions * common_direction[None, :], head_directions * key_direction[None, :]
+
+    gain = block.norm1.weight.detach().float()[None, :]
+    # column weights of the norm that the renormalisation keeps: the folded W diag(gamma), or the raw W
+    kept_norm = gain if gain_fold == "exact" else torch.ones_like(gain)
+
+    def with_component(strength):
+        """(fused qkv weight carrying the component at `strength`, s_q, s_k)"""
+        shrink_query = _rescale_to_keep_norm(own_query * kept_norm, query_component * kept_norm, strength) if renormalize else 1.0
+        shrink_key = _rescale_to_keep_norm(own_key * kept_norm, key_component * kept_norm, strength) if renormalize else 1.0
+        candidate = fused_qkv.clone().float()
+        candidate[query_rows] = shrink_query * own_query + strength * query_component
+        candidate[key_rows] = shrink_key * own_key + strength * key_component
+        return candidate, shrink_query, shrink_key
+
+    def entropy_at(strength):
+        probabilities, _, _ = _attention_rows(block, stream, with_component(strength)[0])
+        return _mean_attention_entropy(probabilities)
+
+    if renormalize:     # the rank-one part cannot exceed the tensor's own norm (in the kept norm); stay 2% below that
+        max_strength = 0.98 * min(float((own_query * kept_norm).norm() / (query_component * kept_norm).norm()),
+                                  float((own_key * kept_norm).norm() / (key_component * kept_norm).norm()))
+    else:
+        max_strength = 64.0
+    strength, reachable = _bisect(entropy_at, target_entropy, max_strength, decreasing=True)
+
+    candidate, shrink_query, shrink_key = with_component(strength)
+    probabilities, logits, queries = _attention_rows(block, stream, candidate)
+    fused_qkv.copy_(candidate.to(fused_qkv.dtype))
+
+    entropy = _mean_attention_entropy(probabilities)
+    # share of the queries' energy that is the same for every token of an image: (B, H, N, d) -> (B, N, H * d)
+    queries = queries.transpose(1, 2).reshape(queries.shape[0], queries.shape[2], -1)
+    common_query = queries.mean(1, keepdim=True)
+    new_query, new_key = candidate[query_rows], candidate[key_rows]
+    return {"alpha": strength, "s_q": shrink_query, "s_k": shrink_key, "target": target_entropy, "reachable": bool(reachable),
+            "matched": bool(reachable) and abs(entropy - target_entropy) <= 0.02,    # the statistic itself, not the bracket
+            "entropy": entropy,
+            "sink_share": float(probabilities.mean(2).max(-1).values.mean()),       # attention mass on the most-attended key
+            "common_query": float((common_query.pow(2).sum(-1) / queries.pow(2).sum(-1).mean(1, keepdim=True)).mean()),
             "row_logit_std": float(logits.std(-1).mean()), "max_abs_logit": float(logits.abs().max()),
-            "rms_q_ratio": rms(Wc[:D]) / rms(base_q), "rms_k_ratio": rms(Wc[D:2 * D]) / rms(base_k),
-            "effective_q_ratio": rms(Wc[:D] * gamma) / rms(base_q * gamma),
-            "effective_k_ratio": rms(Wc[D:2 * D] * gamma) / rms(base_k * gamma)}
+            "rms_q_ratio": _root_mean_square(new_query) / _root_mean_square(own_query),
+            "rms_k_ratio": _root_mean_square(new_key) / _root_mean_square(own_key),
+            "effective_q_ratio": _root_mean_square(new_query * gain) / _root_mean_square(own_query * gain),
+            "effective_k_ratio": _root_mean_square(new_key * gain) / _root_mean_square(own_key * gain)}
 
 
-def _install_fc1_gate(block, stream, target_mean, renormalize):
-    """Rank-one mean-row component of one block's fc1 (see the section comment); `stream` is the block's input, the
-    block's attention must already be final. Returns its report."""
+def _install_fc1_gate(block, stream, target, renormalize, statistic="pre_activation_mean", gain_fold="exact"):
+    """MLP gate of one block: a rank-one mean-row component in fc1 (see the section comment), sized by bisection until the
+    chosen statistic of the fc1 pre-activations on `stream` equals `target`.
+
+        W_fc1 <- s W_fc1 - strength * (1/sqrt(n)) 1 c^T      c   unit direction of the mean of what fc1 reads (norm2's output)
+                                                             1   the all-ones vector over the n hidden units
+
+    c is common to all tokens, so every hidden unit of every token is shifted down by the same amount and the GELU closes;
+    the component has unit Frobenius norm. `stream` is the block's input and the block's attention must already be final,
+    because fc1 reads norm2(stream + attention output). `statistic` names what `target` is: "active_units" = the fraction of
+    positive fc1 pre-activations (how much of the MLP is switched on), or "pre_activation_mean". Both fall monotonically as
+    the component grows; the report carries both, and the GELU output rms, whichever is the target. `renormalize` and
+    `gain_fold` as in _install_rank_one_sink: s shrinks the existing weight so that the declared scale is unchanged.
+    Writes the result into block.mlp.fc1.weight (also when the target is not reachable: see "reachable" / "matched") and
+    returns its report."""
+    if statistic not in ("active_units", "pre_activation_mean"):
+        raise ValueError(f"fc1_gate: unknown target statistic {statistic!r}")
     fc1 = block.mlp.fc1
-    W = fc1.weight.data
-    base = W.clone().float()
-    n = W.shape[0]
-    y = fc1_input(block, stream)                                       # what fc1 reads
-    c = torch.nn.functional.normalize(y.mean(dim=(0, 1)), dim=0)
-    delta = -torch.ones(n, 1, device=W.device) / n ** 0.5 * c[None, :]    # unit Frobenius norm; every hidden unit shifted alike
-    gamma = block.norm2.weight.detach().float()[None, :]
+    weight = fc1.weight.data
+    own_weight = weight.clone().float()                                 # before the component
+    hidden_units = weight.shape[0]
     bias = fc1.bias.detach().float()
 
-    def candidate(beta):
-        s = _rescale_to_keep_norm(base * gamma, delta * gamma, beta) if renormalize else 1.0
+    fc1_reads = fc1_input(block, stream)                                # norm2 of the stream after the attention sub-layer
+    common_direction = torch.nn.functional.normalize(fc1_reads.mean(dim=(0, 1)), dim=0)
+    # unit Frobenius norm; every hidden unit shifted alike, against the common direction
+    gate_component = -torch.ones(hidden_units, 1, device=weight.device) / hidden_units ** 0.5 * common_direction[None, :]
+
+    gain = block.norm2.weight.detach().float()[None, :]
+    # column weights of the norm that the renormalisation keeps: the folded W diag(gamma), or the raw W
+    kept_norm = gain if gain_fold == "exact" else torch.ones_like(gain)
+
+    def with_component(strength):
+        """(fc1 weight carrying the component at `strength`, s)"""
+        shrink = _rescale_to_keep_norm(own_weight * kept_norm, gate_component * kept_norm, strength) if renormalize else 1.0
+        return shrink * own_weight + strength * gate_component, shrink
+
+    def statistic_at(strength):
+        pre_activation = torch.nn.functional.linear(fc1_reads, with_component(strength)[0], bias)
+        return float((pre_activation > 0).float().mean()) if statistic == "active_units" else float(pre_activation.mean())
+
+    if renormalize:     # the rank-one part cannot exceed the tensor's own norm (in the kept norm); stay 2% below that
+        max_strength = 0.98 * float((own_weight * kept_norm).norm() / (gate_component * kept_norm).norm())
+    else:
+        max_strength = 64.0
+    strength, reachable = _bisect(statistic_at, target, max_strength, decreasing=True, tolerance=1e-5)
+
+    candidate, shrink = with_component(strength)
+    pre_activation = torch.nn.functional.linear(fc1_reads, candidate, bias)
+    folded = candidate * gain
+    weight.copy_(candidate.to(weight.dtype))
+
+    active_units, pre_activation_mean = float((pre_activation > 0).float().mean()), float(pre_activation.mean())
+    if statistic == "active_units":     # the statistic itself, not the bracket; a fraction of a finite sample: relative with a floor
+        matched = bool(reachable) and abs(active_units - target) <= max(2e-5, 0.03 * target)
+    else:
+        matched = bool(reachable) and abs(pre_activation_mean - target) <= 0.02
+    return {"beta": strength, "s": shrink, "target": target, "statistic": statistic, "reachable": bool(reachable), "matched": matched,
+            "pre_activation_mean": pre_activation_mean, "pre_activation_std": float(pre_activation.std()),
+            "active_units": active_units, "gelu_rms": _root_mean_square(block.mlp.act(pre_activation)),
+            # share of the folded matrix's energy in its mean row (random: 1 / n)
+            "mean_row_energy_share": float(hidden_units * folded.mean(0).pow(2).sum() / folded.pow(2).sum()),
+            "rms_ratio": _root_mean_square(candidate) / _root_mean_square(own_weight),
+            "effective_ratio": _root_mean_square(folded) / _root_mean_square(own_weight * gain)}
+
+
+def _install_common_write(block, stream, target_cosine, renormalize, seed, index):
+    """Rank-one mean-column component of one block's fc2 (see the section comment); `stream` is the block's input, the
+    block's attention and fc1 must already be final. Returns its report."""
+    fc2 = block.mlp.fc2
+    W = fc2.weight.data
+    base = W.clone().float()
+    n = W.shape[1]
+    hidden = block.mlp.act(block.mlp.fc1(fc1_input(block, stream)))
+    u = torch.randn(W.shape[0], generator=torch.Generator().manual_seed(5000 + 10 * int(seed) + index)).to(W.device)
+    u = torch.nn.functional.normalize(u, dim=0)
+    delta = u[:, None] * torch.ones(1, n, device=W.device) / n ** 0.5     # unit Frobenius norm; every hidden unit writes u alike
+    bias = fc2.bias.detach().float()
+
+    def candidate(beta):                                                  # fc2 has no LayerNorm in front: effective = raw scale
+        s = _rescale_to_keep_norm(base, delta, beta) if renormalize else 1.0
         return s * base + beta * delta, s
 
-    def mean_at(beta):
-        return float((torch.nn.functional.linear(y, candidate(beta)[0], bias)).mean())
+    def cosine_at(beta):                 # the block's own forward with the candidate installed: exactly what training will see
+        W.copy_(candidate(beta)[0].to(W.dtype))
+        return _token_cosine(block(stream))
 
-    hi = 0.98 * float((base * gamma).norm() / (delta * gamma).norm()) if renormalize else 64.0
-    beta, reachable = _bisect(mean_at, target_mean, hi, decreasing=True)
+    hi = 0.98 * float(base.norm() / delta.norm()) if renormalize else 256.0
+    beta, reachable = _bisect(cosine_at, target_cosine, hi, decreasing=False)
     Wc, s = candidate(beta)
-    pre_activation = torch.nn.functional.linear(y, Wc, bias)
-    rms = lambda t: float(t.pow(2).mean().sqrt())
-    folded = Wc * gamma
     W.copy_(Wc.to(W.dtype))
-    return {"beta": beta, "s": s, "target": target_mean, "reachable": bool(reachable),
-            "pre_activation_mean": float(pre_activation.mean()), "active_units": float((pre_activation > 0).float().mean()),
-            "gelu_rms": rms(block.mlp.act(pre_activation)),
-            "mean_row_energy_share": float(n * folded.mean(0).pow(2).sum() / folded.pow(2).sum()),
-            "rms_ratio": rms(Wc) / rms(base), "effective_ratio": rms(folded) / rms(base * gamma)}
+    output = block(stream)
+    write = torch.nn.functional.linear(hidden, Wc, bias)
+    patches = write[:, 1:]
+    rms = lambda t: float(t.pow(2).mean().sqrt())
+    cosine = _token_cosine(output)
+    return {"beta": beta, "s": s, "target": target_cosine, "reachable": bool(reachable),
+            "matched": bool(reachable) and abs(cosine - target_cosine) <= 0.005, "token_cosine": cosine,
+            "mlp_write_ratio": float((write.norm(dim=-1) / (output - write).norm(dim=-1)).mean()),
+            "common_share_of_write": float(patches.mean(1, keepdim=True).pow(2).sum() * patches.shape[1] / patches.pow(2).sum()),
+            "mean_column_energy_share": float(n * Wc.mean(1).pow(2).sum() / Wc.pow(2).sum()), "rms_ratio": rms(Wc) / rms(base)}
+
+
+def _install_common_write_at_ratio(block, stream, target_cosine, target_ratio, seed, index):
+    """fc2 of one block with BOTH targets (see the section comment): token cosine of the block's output and MLP write ratio.
+    `stream` is the block's input; attention and fc1 must already be final. Returns its report."""
+    fc2 = block.mlp.fc2
+    W = fc2.weight.data
+    base = W.clone().float()
+    n = W.shape[1]
+    u = torch.randn(W.shape[0], generator=torch.Generator().manual_seed(5000 + 10 * int(seed) + index)).to(W.device)
+    u = torch.nn.functional.normalize(u, dim=0)
+    delta = u[:, None] * torch.ones(1, n, device=W.device) / n ** 0.5     # unit Frobenius norm, as in _install_common_write
+    base_norm = float(base.norm())
+
+    def install(m):                       # direction first, then the scale that meets the write ratio (linear while the bias is 0)
+        W.copy_((base + m * base_norm * delta).to(W.dtype))
+        scale = 1.0
+        for _ in range(4):
+            ratio = sublayer_write_ratios(block, stream)[1]
+            if abs(ratio / target_ratio - 1.0) < 1e-6:
+                break
+            W.mul_(target_ratio / ratio); scale *= target_ratio / ratio
+        return scale
+
+    def cosine_at(m):
+        install(m)
+        return _token_cosine(block(stream))
+
+    cosine_without = cosine_at(0.0)
+    if cosine_without >= target_cosine:    # a rank-one common component can only raise the cosine
+        m, reachable, exceeded = 0.0, False, True
+    else:
+        hi = 1.0
+        while cosine_at(hi) < target_cosine and hi < 4096.0:
+            hi *= 2.0
+        m, reachable = _bisect(cosine_at, target_cosine, hi, decreasing=False, tolerance=1e-5)
+        exceeded = False
+    c = install(m)
+    attention_write, mlp_write, output = sublayer_write_ratios(block, stream)
+    hidden = block.mlp.act(block.mlp.fc1(fc1_input(block, stream)))
+    patches = torch.nn.functional.linear(hidden, W.float(), fc2.bias.detach().float())[:, 1:]
+    rms = lambda t: float(t.pow(2).mean().sqrt())
+    cosine = _token_cosine(output)
+    matched = (bool(exceeded) or (bool(reachable) and abs(cosine - target_cosine) <= 0.005)) and abs(mlp_write / target_ratio - 1.0) < 1e-3
+    return {"m": m, "c": c, "beta": c * m * base_norm, "target": target_cosine, "target_ratio": target_ratio,
+            "reachable": bool(reachable), "exceeded_without_component": bool(exceeded), "token_cosine_without_component": cosine_without,
+            "matched": matched, "token_cosine": cosine, "mlp_write_ratio": mlp_write,
+            "common_share_of_write": float(patches.mean(1, keepdim=True).pow(2).sum() * patches.shape[1] / patches.pow(2).sum()),
+            "mean_column_energy_share": float(n * W.float().mean(1).pow(2).sum() / W.float().pow(2).sum()), "rms_ratio": rms(W.float()) / rms(base)}
+
+
+def _match_write_ratio(block, stream, sublayer, target, tensors, steps=6, tolerance=1e-5):
+    """Multiply the listed write-side tensors of one sublayer ("attention": v rows of qkv and / or proj; "mlp": fc2) by one
+    scalar so that the sublayer's write ratio on `stream` equals `target` (see the section comment). Biases of the scaled
+    tensors are scaled along. Returns its report."""
+    attn, D = block.attn, block.attn.qkv.weight.shape[1]
+    if sublayer == "attention":
+        parts = [(attn.qkv.weight.data[2 * D:], None if attn.qkv.bias is None else attn.qkv.bias.data[2 * D:])] if "v" in tensors else []
+        parts += [(attn.proj.weight.data, None if attn.proj.bias is None else attn.proj.bias.data)] if "proj" in tensors else []
+    else:
+        parts = [(block.mlp.fc2.weight.data, None if block.mlp.fc2.bias is None else block.mlp.fc2.bias.data)]
+    measure = lambda: sublayer_write_ratios(block, stream)[0 if sublayer == "attention" else 1]
+    before, factor = measure(), 1.0
+    for _ in range(steps):
+        current = measure()
+        if abs(current / target - 1.0) < tolerance:
+            break
+        step = (target / current) ** (1.0 / len(parts))          # the write is multilinear in the listed tensors
+        for weight, bias in parts:
+            weight.mul_(step)
+            if bias is not None:
+                bias.mul_(step)
+        factor *= step
+    reached = measure()
+    return {"target": target, "before": before, "write_ratio": reached, "factor_per_tensor": factor,
+            "tensors": [name for name in (("v", "proj") if sublayer == "attention" else ("fc2",)) if name in tensors],
+            "reachable": bool(abs(reached / target - 1.0) < 1e-3), "matched": bool(abs(reached / target - 1.0) < 1e-3)}
 
 
 @torch.no_grad()
 def calibrate_joint_statistics(model, spec, images, seed=0):
-    """Install the rank-one components requested by `spec` ("qk_sink" and/or "fc1_gate", see the section comment).
-    `images`: (n, 3, H, W) on the model's device. Modifies attn.qkv.weight / mlp.fc1.weight of the listed blocks in place.
-    Returns {block: {"qk_sink": report, "fc1_gate": report}}."""
-    sink, gate = spec.get("qk_sink") or {}, spec.get("fc1_gate") or {}
+    """Install the components requested by `spec` ("qk_entropy", "fc1_gate", "common_write", "write_ratio"; see the section
+    comment). `images`: (n, 3, H, W) on the model's device. Modifies attn.qkv.weight / attn.proj.weight / mlp.fc1.weight /
+    mlp.fc2.weight of the listed blocks in place. Returns {block: {component: report}}; the write ratio reports under
+    "write_ratio_attention" and "write_ratio_mlp", a block's fc2 with both a common write and a write ratio under
+    "common_write_at_ratio"."""
+    if "qk_sink" in spec:
+        raise ValueError("specification key 'qk_sink' was renamed to 'qk_entropy' on 2026-09-17 (its target is the attention entropy); "
+                         "rename the key, the numbers are unchanged")
+    sink, gate, common = spec.get("qk_entropy") or {}, spec.get("fc1_gate") or {}, spec.get("common_write") or {}
+    write = spec.get("write_ratio") or {}
+    # the scale the specification declares, which the rank-one components must leave unchanged; specifications written before
+    # the key existed all carry joint statistics from --gain_fold exact extractions
+    gain_fold = spec.get("gain_fold", "exact")
+    if gain_fold not in ("exact", "product"):
+        raise ValueError(f"joint statistics: unknown gain_fold {gain_fold!r}")
     sink_targets = {int(b): float(v) for b, v in sink.get("entropy", {}).items()}
-    gate_targets = {int(b): float(v) for b, v in gate.get("pre_activation_mean", {}).items()}
-    if not sink_targets and not gate_targets:
+    if "active_units" in gate and "pre_activation_mean" in gate:
+        raise ValueError("fc1_gate: give either 'active_units' or 'pre_activation_mean' targets, not both (one number per block)")
+    gate_statistic = "active_units" if "active_units" in gate else "pre_activation_mean"
+    gate_targets = {int(b): float(v) for b, v in gate.get(gate_statistic, {}).items()}
+    common_targets = {int(b): float(v) for b, v in common.get("token_cosine", {}).items()}
+    write_tensors = list(write.get("tensors", []))
+    attention_write_targets = {int(b): float(v) for b, v in write.get("attention", {}).items()} if {"v", "proj"} & set(write_tensors) else {}
+    mlp_write_targets = {int(b): float(v) for b, v in write.get("mlp", {}).items()} if "fc2" in write_tensors else {}
+    if set(write_tensors) - {"v", "proj", "fc2"}:
+        raise ValueError(f"write_ratio: tensors must be among v, proj, fc2, got {write_tensors}")
+    if not sink_targets and not gate_targets and not common_targets and not attention_write_targets and not mlp_write_targets:
         return {}
     was_training = model.training
     model.eval()
     stream, report = block_input_stream(model, images), {}
-    last = max(list(sink_targets) + list(gate_targets))
+    last = max(list(sink_targets) + list(gate_targets) + list(common_targets) + list(attention_write_targets) + list(mlp_write_targets))
     for index, block in enumerate(model.blocks):
         if index > last:
             break
         if index in sink_targets:
-            report.setdefault(index, {})["qk_sink"] = _install_rank_one_sink(
-                block, stream, sink_targets[index], bool(sink.get("renormalize", True)), seed, index)
+            report.setdefault(index, {})["qk_entropy"] = _install_rank_one_sink(
+                block, stream, sink_targets[index], bool(sink.get("renormalize", True)), seed, index, gain_fold)
+        if index in attention_write_targets:
+            report.setdefault(index, {})["write_ratio_attention"] = _match_write_ratio(
+                block, stream, "attention", attention_write_targets[index], write_tensors)
         if index in gate_targets:
             report.setdefault(index, {})["fc1_gate"] = _install_fc1_gate(
-                block, stream, gate_targets[index], bool(gate.get("renormalize", True)))
+                block, stream, gate_targets[index], bool(gate.get("renormalize", True)), gate_statistic, gain_fold)
+        if index in common_targets and index in mlp_write_targets:          # fc2 with two targets: solved jointly
+            report.setdefault(index, {})["common_write_at_ratio"] = _install_common_write_at_ratio(
+                block, stream, common_targets[index], mlp_write_targets[index], seed, index)
+        elif index in common_targets:
+            report.setdefault(index, {})["common_write"] = _install_common_write(
+                block, stream, common_targets[index], bool(common.get("renormalize", True)), seed, index)
+        elif index in mlp_write_targets:
+            report.setdefault(index, {})["write_ratio_mlp"] = _match_write_ratio(
+                block, stream, "mlp", mlp_write_targets[index], write_tensors)
         stream = block(stream)
     if was_training:
         model.train()

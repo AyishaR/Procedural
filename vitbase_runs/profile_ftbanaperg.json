@@ -211,7 +211,7 @@
   },
   "ckpt": "results/pr_vitb_n/pr_6066174_final.pth"
  },
- "qk_sink": {
+ "qk_entropy": {
   "entropy": {
    "1": 0.413,
    "2": 0.599,

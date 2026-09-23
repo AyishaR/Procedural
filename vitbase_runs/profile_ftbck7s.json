@@ -1,0 +1,34 @@
+{
+ "realise": "exact",
+ "gain_fold": "exact",
+ "qk_entropy": {
+  "entropy": {
+   "1": 0.416,
+   "2": 0.248,
+   "3": 1.619,
+   "4": 0.845,
+   "5": 1.633,
+   "6": 1.996,
+   "7": 2.867
+  },
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "entropy_sd_over_seeds": {
+   "1": 0.0674,
+   "2": 0.0348,
+   "3": 0.235,
+   "4": 0.159,
+   "5": 0.238,
+   "6": 0.342,
+   "7": 0.243
+  },
+  "images": 256,
+  "renormalize": false,
+  "protocol": "training images, evaluation transform, utils.calibration_images"
+ }
+}

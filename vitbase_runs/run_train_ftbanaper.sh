@@ -76,7 +76,7 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT --nproc_per_
     --enable_wandb true \
     --project "vit base kdyck" \
     --wandb_entity_name "procedural_pretraining" \
-    --notes "kdyck recipe read off the checkpoint by extract_profile.py --gain_fold exact --exact --qk_sink: exact per-block effective scales (54) + LayerNorm statistics (72, inline) + one attention-entropy target per block 1-8 (8), realised at init as a rank-one coupled q/k sink calibrated on 64 training images with rms(W_q), rms(W_k) preserved (utils.calibrate_rank_one_sink); blocks 0-8, random 9-11, no checkpoint at init" \
+    --notes "kdyck recipe read off the checkpoint by extract_profile.py --gain_fold exact --exact --qk_entropy: exact per-block effective scales (54) + LayerNorm statistics (72, inline) + one attention-entropy target per block 1-8 (8), realised at init as a rank-one coupled q/k sink calibrated on 64 training images with rms(W_q), rms(W_k) preserved (utils.calibrate_rank_one_sink); blocks 0-8, random 9-11, no checkpoint at init" \
     --accuracy_json "results/imnet_base/accuracy_IMNET_BASE_${SLURM_ID}_s${SEED}.json" \
     --grad_norms_json "results/imnet_base/grad_norms_IMNET_BASE_${SLURM_ID}_s${SEED}.json" \
     --procedural_data "kdyck" \

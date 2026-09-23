@@ -1,0 +1,10 @@
+{
+ "blocks.0.mlp.fc1.weight": 3.45438,
+ "blocks.1.mlp.fc1.weight": 2.3019,
+ "blocks.2.mlp.fc1.weight": 3.01593,
+ "blocks.3.mlp.fc1.weight": 3.29966,
+ "blocks.4.mlp.fc1.weight": 3.29917,
+ "blocks.5.mlp.fc1.weight": 3.49646,
+ "blocks.6.mlp.fc1.weight": 3.5362,
+ "blocks.7.mlp.fc1.weight": 3.51839
+}

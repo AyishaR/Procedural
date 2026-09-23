@@ -1,0 +1,1 @@
+{"r0": {"what": "timm random WITH per-epoch checkpoints (77.42), 2026-09-21", "train_clean_acc": 99.384, "train_clean_ce": 0.15777130096435546, "val_acc": 77.6, "val_ce": 1.1860166259765625}}

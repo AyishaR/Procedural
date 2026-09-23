@@ -1,0 +1,138 @@
+{
+ "blocks.0.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    4.3147
+   ],
+   [
+    768,
+    1536,
+    3.94679
+   ]
+  ]
+ },
+ "blocks.0.mlp.fc1.weight": 3.42727,
+ "blocks.1.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    3.03961
+   ],
+   [
+    768,
+    1536,
+    4.19468
+   ]
+  ]
+ },
+ "blocks.1.mlp.fc1.weight": 0.766364,
+ "blocks.2.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    3.52458
+   ],
+   [
+    768,
+    1536,
+    4.19249
+   ]
+  ]
+ },
+ "blocks.2.mlp.fc1.weight": 0.761001,
+ "blocks.3.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    3.50597
+   ],
+   [
+    768,
+    1536,
+    4.30576
+   ]
+  ]
+ },
+ "blocks.3.mlp.fc1.weight": 0.808356,
+ "blocks.4.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    3.45924
+   ],
+   [
+    768,
+    1536,
+    4.30787
+   ]
+  ]
+ },
+ "blocks.4.mlp.fc1.weight": 0.852243,
+ "blocks.5.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    3.80855
+   ],
+   [
+    768,
+    1536,
+    4.46276
+   ]
+  ]
+ },
+ "blocks.5.mlp.fc1.weight": 0.91623,
+ "blocks.6.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    3.64221
+   ],
+   [
+    768,
+    1536,
+    4.30233
+   ]
+  ]
+ },
+ "blocks.6.mlp.fc1.weight": 0.91568,
+ "blocks.7.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    3.71856
+   ],
+   [
+    768,
+    1536,
+    4.26739
+   ]
+  ]
+ },
+ "blocks.7.mlp.fc1.weight": 1.01381,
+ "blocks.0.norm1.weight": 0.341715,
+ "blocks.0.norm2.weight": 0.526165,
+ "blocks.1.norm1.weight": 0.451263,
+ "blocks.1.norm2.weight": 0.447595,
+ "blocks.2.norm1.weight": 0.423979,
+ "blocks.2.norm2.weight": 0.437171,
+ "blocks.3.norm1.weight": 0.403643,
+ "blocks.3.norm2.weight": 0.431744,
+ "blocks.4.norm1.weight": 0.406204,
+ "blocks.4.norm2.weight": 0.435585,
+ "blocks.5.norm1.weight": 0.387964,
+ "blocks.5.norm2.weight": 0.416149,
+ "blocks.6.norm1.weight": 0.385392,
+ "blocks.6.norm2.weight": 0.402161,
+ "blocks.7.norm1.weight": 0.378158,
+ "blocks.7.norm2.weight": 0.395395
+}

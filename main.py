@@ -336,6 +336,24 @@ def get_args_parser():
                              'orthonormal U and V (QR of a Gaussian). Also preserves ||W||_F.')
     parser.add_argument('--custom_init_blocks', default="", type=str,
                         help='Comma separated list of layer indices to apply custom init, e.g. "0,1,2" to apply custom init to the first 3 layers; supports "all" to apply custom init to all layers and "" to not apply custom init to any layers (default: "")')
+    parser.add_argument('--stop_after_epoch', type=int, default=-1,
+                        help='stop after this epoch (0-based) with the UNCHANGED --epochs schedule: a screening run is the first part of a full run; '
+                             'resuming with auto_resume and -1 continues it. The post-training analysis is skipped.')
+    parser.add_argument('--release_blocks', default='', type=str,
+                        help='comma separated blocks whose learning rate is 0 until --release_start (epochs) and rises linearly to the schedule value at --release_end '
+                             '(optim_factory.build_block_release_param_groups); empty = off (default, nothing changes)')
+    parser.add_argument('--release_start', type=int, default=30)
+    parser.add_argument('--release_end', type=int, default=50)
+    parser.add_argument('--aux_lens_block', type=int, default=-1,
+                        help='auxiliary loss on the head read-out of this block (utils.AuxLensLoss); -1 = off (default, nothing changes)')
+    parser.add_argument('--aux_lens_mode', default='align', choices=['align', 'suppress'],
+                        help='align: cross-entropy of the lens against the targets; suppress: lens pushed to the uniform distribution, norm and head detached')
+    parser.add_argument('--aux_lens_weight', type=float, default=0.3)
+    parser.add_argument('--aux_lens_until', type=int, default=50, help='the auxiliary loss is active for epochs below this one')
+    parser.add_argument('--analysis_ckpt_dense_until', type=int, default=10**9,
+                        help='per-epoch model checkpoints (--save_for_analysis) are written for every epoch below this one ...')
+    parser.add_argument('--analysis_ckpt_every', type=int, default=1,
+                        help='... and afterwards only when (epoch + 1) is a multiple of this, plus the last epoch (defaults keep every epoch)')
     parser.add_argument('--save_for_analysis', default=True, type=str2bool,
                         help='Whether to save model checkpoints and training data for further analysis, which will be used for the paper but is set to False by default to save storage space and speed up training')
     # distributed training parameters
@@ -658,7 +676,7 @@ def main(args):
     utils.init_distributed_mode(args)
     print(args)
     device = torch.device(args.device)
-    gpu_id = int(os.environ["LOCAL_RANK"])
+    gpu_id = int(os.environ.get("LOCAL_RANK", getattr(args, "gpu", 0) or 0))   # init_distributed_mode may return without a process group
 
     block_attributes = ["norm1.weight", "norm1.bias", "attn.qkv.bias", "attn.proj.bias", "norm2.weight", "norm2.bias", "mlp.fc1.bias", "mlp.fc2.bias", "attn.qkv.weight", "attn.proj.weight", "mlp.fc1.weight", "mlp.fc2.weight"]
 
@@ -1061,41 +1079,83 @@ def main(args):
         if utils.is_main_process():
             for _b, _m in _applied.items():
                 print(f"[analytic_profile] block {_b}: " + "  ".join(f"{k} x{v[0]} (raw rms/0.02 = {v[1]}" + (f", effective = {v[2]})" if len(v) > 2 else ")") for k, v in _m.items()))
-        # Optional joint statistics (spec keys "qk_sink" / "fc1_gate", utils.calibrate_joint_statistics): rank-one components
-        # calibrated on TRAINING images with the evaluation transform, on rank 0 only; the calibrated weights are then
+        # Optional joint statistics (spec keys "qk_entropy" / "fc1_gate" / "common_write" / "write_ratio", utils.calibrate_joint_statistics):
+        # rank-one components and write-side scalars calibrated on TRAINING images with the evaluation transform, on rank 0 only; the calibrated weights are then
         # broadcast so every rank holds identical parameters (the model is already DDP-wrapped here, see docs "DDP
         # rank-sync bug").
         _profile = json.load(open(args.profile_spec)) if os.path.exists(str(args.profile_spec)) else json.loads(args.profile_spec)
-        _joint = {_key: _profile[_key] for _key in ("qk_sink", "fc1_gate") if _key in _profile}
+        assert "qk_sink" not in _profile, "specification key 'qk_sink' was renamed to 'qk_entropy' (2026-09-17); rename the key"
+        _joint = {_key: _profile[_key] for _key in ("qk_entropy", "fc1_gate", "common_write", "write_ratio") if _key in _profile}
         if _joint:
-            _tensors = [model_without_ddp.blocks[int(_b)].attn.qkv.weight for _b in _joint.get("qk_sink", {}).get("entropy", {})] + \
-                       [model_without_ddp.blocks[int(_b)].mlp.fc1.weight for _b in _joint.get("fc1_gate", {}).get("pre_activation_mean", {})]
+            _tensors = [model_without_ddp.blocks[int(_b)].attn.qkv.weight for _b in _joint.get("qk_entropy", {}).get("entropy", {})] + \
+                       [model_without_ddp.blocks[int(_b)].mlp.fc1.weight for _key in ("active_units", "pre_activation_mean") for _b in _joint.get("fc1_gate", {}).get(_key, {})] + \
+                       [model_without_ddp.blocks[int(_b)].mlp.fc2.weight for _b in _joint.get("common_write", {}).get("token_cosine", {})]
+            _write = _joint.get("write_ratio", {})
+            for _b in _write.get("attention", {}):      # the write-side scalars touch v (inside qkv), proj and fc2, and their biases
+                _attn = model_without_ddp.blocks[int(_b)].attn
+                _tensors += ([_attn.qkv.weight, _attn.qkv.bias] if "v" in _write.get("tensors", []) else []) + \
+                            ([_attn.proj.weight, _attn.proj.bias] if "proj" in _write.get("tensors", []) else [])
+            for _b in _write.get("mlp", {}):
+                _fc2 = model_without_ddp.blocks[int(_b)].mlp.fc2
+                _tensors += [_fc2.weight, _fc2.bias] if "fc2" in _write.get("tensors", []) else []
+            _tensors = list({id(_t): _t for _t in _tensors if _t is not None}.values())   # a tensor may be named by two components
             if utils.is_main_process():
                 from datasets import build_transform
                 _n_images = max(int(_part.get("images", 64)) for _part in _joint.values())
                 _images = utils.calibration_images(dataset_train.samples, dataset_train.loader, build_transform(False, args),
                                                    _n_images, args.seed).to(device)
-                for _b, _parts in utils.calibrate_joint_statistics(model_without_ddp, _joint, _images, seed=args.seed).items():
-                    if "qk_sink" in _parts:
-                        _r = _parts["qk_sink"]
-                        print(f"[qk_sink] block {_b}: alpha {_r['alpha']:.3f} s_q {_r['s_q']:.3f} s_k {_r['s_k']:.3f} | entropy {_r['entropy']:.3f} "
+                _report = utils.calibrate_joint_statistics(model_without_ddp, {**_joint, **{_k: _profile[_k] for _k in ("gain_fold",) if _k in _profile}}, _images, seed=args.seed)
+                _unmet = [(_b, _k) for _b, _parts in _report.items() for _k, _p in _parts.items()
+                          if not _p.get("matched", _p["reachable"] or _p.get("exceeded_without_component", False))]
+                for _b, _parts in _report.items():
+                    if "qk_entropy" in _parts:
+                        _r = _parts["qk_entropy"]
+                        print(f"[qk_entropy] block {_b}: alpha {_r['alpha']:.3f} s_q {_r['s_q']:.3f} s_k {_r['s_k']:.3f} | entropy {_r['entropy']:.3f} "
                               f"(target {_r['target']}, reachable {_r['reachable']}) sink share {_r['sink_share']:.2f} common query {_r['common_query']:.3f} "
                               f"| row logit std {_r['row_logit_std']:.1f} max |logit| {_r['max_abs_logit']:.0f} | effective q x{_r['effective_q_ratio']:.4f} "
                               f"k x{_r['effective_k_ratio']:.4f}, raw rms q x{_r['rms_q_ratio']:.4f} k x{_r['rms_k_ratio']:.4f}", flush=True)
                     if "fc1_gate" in _parts:
                         _r = _parts["fc1_gate"]
-                        print(f"[fc1_gate] block {_b}: beta {_r['beta']:.3f} s {_r['s']:.3f} | mean pre-activation {_r['pre_activation_mean']:+.3f} "
-                              f"(target {_r['target']:+.3f}, reachable {_r['reachable']}) active units {_r['active_units']:.4f} GELU rms {_r['gelu_rms']:.3f} "
+                        print(f"[fc1_gate] block {_b}: beta {_r['beta']:.3f} s {_r['s']:.3f} | target {_r['statistic']} {_r['target']:+.5f}, reachable {_r['reachable']} "
+                              f"| active units {_r['active_units']:.5f} pre-activation mean {_r['pre_activation_mean']:+.3f} std {_r['pre_activation_std']:.3f} GELU rms {_r['gelu_rms']:.3f} "
                               f"| mean-row energy share {_r['mean_row_energy_share']:.3f} | effective fc1 x{_r['effective_ratio']:.4f}, raw rms x{_r['rms_ratio']:.4f}", flush=True)
+                    for _sub in ("attention", "mlp"):
+                        if f"write_ratio_{_sub}" in _parts:
+                            _r = _parts[f"write_ratio_{_sub}"]
+                            print(f"[write_ratio] block {_b} {_sub}: {'/'.join(_r['tensors'])} x{_r['factor_per_tensor']:.4f}{' each' if len(_r['tensors']) > 1 else ''} | write ratio "
+                                  f"{_r['before']:.4f} -> {_r['write_ratio']:.4f} (target {_r['target']:.4f}, reachable {_r['reachable']})", flush=True)
+                    if "common_write_at_ratio" in _parts:
+                        _r = _parts["common_write_at_ratio"]
+                        print(f"[common_write_at_ratio] block {_b}: m {_r['m']:.4f} c {_r['c']:.4f} beta {_r['beta']:.3f} | token cosine of the output "
+                              f"{_r['token_cosine']:.3f} (target {_r['target']:.3f}, reachable {_r['reachable']}, without the component "
+                              f"{_r['token_cosine_without_component']:.3f}) | MLP write ratio {_r['mlp_write_ratio']:.4f} (target {_r['target_ratio']:.4f}) "
+                              f"common share of the write {_r['common_share_of_write']:.2f} | mean-column energy share "
+                              f"{_r['mean_column_energy_share']:.4f} | raw rms x{_r['rms_ratio']:.3f}", flush=True)
+                    if "common_write" in _parts:
+                        _r = _parts["common_write"]
+                        print(f"[common_write] block {_b}: beta {_r['beta']:.3f} s {_r['s']:.4f} | token cosine of the output {_r['token_cosine']:.3f} "
+                              f"(target {_r['target']:.3f}, reachable {_r['reachable']}) MLP write ratio {_r['mlp_write_ratio']:.2f} common share of the write "
+                              f"{_r['common_share_of_write']:.2f} | mean-column energy share {_r['mean_column_energy_share']:.4f} | raw rms x{_r['rms_ratio']:.4f}", flush=True)
+            # a required target that was not met is fatal on every rank (rank 0 calibrated; the count is broadcast before the raise)
+            _n_unmet = torch.tensor([len(_unmet) if utils.is_main_process() else 0], device=device)
             if utils.is_dist_avail_and_initialized():
+                dist.broadcast(_n_unmet, src=0)
+            if int(_n_unmet.item()) > 0:
+                raise RuntimeError(f"[joint statistics] {int(_n_unmet.item())} calibration target(s) not met" +
+                                   (f": {_unmet}" if utils.is_main_process() else " (see rank 0)"))
+            if utils.is_dist_avail_and_initialized():
+                import hashlib
                 for _t in _tensors:
                     dist.broadcast(_t.data, src=0)
-                _check = torch.stack([_t.data.double().abs().sum() for _t in _tensors])
+                _digest = hashlib.sha256()
+                for _t in _tensors:                       # element-wise: every rank hashes the bytes of every calibrated tensor
+                    _digest.update(_t.data.detach().to("cpu", torch.float32).contiguous().numpy().tobytes())
+                _check = torch.tensor(list(_digest.digest()), dtype=torch.uint8, device=device)
                 _gathered = [torch.zeros_like(_check) for _ in range(utils.get_world_size())]
                 dist.all_gather(_gathered, _check)
                 _same = all(torch.equal(_g, _gathered[0]) for _g in _gathered)
                 if utils.is_main_process():
-                    print(f"[joint statistics] {len(_tensors)} calibrated tensors identical on all {len(_gathered)} ranks: {_same}", flush=True)
+                    print(f"[joint statistics] {len(_tensors)} calibrated tensors identical on all {len(_gathered)} ranks (sha256 {_digest.hexdigest()[:16]}): {_same}", flush=True)
                 assert _same, "joint statistics: ranks hold different weights after the broadcast"
     elif args.init_method == "clip_outlier_weights":
         # Checkpoint init with the largest-magnitude weights of
@@ -2104,7 +2164,10 @@ def main(args):
 
     print("Start training for %d epochs" % args.epochs)
     start_time = time.time()
-    for epoch in range(args.start_epoch, args.epochs):
+    stopped_early = args.stop_after_epoch >= 0 and args.start_epoch > args.stop_after_epoch
+    if stopped_early:
+        print(f"--stop_after_epoch {args.stop_after_epoch}: already reached (start epoch {args.start_epoch}), nothing to do", flush=True)
+    for epoch in (range(0) if stopped_early else range(args.start_epoch, args.epochs)):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
         if log_writer is not None:
@@ -2112,6 +2175,8 @@ def main(args):
         if wandb_logger:
             wandb_logger.set_steps()
 
+        if getattr(args, 'aux_lens_block', -1) >= 0 and not hasattr(model_without_ddp, '_aux_lens'):
+            model_without_ddp._aux_lens = utils.AuxLensLoss(model_without_ddp, args.aux_lens_block, args.aux_lens_mode, args.aux_lens_weight, args.aux_lens_until)
         train_stats, parameter_norm = train_one_epoch(
             model, model_without_ddp, criterion, data_loader_train, optimizer,
             device, epoch, loss_scaler, args.clip_grad, model_ema, mixup_fn,
@@ -2156,7 +2221,7 @@ def main(args):
                 utils.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch, model_ema=model_ema)
-            if args.save_for_analysis:
+            if args.save_for_analysis and (epoch < args.analysis_ckpt_dense_until or (epoch + 1) % args.analysis_ckpt_every == 0 or epoch + 1 == args.epochs):
                 checkpoint_path = Path(args.output_dir) / ('checkpoint-%s-model.pth' % str(epoch))
                 torch.save({k: v.half() for k, v in model_without_ddp.state_dict().items()}, checkpoint_path)
             
@@ -2238,6 +2303,11 @@ def main(args):
         # if args.model == "vit_base" and (epoch+1)!=args.epochs and (epoch+1)%2 == 0:
         #     return
         # if args.learning_rate_scaling: return 
+        if args.stop_after_epoch >= 0 and epoch >= args.stop_after_epoch and epoch + 1 < args.epochs:
+            print(f"--stop_after_epoch {args.stop_after_epoch}: stopping after epoch {epoch}; the schedule is that of {args.epochs} epochs, "
+                  f"auto_resume with --stop_after_epoch -1 continues it", flush=True)
+            stopped_early = True
+            break
 
     if wandb_logger and args.wandb_ckpt and args.save_ckpt and args.output_dir:
         wandb_logger.log_checkpoints()
@@ -2246,6 +2316,8 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    if stopped_early:        # no final checkpoint to analyse
+        return
 
     # model_analyse(
     #     model=model_without_ddp,

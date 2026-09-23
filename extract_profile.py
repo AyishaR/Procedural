@@ -10,21 +10,34 @@ ingredients are read off:
        effective scale = root mean square(gain of the preceding LayerNorm)
                          * root mean square(weight) / initialisation standard deviation
 
-   "Effective" means: how large the linear layer looks to the forward pass, relative to
-   a fresh timm initialisation. In a pre-norm block the input to q, k, v is
+   "Effective" means: the size of the matrix the forward pass applies, relative to a fresh
+   timm initialisation. In a pre-norm block the input to q, k, v is
    norm1(x) = gain * standardise(x) + bias, so
 
        q = W_q (gain * standardise(x) + bias)
          = (W_q diag(gain)) standardise(x)  +  W_q bias
 
-   standardise(x) has unit variance per channel, so the matrix that acts on a
-   unit-variance input is W_q diag(gain), whose root mean square is
-   root mean square(W_q) * root mean square(gain) when gain and weight columns are
-   uncorrelated. That product is the effective scale. Dividing by timm's
+   so the matrix that acts on the standardised token is W_q diag(gain), and only that
+   product matters to the function: (c W, gain / c) is the same layer for any c. Its root
+   mean square is root mean square(W_q) * root mean square(gain) when gain and weight columns
+   are uncorrelated. That product is the effective scale. Dividing by timm's
    truncated-normal standard deviation (0.02) turns it into a multiplier: 1.0 means "as
    large as a random initialisation", 0.36 means "about a third of it". q, k, v take
    norm1's gain and fc1 takes norm2's. proj and fc2 have no LayerNorm in front, so their
    effective scale is the raw root mean square(W) / 0.02.
+
+   What the number does and does not say (plots/verify/effective_scale_meaning.py,
+   docs/proc_init_recipe.md section 3). standardise(x) normalises each TOKEN over its
+   channels: every token has squared norm d, but the tokens are far from isotropic (one
+   direction carries 35-50% of the energy in a random network, 83-85% in the kdyck prefix).
+   The size of a matrix therefore fixes the size of its output only for a matrix that is
+   independent of the stream -- which the random matrices this recipe rescales are: their
+   output root mean square is scale * 0.02 * sqrt(d), measured within 5%. It is NOT the
+   size of the checkpoint's own output: the checkpoint's matrices are aligned with the
+   stream (half of their size sits in eight singular directions) and their output energy is
+   5 to 120 times larger than the scale predicts. That aligned part is what no per-tensor
+   moment carries and what the joint statistics (ingredient 3) put back for q and fc1. The
+   recipe thus replaces a strongly anisotropic matrix by an isotropic one of equal size.
 
    The second term, W_q bias, is a constant offset added to every token, independent of
    the input, so it is not part of the scale. Ingredient 2 records the mean and standard
@@ -41,10 +54,10 @@ ingredients are read off:
    around 0.4, not 1. Copying root mean square(W) alone would give a forward pass 2.5 times louder
    than the checkpoint's. utils.apply_analytic_profile therefore samples gains with the
    checkpoint's statistics (ingredient 2) and sets the raw weight to
-   effective scale / root mean square(sampled gain). The forward pass then matches the checkpoint
-   while the raw input-side matrices come out about 2.5 times larger than timm's, which
-   is what makes Adam's relative step on them small (the early lever's carrier, see the
-   synthesis document).
+   effective scale / root mean square(sampled gain). The matrix the forward pass applies then
+   has the checkpoint's size (not its output: see above) while the raw input-side matrices
+   come out about 2.5 times larger than timm's, which is what makes Adam's relative step on
+   them small (the early lever's carrier, see the synthesis document).
 
    Caveat: root mean square(W) * root mean square(gain) equals the exact
    root mean square(W diag(gain)) only if gain_j squared is uncorrelated with the mean
@@ -53,6 +66,12 @@ ingredients are read off:
    and by up to 15 percent for q of block 0, so the two are mildly positively correlated. The product is kept as the default because every
    existing specification, arm and verification target is expressed in it;
    --gain_fold exact writes the exact value instead.
+
+   Which weights get an effective scale is a choice (--scale_weights, default all six). The scale carries from one
+   network to another only for the weights behind a LayerNorm (q, k, v, fc1), whose input is normalised. proj and fc2
+   write into the un-normalised residual stream, so what carries for them is the write ratio
+   ||sublayer output|| / ||stream||: --write_ratio names the weights (among v, proj, fc2) that are set that way instead,
+   and the checkpoint prefix's per-block ratios are measured and stored as targets (docs/proc_init_recipe.md, section 8).
 
    Default form ("linear", the ftbanap recipe): block 0 keeps its measured value and
    blocks 1..8 are replaced by a least-squares straight line from block 1 to block 8.
@@ -67,18 +86,21 @@ ingredients are read off:
    is absent, so that key is provenance here). --no_layernorm omits them (gains stay 1, biases 0: the
    ftbana form).
 
-3. Optional joint statistics (--qk_sink, --fc1_gate): how a weight matrix is aligned with the residual stream, which no
+3. Optional joint statistics (--qk_entropy, --fc1_gate, --common_write): how a weight matrix is aligned with the residual stream, which no
    per-tensor moment expresses. In both procedural prefixes two alignments dominate blocks 1..8:
      * W_q maps the direction all tokens share onto one query, so attention is a sink (entropy 0.4 to 1.0 nats on kdyck
        against 5.2 for any random q/k pair; the top singular component holds 22% of W_q's energy, 0.5% if random);
      * the average row of fc1 (22 to 30% of its energy on kdyck, 0.03% if random; the per-tensor scalar mean is only 1% of
        the std, which is why "zero mean" looked safe) points against the stream's common direction and shifts every
        pre-activation by -2 to -2.7, so the GELU is off.
+     * (--common_write) block 0's MLP writes one vector shared by all tokens, 80 times the size of the patch embeddings
+       (the mean column of its fc2 holds 2.6% of the energy, 0.03% if random). It makes the tokens nearly parallel
+       (cosine 0.91) and is the shared direction the two alignments above read. Target: the token cosine of block 0's output.
    Each is written as one functional target per block (attention entropy; mean fc1 pre-activation), measured with a
    forward pass of the checkpoint prefix on training images -- the only data-dependent ingredients. main.py realises them
    with one rank-one component per tensor along the initialised model's own stream direction
    (utils.calibrate_joint_statistics), rescaling the random part so every effective scale above stays exact.
-   8 + 8 numbers. On kdyck neither is needed for the accuracy gain (second moments suffice, ftbanap 80.24); they make the
+   8 + 8 + 1 numbers, each behind its own flag and specification key, so any subset can be ablated. On kdyck neither is needed for the accuracy gain (second moments suffice, ftbanap 80.24); they make the
    initialisation reproduce the prefix's function, not only its moments.
 
 Output: a profile specification for
@@ -111,7 +133,7 @@ each line sits from the measurement.
 usage: .venv/bin/python extract_profile.py CHECKPOINT OUT.json [--blocks 0-8] [--exact] [--no_layernorm]
                                             [--query_key_flat X] [--fc2_end Y] [--init_standard_deviation 0.02]
                                             [--query_key separate|pooled] [--gain_fold product|exact]
-                                            [--fit_upto B] [--qk_sink] [--fc1_gate] [--data_path D] [--joint_images 256] [--seed 0]
+                                            [--fit_upto B] [--qk_entropy] [--fc1_gate] [--common_write] [--data_path D] [--joint_images 256] [--seed 0]
 for example (the ftbanap specification, derived, no hand constant):
        .venv/bin/python extract_profile.py results/pr_vitb_n/pr_6066174_final.pth /tmp/kdyck.json --query_key pooled --fit_upto 7
 """
@@ -149,7 +171,7 @@ def gain_folded_scale(weight, gain, init_standard_deviation, gain_fold):
 def effective_scales(state_dict, block, init_standard_deviation, gain_fold="product"):
     """Effective scale of each linear weight of one block, relative to the initialisation standard deviation.
 
-    How large the layer looks to the forward pass (see the module docstring). q, k, v are the
+    The size of the matrix the forward pass applies, not of its output in the checkpoint (see the module docstring). q, k, v are the
     three row groups of the fused attn.qkv.weight; they take norm1's gain and fc1 takes norm2's.
     proj and fc2 have no LayerNorm in front, so their scale is the raw root mean square(W) / 0.02."""
     prefix = f"blocks.{block}."
@@ -194,6 +216,13 @@ def mean_row_energy_share(state_dict, block):
     return float(folded.shape[0] * folded.mean(0).pow(2).sum() / folded.pow(2).sum())
 
 
+def mean_column_energy_share(state_dict, block):
+    """Share of fc2's energy carried by its average column (over hidden units): n * ||mean column||^2 / ||W||_F^2.
+    Random: 1/n = 0.0003; block 0 of the kdyck checkpoint 0.026, its blocks 1..8 0.24 to 0.40. Weights only."""
+    weight = state_dict[f"blocks.{block}.mlp.fc2.weight"].float()
+    return float(weight.shape[1] * weight.mean(1).pow(2).sum() / weight.pow(2).sum())
+
+
 def measure_joint_targets(arguments, state_dict, blocks):
     """Functional targets of the two joint statistics, read off the checkpoint prefix at initialisation.
 
@@ -211,31 +240,77 @@ def measure_joint_targets(arguments, state_dict, blocks):
     model_arguments = training_main.get_args_parser().parse_args(
         ["--model", "vit_base", "--data_set", "IMNET", "--data_path", arguments.data_path, "--input_size", "224", "--nb_classes", "1000"])
     model_arguments.nb_classes = 1000
-    torch.manual_seed(arguments.seed)
-    model = utils.build_model(model_arguments)
     prefix = {name: tensor for name, tensor in state_dict.items()
               if name.startswith("blocks.") and int(name.split(".")[1]) in blocks}
-    model.load_state_dict(prefix, strict=False)
-
     train_folder = torchvision_datasets.ImageFolder(os.path.join(arguments.data_path, "train"))
-    images = utils.calibration_images(train_folder.samples, train_folder.loader, build_transform(False, model_arguments),
-                                      arguments.joint_images, arguments.seed)
-    measured = utils.joint_statistics_per_block(model, images, blocks[1:])
-    print(f"joint-statistic targets (checkpoint prefix, {arguments.joint_images} training images, evaluation transform):")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # The targets depend on the random context they are measured in, mostly on the prefix model's random patch / position
+    # embeddings and hardly on the image draw (plots/verify/target_stability.py: entropy and write ratios move by 3-17% across
+    # seeds, the kdyck active-unit fractions by up to 56%). They are therefore averaged over --target_seeds contexts
+    # (seed, seed + 1, ...: a fresh timm model and a fresh draw of training images each), so that no single random
+    # embedding is baked into the recipe. The standard deviation over the contexts is stored next to each target.
+    seeds = list(range(arguments.seed, arguments.seed + arguments.target_seeds))
+    per_seed = []
+    for context_seed in seeds:
+        torch.manual_seed(context_seed)
+        model = utils.build_model(model_arguments)
+        model.load_state_dict(prefix, strict=False)
+        model.to(device)
+        images = utils.calibration_images(train_folder.samples, train_folder.loader, build_transform(False, model_arguments),
+                                          arguments.joint_images, context_seed)
+        chunks = [utils.joint_statistics_per_block(model, images[start:start + 64].to(device), blocks)
+                  for start in range(0, len(images), 64)]      # every quantity is a mean over images: size-weighted chunks average exactly
+        sizes = [min(64, len(images) - start) for start in range(0, len(images), 64)]
+        per_seed.append({block: {key: float(np.average([chunk[block][key] for chunk in chunks], weights=sizes)) for key in chunks[0][block]}
+                         for block in chunks[0]})
+    everything = {block: {key: float(np.mean([one[block][key] for one in per_seed])) for key in per_seed[0][block]}
+                  for block in per_seed[0]}
+    spread = {block: {key: float(np.std([one[block][key] for one in per_seed], ddof=1)) if len(per_seed) > 1 else 0.0
+                      for key in per_seed[0][block]} for block in per_seed[0]}
+    measured = {block: values for block, values in everything.items() if block != 0}     # block 0 reads the raw embeddings: no sink, MLP on
+    print(f"joint-statistic targets (checkpoint prefix, {arguments.joint_images} training images, evaluation transform, "
+          f"mean over {len(seeds)} contexts, seeds {seeds}; +- = standard deviation over the contexts):")
+    print(f"  b{blocks[0]}: token cosine of the block's output {everything[blocks[0]]['token_cosine']:.3f} "
+          f"(mean-column energy share of fc2 {mean_column_energy_share(state_dict, blocks[0]):.4f})")
     for block, values in measured.items():
-        print(f"  b{block}: attention entropy {values['entropy']:.3f} nats (top key {values['sink_share']:.2f} of the mass) | "
-              f"mean fc1 pre-activation {values['pre_activation_mean']:+.3f} (active units {values['active_units']:.4f}, "
+        print(f"  b{block}: attention entropy {values['entropy']:.3f} +- {spread[block]['entropy']:.3f} nats (top key {values['sink_share']:.2f} of the mass) | "
+              f"active units {values['active_units']:.5f} +- {spread[block]['active_units']:.5f}, "
+              f"mean fc1 pre-activation {values['pre_activation_mean']:+.3f} +- {spread[block]['pre_activation_mean']:.3f} ("
               f"mean-row energy share {mean_row_energy_share(state_dict, block):.3f})")
     protocol = "training images, evaluation transform, utils.calibration_images"
+    context = {"seeds": seeds}           # which random contexts the targets are averaged over
+    spread_of = lambda key, which: {str(block): float(f"{spread[block][key]:.3g}") for block in which}
     targets = {}
-    if arguments.qk_sink:
-        targets["qk_sink"] = {"entropy": {str(block): round(values["entropy"], 3) for block, values in measured.items()},
+    if arguments.qk_entropy:
+        targets["qk_entropy"] = {"entropy": {str(block): round(values["entropy"], 3) for block, values in measured.items()},
+                              **context, "entropy_sd_over_seeds": spread_of("entropy", measured),
                               "images": arguments.joint_images, "renormalize": True, "protocol": protocol}
     if arguments.fc1_gate:
-        targets["fc1_gate"] = {"pre_activation_mean": {str(block): round(values["pre_activation_mean"], 3) for block, values in measured.items()},
+        if arguments.fc1_gate_target == "active_units":
+            gate_target = {"active_units": {str(block): float(f"{values['active_units']:.5g}") for block, values in measured.items()},
+                           "checkpoint_pre_activation_mean": {str(block): round(values["pre_activation_mean"], 3) for block, values in measured.items()}}
+        else:
+            gate_target = {"pre_activation_mean": {str(block): round(values["pre_activation_mean"], 3) for block, values in measured.items()},
+                           "checkpoint_active_units": {str(block): float(f"{values['active_units']:.5g}") for block, values in measured.items()}}
+        targets["fc1_gate"] = {**gate_target, **context, "target_sd_over_seeds": spread_of(arguments.fc1_gate_target, measured),
                                "images": arguments.joint_images, "renormalize": True, "protocol": protocol,
                                # reference only (weights-only reading; the calibration reports what it needed):
                                "checkpoint_mean_row_energy_share": {str(block): round(mean_row_energy_share(state_dict, block), 3) for block in measured}}
+    if arguments.write_ratio:
+        print("  write ratios (attention / MLP): " + "  ".join(f"b{block} {values['attention_write']:.4f} / {values['mlp_write']:.4f}"
+                                                                for block, values in everything.items()))
+        targets["write_ratio"] = {"tensors": list(arguments.write_ratio), **context, "images": arguments.joint_images, "protocol": protocol,
+                                  "attention_sd_over_seeds": spread_of("attention_write", everything), "mlp_sd_over_seeds": spread_of("mlp_write", everything)}
+        if {"v", "proj"} & set(arguments.write_ratio):
+            targets["write_ratio"]["attention"] = {str(block): float(f"{values['attention_write']:.5g}") for block, values in everything.items()}
+        if "fc2" in arguments.write_ratio:
+            targets["write_ratio"]["mlp"] = {str(block): float(f"{values['mlp_write']:.5g}") for block, values in everything.items()}
+    if arguments.common_write:
+        targets["common_write"] = {"token_cosine": {str(blocks[0]): round(everything[blocks[0]]["token_cosine"], 3)},
+                                   **context, "token_cosine_sd_over_seeds": spread_of("token_cosine", [blocks[0]]),
+                                   "images": arguments.joint_images, "renormalize": True, "protocol": protocol,
+                                   "checkpoint_mean_column_energy_share": {str(blocks[0]): round(mean_column_energy_share(state_dict, blocks[0]), 4)}}
     return targets
 
 
@@ -278,6 +353,8 @@ def build_profile_specification(arguments):
 
     specification, rows = {}, []
     for weight_name in LINEAR_WEIGHTS:
+        if weight_name not in arguments.scale_weights:      # left at timm's initialisation, or set by its write ratio
+            continue
         source = "qkv_pooled" if (weight_name in ("q", "k") and arguments.query_key == "pooled") else weight_name
         per_block = [scales[block][source] for block in blocks]
         if arguments.exact:
@@ -291,19 +368,27 @@ def build_profile_specification(arguments):
             end = start + (end_fit - start) * (len(measured) - 1) / max(1, n_fit - 1)
         else:
             start, end = fit_line(measured)
+        if weight_name in ("q", "k") and arguments.query_key == "pooled":
+            # the twin's convention is one number: the fused-qkv scale averaged over ALL fitted blocks (kdyck 1.321), flat,
+            # independent of --fit_upto. (Until 2026-09-17 this fitted a sloped line through the pooled values, 1.34 -> 1.26,
+            # contrary to the docstring; no recorded specification was generated with it.)
+            start = end = float(np.mean(measured))
         start, end = apply_corrections(weight_name, start, end, arguments.query_key_flat, arguments.fc2_end)
         misfit = line_misfit(measured, start, end)
         specification[weight_name] = {"b0": round(scales[first_block][source], 3),
                                       "start": round(start, 3), "end": round(end, 3)}
         rows.append((weight_name, per_block, (scales[first_block][source], start, end, misfit)))
 
+    specification["gain_fold"] = arguments.gain_fold          # the folding convention is recorded whatever the realisation
+    if arguments.realise == "exact":
+        specification["realise"] = "exact"
     if not arguments.no_layernorm:
         specification["ln"] = {
             "gain": True, "bias": True, "source": "parametric",
             "stats": {str(block): layernorm_statistics(state_dict, block) for block in blocks},
             "ckpt": arguments.checkpoint,
         }
-    if arguments.qk_sink or arguments.fc1_gate:
+    if arguments.qk_entropy or arguments.fc1_gate or arguments.common_write or arguments.write_ratio:
         specification.update(measure_joint_targets(arguments, state_dict, blocks))
     return specification, blocks, rows
 
@@ -360,17 +445,46 @@ def build_parser(description=__doc__, output_required=True):
     parser.add_argument("--gain_fold", choices=("product", "exact"), default="product",
                         help="how the LayerNorm gain enters q, k, v, fc1: 'product' = root mean square(W) * root mean square(gain), "
                              "the units of every existing specification; 'exact' = root mean square(W diag(gain))")
-    parser.add_argument("--qk_sink", action="store_true",
-                        help="joint statistic 1: also measure the checkpoint prefix's per-block attention entropy at initialisation "
-                             "and write it as 'qk_sink' targets; main.py then installs a rank-one coupled q/k sink "
+    parser.add_argument("--realise", choices=("exact", "multiplier"), default="exact",
+                        help="how utils.apply_analytic_profile turns a scale into weights: 'exact' (default since 2026-09-17) rescales each "
+                             "slice, after the LayerNorm gains have been sampled, until the declared quantity (--gain_fold) holds to float "
+                             "precision; 'multiplier' = W <- (scale / rms(gain)) * W_timm, which meets it within 0.2%% and is what every "
+                             "specification written before that date does (they carry no 'realise' key)")
+    parser.add_argument("--qk_entropy", action="store_true",
+                        help="joint statistic 1 (target = mean attention ENTROPY per block, i.e. how sharp attention is; that all queries pick the "
+                             "same key is a property of the rank-one construction, reported as 'sink share' and compared in "
+                             "plot_reconstruction.py, not part of the target): also measure the checkpoint prefix's per-block attention entropy at initialisation "
+                             "and write it as 'qk_entropy' targets; main.py then installs a rank-one coupled q/k sink "
                              "(utils.calibrate_joint_statistics; effective scales preserved)")
     parser.add_argument("--fc1_gate", action="store_true",
                         help="joint statistic 2: also measure the prefix's per-block mean fc1 pre-activation and write it as 'fc1_gate' "
                              "targets; main.py then installs a rank-one mean-row component in fc1 (the GELU gate)")
+    parser.add_argument("--fc1_gate_target", choices=("active_units", "pre_activation_mean"), default="active_units",
+                        help="what the fc1 gate is calibrated to: 'active_units' = the fraction of fc1 pre-activations > 0 over images, tokens and "
+                             "units (a proxy for how much of the MLP is switched on: GELU is small but not zero below 0, and the same fraction "
+                             "can come from different distributions, so mean, std and GELU rms are reported next to it), or 'pre_activation_mean', the "
+                             "target of the first reconstruction specifications (ftbanaperg*, ftbanakperg*)")
+    parser.add_argument("--common_write", action="store_true",
+                        help="joint statistic 3: also measure the token cosine of the first block's output in the prefix and write it as "
+                             "'common_write' target; main.py then installs a rank-one mean-column component in that block's fc2 "
+                             "(block 0 floods the stream with one shared vector, which the sink and the gate of later blocks read)")
+    parser.add_argument("--scale_weights", default=",".join(LINEAR_WEIGHTS),
+                        help="comma-separated linear weights that receive an effective scale; the others stay at timm's initialisation "
+                             "(q,k,fc1 = the input side without v: the ftbanapeb7i form)")
+    parser.add_argument("--write_ratio", default="",
+                        help="comma-separated write-side weights among v,proj,fc2 that are NOT given an effective scale but multiplied by one "
+                             "scalar per sublayer until the block's write ratio ||sublayer output|| / ||stream|| equals the checkpoint "
+                             "prefix's, measured here and written as 'write_ratio' targets (utils.calibrate_joint_statistics). "
+                             "'v,proj,fc2': attention factor split evenly over v and proj, as the late lever does; 'proj,fc2': v keeps "
+                             "its effective scale (list it in --scale_weights) and proj takes the whole attention factor")
     parser.add_argument("--data_path", default="/data/datasets/ILSVRC2012",
-                        help="ImageNet root with a train/ folder; --qk_sink and --fc1_gate are the only parts of this script that run a forward pass")
+                        help="ImageNet root with a train/ folder; the joint statistics (--qk_entropy, --fc1_gate, --common_write, --write_ratio) "
+                             "are the only parts of this script that run a forward pass")
     parser.add_argument("--joint_images", type=int, default=256, help="training images used to measure the targets and, in main.py, to calibrate")
-    parser.add_argument("--seed", type=int, default=0, help="seed of the random parts of the prefix model and of the image choice")
+    parser.add_argument("--seed", type=int, default=0, help="first seed of the random parts of the prefix model and of the image choice")
+    parser.add_argument("--target_seeds", type=int, default=5,
+                        help="number of random contexts (seed, seed + 1, ...) the functional targets are averaged over; 1 = the single-context "
+                             "targets of every specification written before 2026-09-17")
     parser.add_argument("--init_standard_deviation", type=float, default=0.02,
                         help="standard deviation of timm's truncated-normal initialisation that the scales are relative to")
     return parser
@@ -386,11 +500,26 @@ def parse_arguments():
 def validate_arguments(parser, arguments):
     """Rejects option combinations that would silently do the wrong thing."""
     first, last = parse_block_range(parser, arguments.blocks)
-    if not arguments.exact and last - first < 1:
-        parser.error("the linear form needs at least two blocks (block 0 plus one to fit)")
+    if not arguments.exact and last - first < 2:
+        parser.error("the linear form needs the first block plus at least two fitted blocks (a line through one point is undetermined)")
     if not arguments.exact and first != 0:
         parser.error("the linear form anchors on block 0 (utils.apply_analytic_profile treats block 0 literally as 'b0' "
                      "and ramps over the other listed blocks); use --blocks 0-N or --exact")
+    arguments.scale_weights = [name for name in arguments.scale_weights.split(",") if name]
+    arguments.write_ratio = [name for name in arguments.write_ratio.split(",") if name]
+    if set(arguments.scale_weights) - set(LINEAR_WEIGHTS):
+        parser.error(f"--scale_weights must be among {','.join(LINEAR_WEIGHTS)}, got {arguments.scale_weights}")
+    if set(arguments.write_ratio) - {"v", "proj", "fc2"}:
+        parser.error(f"--write_ratio must be among v,proj,fc2 (the weights on the write path), got {arguments.write_ratio}")
+    if set(arguments.write_ratio) & set(arguments.scale_weights):
+        parser.error(f"{sorted(set(arguments.write_ratio) & set(arguments.scale_weights))} would be set twice: a weight is given either an "
+                     "effective scale (--scale_weights) or a write ratio (--write_ratio)")
+    if "v" in arguments.write_ratio and "proj" not in arguments.write_ratio:
+        parser.error("--write_ratio v without proj leaves proj's scale undefined for the attention write; use v,proj or proj")
+    if arguments.common_write and first != 0:
+        parser.error("--common_write describes block 0 (it floods the stream with one shared vector); use a block range starting at 0")
+    if arguments.target_seeds < 1:
+        parser.error("--target_seeds must be at least 1")
     if arguments.query_key == "pooled" and arguments.query_key_flat is not None:
         parser.error("--query_key pooled derives the q/k value; do not combine it with --query_key_flat")
     if arguments.exact and (arguments.query_key_flat is not None or arguments.fc2_end is not None or arguments.fit_upto is not None):
@@ -421,11 +550,15 @@ def main():
     with open(arguments.out, "w") as file:
         json.dump(specification, file, indent=1)
 
-    form = "exact per-block" if arguments.exact else "block 0 + linear fit"
+    form = ("exact per-block" if arguments.exact else "block 0 + linear fit") + f" ({','.join(arguments.scale_weights)})"
     layernorm_note = ("" if arguments.no_layernorm
                       else f" + {8 * len(blocks)} LayerNorm statistics inline (no checkpoint needed at initialisation)")
-    sink_note = ("" if not arguments.qk_sink else f" + {len(specification['qk_sink']['entropy'])} attention-sink targets") + \
-                ("" if not arguments.fc1_gate else f" + {len(specification['fc1_gate']['pre_activation_mean'])} fc1-gate targets")
+    sink_note = ("" if not arguments.qk_entropy else f" + {len(specification['qk_entropy']['entropy'])} attention-sink targets") + \
+                ("" if not arguments.fc1_gate else f" + {len(specification['fc1_gate'][arguments.fc1_gate_target])} fc1-gate targets ({arguments.fc1_gate_target})") + \
+                ("" if not arguments.common_write else " + 1 common-write target") + \
+                ("" if not arguments.write_ratio else
+                 f" + {sum(len(specification['write_ratio'].get(key, {})) for key in ('attention', 'mlp'))} write-ratio targets "
+                 f"({','.join(arguments.write_ratio)})")
     print(f"wrote {arguments.out}: {form} scales{layernorm_note}{sink_note}")
 
 

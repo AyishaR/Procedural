@@ -24,3 +24,7 @@ plots/cache/*.npz
 /grad_norms.json
 /o
 /pid,*
+# debug outputs (331 MB of dumps), a stray ps capture, and an embedded foreign repo
+debug/out/
+/rss=,comm=
+nanochat/

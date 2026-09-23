@@ -1,0 +1,52 @@
+{
+ "realise": "exact",
+ "gain_fold": "exact",
+ "fc1_gate": {
+  "pre_activation_mean": {
+   "1": -2.262,
+   "2": -1.872,
+   "3": -2.696,
+   "4": -3.102,
+   "5": -3.123,
+   "6": -3.071,
+   "7": -3.086
+  },
+  "checkpoint_active_units": {
+   "1": 0.06238,
+   "2": 0.16068,
+   "3": 0.11949,
+   "4": 0.10004,
+   "5": 0.12036,
+   "6": 0.13685,
+   "7": 0.14157
+  },
+  "seeds": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "target_sd_over_seeds": {
+   "1": 0.098,
+   "2": 0.0587,
+   "3": 0.0738,
+   "4": 0.125,
+   "5": 0.103,
+   "6": 0.122,
+   "7": 0.144
+  },
+  "images": 256,
+  "renormalize": false,
+  "protocol": "training images, evaluation transform, utils.calibration_images",
+  "checkpoint_mean_row_energy_share": {
+   "1": 0.264,
+   "2": 0.082,
+   "3": 0.105,
+   "4": 0.121,
+   "5": 0.13,
+   "6": 0.133,
+   "7": 0.131
+  }
+ }
+}

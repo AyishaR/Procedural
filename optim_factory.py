@@ -12,6 +12,7 @@ from timm.optim.lookahead import Lookahead
 # from timm.optim.rmsprop_tf import RMSpropTF
 # from timm.optim.sgdp import SGDP
 from custom_lr import *
+from row_lr_mask import split_lr_scale_spec, install_row_lr_masks
 
 import json
 
@@ -154,12 +155,23 @@ def build_lr_scaled_param_groups(model, weight_decay, spec, skip_list=()):
     """Parameter groups with per-tensor learning-rate scales given explicitly: `spec` is
     {parameter name: lr_scale} (or a path to such a JSON). Like build_step_matched_param_groups,
     wd_scale = 1 / lr_scale keeps the relative decay per step unchanged; every other tensor keeps
-    lr_scale 1. Used by ftbanal: ftbana's forward pass with the relative Adam steps of ftbanag, whose
-    q/k/v/fc1 weights are 1/rms(gamma) larger, i.e. lr_scale = rms(gamma_b) on attn.qkv.weight and
-    mlp.fc1.weight of blocks 0-8 (docs 0d.11)."""
-    import json, os
+    lr_scale 1. First used by ftbanal (2026-09): ftbana's forward pass (effective scales in the raw
+    weights, gains 1) with the relative Adam steps of ftbanag, whose q/k/v/fc1 weights are 1/rms(gamma)
+    larger, i.e. lr_scale = rms(gamma_b) on attn.qkv.weight and mlp.fc1.weight of blocks 0-8 (docs 0d.11);
+    then by the late-lever 2x2 (ftbrhopl, ftbrhosl). Every name in `spec` must be a trainable parameter
+    and every value a finite positive number; groups are keyed by the exact value, and each group
+    carries "decay" (True/False) so the schedule in engine.py never uses the current coefficient as
+    the eligibility flag."""
+    import json, os, math
     if isinstance(spec, str):
         spec = json.load(open(spec)) if os.path.exists(spec) else json.loads(spec)
+    trainable = {name for name, p in model.named_parameters() if p.requires_grad}
+    unknown = sorted(k for k in spec if k not in trainable)
+    if unknown:
+        raise KeyError(f"--lr_scale_json names {len(unknown)} tensor(s) that are not trainable parameters: {unknown[:5]}")
+    for k, v in spec.items():
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)) or float(v) <= 0:
+            raise ValueError(f"--lr_scale_json: lr scale of {k} must be a finite positive number, got {v!r}")
     groups, table = {}, []
     for name, param in model.named_parameters():
         if not param.requires_grad:
@@ -168,15 +180,45 @@ def build_lr_scaled_param_groups(model, weight_decay, spec, skip_list=()):
         lr_scale = float(spec.get(name, 1.0))
         if name in spec:
             table.append((name, lr_scale))
-        key = ("no_decay" if no_decay else "decay", round(lr_scale, 6))
+        key = ("no_decay" if no_decay else "decay", lr_scale)
         if key not in groups:
-            groups[key] = {"params": [], "weight_decay": 0.0 if no_decay else weight_decay,
-                           "lr_scale": lr_scale, "wd_scale": (1.0 / lr_scale) if (not no_decay and lr_scale > 0) else 1.0}
+            groups[key] = {"params": [], "weight_decay": 0.0 if no_decay else weight_decay, "decay": not no_decay,
+                           "lr_scale": lr_scale, "wd_scale": (1.0 / lr_scale) if not no_decay else 1.0}
         groups[key]["params"].append(param)
     print("[lr-scale] explicit per-tensor lr_scale:", flush=True)
     for name, m in table:
         print(f"[lr-scale]   {name:32s} lr x{m:.4f}, wd x{1/m:.3f}", flush=True)
     print(f"[lr-scale] {len(table)} tensors scaled, {len(groups)} param groups", flush=True)
+    return list(groups.values())
+
+
+def release_factor(epoch_position, start, end):
+    """Learning-rate factor of the blocks under --release_blocks: 0 before `start` (in epochs, fractional), linear to 1 at `end`,
+    1 afterwards. With lr = 0 AdamW changes nothing (the decoupled decay is lr * wd * w), so the blocks are frozen bit for bit while
+    their Adam moments keep following the gradient; the release therefore starts with warm moments."""
+    if epoch_position < start: return 0.0
+    if epoch_position >= end or end <= start: return 1.0
+    return (epoch_position - start) / float(end - start)
+
+
+def build_block_release_param_groups(model, weight_decay, blocks, skip_list=()):
+    """Parameter groups for a delayed start of chosen blocks (docs/early_lever_mechanism_plan.md, converse of C1): the tensors of
+    `blocks` go into groups flagged "release", whose learning rate engine.train_one_epoch multiplies by release_factor; everything
+    else is grouped as get_parameter_groups does (decay / no_decay, lr_scale 1, wd_scale 1). Weight decay is NOT compensated: the
+    released blocks simply train with a smaller step, and do not move at all while the factor is 0."""
+    blocks = sorted(int(b) for b in blocks); prefixes = tuple(f"blocks.{b}." for b in blocks)
+    assert blocks and all(0 <= b < len(model.blocks) for b in blocks), blocks
+    groups, n_released = {}, 0
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        no_decay = len(param.shape) == 1 or name.endswith(".bias") or name in skip_list
+        released = name.startswith(prefixes); n_released += int(released)
+        key = ("no_decay" if no_decay else "decay", released)
+        if key not in groups:
+            groups[key] = {"params": [], "weight_decay": 0.0 if no_decay else weight_decay, "decay": not no_decay, "lr_scale": 1.0, "wd_scale": 1.0, "release": released}
+        groups[key]["params"].append(param)
+    print(f"[release] blocks {blocks}: {n_released} tensors in {sum(1 for k in groups if k[1])} released groups, {len(groups)} param groups in total", flush=True)
     return list(groups.values())
 
 
@@ -195,18 +237,39 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
     else:
         parameters = [p for p in model.parameters() if p.requires_grad]
 
+    if getattr(args, "lr_match_ckpt", "") and getattr(args, "lr_scale_json", ""):
+        raise ValueError("--lr_scale_json and --lr_match_ckpt both build the parameter groups; give one of them")
+    if getattr(args, "release_blocks", "") and (getattr(args, "lr_match_ckpt", "") or getattr(args, "lr_scale_json", "") or args.custom_lr_layer):
+        raise ValueError("--release_blocks builds its own parameter groups and cannot be combined with --lr_match_ckpt / --lr_scale_json / --custom_lr_layer")
     if getattr(args, "lr_match_ckpt", ""):
         blocks = [int(x) for x in str(args.lr_match_blocks).split(",") if x.strip() != ""]
         parameters = build_step_matched_param_groups(model, args.weight_decay, args.lr_match_ckpt, blocks,
                                                      skip_list=skip if filter_bias_and_bn else ())
         weight_decay = 0.
 
+    row_lr_masks, _scalar = {}, None
     if getattr(args, "lr_scale_json", ""):
-        parameters = build_lr_scaled_param_groups(model, args.weight_decay, args.lr_scale_json,
+        import os as _os
+        _spec = args.lr_scale_json
+        _spec = json.load(open(_spec)) if _os.path.exists(_spec) else json.loads(_spec)
+        _scalar, row_lr_masks = split_lr_scale_spec(_spec)      # per-tensor scales here, per-row masks after the optimizer exists
+        _trainable = {name for name, p in model.named_parameters() if p.requires_grad}
+        _unknown = sorted(k for k in row_lr_masks if k not in _trainable)
+        if _unknown:
+            raise KeyError(f"--lr_scale_json row masks name tensors that are not trainable parameters: {_unknown}")
+        parameters = build_lr_scaled_param_groups(model, args.weight_decay, _scalar,
                                                   skip_list=skip if filter_bias_and_bn else ())
         weight_decay = 0.
 
+    if getattr(args, "release_blocks", ""):
+        parameters = build_block_release_param_groups(model, args.weight_decay, [int(b) for b in str(args.release_blocks).split(",") if b.strip() != ""],
+                                                      skip_list=skip if filter_bias_and_bn else ())
+        weight_decay = 0.
+
     if args.custom_lr_layer:
+        if getattr(args, "lr_match_ckpt", "") or getattr(args, "lr_scale_json", ""):
+            raise ValueError("--custom_lr_layer builds its own parameter groups and cannot be combined with --lr_match_ckpt / --lr_scale_json")
+        no_decay_names = (skip_list if skip_list is not None else model.no_weight_decay() if hasattr(model, "no_weight_decay") else ()) if filter_bias_and_bn else ()
         parameters = build_vit_param_groups(
             model=model,
             base_lr=start_lr if start_lr is not None else args.lr,
@@ -214,8 +277,11 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
             custom_block_targets=custom_block_targets,
             custom_non_block_targets=custom_non_block_targets,
             transition_start=custom_lr_transition_start,
-            transition_end=custom_lr_transition_end
+            transition_end=custom_lr_transition_end,
+            weight_decay=args.weight_decay,          # carried per group, as get_parameter_groups does (the optimizer default is 0 here)
+            skip_list=no_decay_names
         )
+        weight_decay = 0.
 
     if 'fused' in opt_lower:
         assert has_apex and torch.cuda.is_available(), 'APEX and CUDA required for fused optimizers'
@@ -283,5 +349,10 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
     if len(opt_split) > 1:
         if opt_split[0] == 'lookahead':
             optimizer = Lookahead(optimizer)
+
+    if _scalar is not None:
+        optimizer._lr_scale_spec = dict(_scalar)                # provenance: written into checkpoints, validated on resume
+    if row_lr_masks:
+        install_row_lr_masks(optimizer, model, row_lr_masks)    # exact post-step correction, see row_lr_mask.py
 
     return optimizer

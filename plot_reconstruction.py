@@ -3,14 +3,14 @@
 Companion of plot_profile.py: that figure shows the weight statistics the recipe reads off the checkpoint; this one
 shows what the resulting network DOES on images, block by block, next to the checkpoint prefix it is derived from.
 
-    checkpoint prefix       fresh timm ViT-B with the checkpoint's tensors in blocks 0..8 (as main.py builds ftb3i)
+    checkpoint prefix       fresh timm ViT-B with the checkpoint's tensors in the specification's blocks (as main.py builds ftb3i for 0..8, ftb4i for 0..7)
     specification           the same fresh model after utils.apply_analytic_profile(SPEC) and, when the specification
                             carries joint statistics, utils.calibrate_joint_statistics -- exactly the initialisation main.py produces
-    specification, second moments only   the specification without its joint statistics ("qk_sink", "fc1_gate"), drawn when it has any
+    specification, second moments only   the specification without its joint statistics ("qk_entropy", "fc1_gate", "common_write"), drawn when it has any
     random                  the fresh timm model
 
 Two figures. <figure>_scales.png: the six effective scales (exact folding) read back from each initialised model, the
-quantity the specification's numbers control. <figure>.png: ten panels, all measured on TRAINING images under the evaluation transform (utils.calibration_images, a draw that
+quantity the specification's numbers control. <figure>.png: twelve panels, all measured on TRAINING images under the evaluation transform (utils.calibration_images, a draw that
 the calibration did not use unless --image_seed equals --seed):
     attention entropy | mass on the most-attended key | share of the query common to all tokens | token-specific share
     of the attention write | attention write ratio | mean fc1 pre-activation | fraction of active fc1 units (GELU gate) |
@@ -18,7 +18,7 @@ the calibration did not use unless --image_seed equals --seed):
 Entropy and the mean pre-activation are the two calibrated targets; everything else is a consequence.
 
 usage: .venv/bin/python plot_reconstruction.py CHECKPOINT SPEC.json [--figure plots/out/reconstruction_<spec>.png]
-                                               [--blocks 0-8] [--images 64] [--seed 0] [--image_seed 1] [--no_tex]
+                                               [--blocks 0-7] [--images 64] [--seed 0] [--image_seed 1] [--no_tex]
 for example:
        .venv/bin/python plot_reconstruction.py results/pr_vitb_n/pr_6066174_final.pth vitbase_runs/profile_ftbanaper.json
 """
@@ -48,18 +48,19 @@ STYLES = {"checkpoint prefix": dict(color=PALETTE[0], marker="o", linestyle="-",
           "specification, second moments only": dict(color=PALETTE[1], marker="s", linestyle=":", linewidth=0.9, alpha=0.6,
                                                      markerfacecolor="none", markeredgewidth=0.6, zorder=1),
           "random": dict(color="#8a8a8a", marker="^", linestyle="-.", linewidth=0.9, zorder=1)}
-PANELS = [("entropy", "attention entropy (nats)", False), ("sink_share", "mass on top key", False),
-          ("common_query", "common query share", False), ("attention_specific", "token-specific attn", True),
-          ("attention_write", "attn write ratio", True),
-          ("pre_activation_mean", "mean fc1 pre-activation", False), ("gate", "active fc1 units", False),
-          ("gelu_rms", "GELU output rms", True), ("mlp_write", "MLP write ratio", True), ("token_cosine", "token cosine", False)]
+PANELS = [("entropy", "attn entropy (nats)", False), ("sink_share", "top-key mass", False),
+          ("common_query", "common query", False), ("attention_specific", "token-spec. attn", True),
+          ("attention_write", "attn write ratio", True), ("stream_rms", "stream rms", True),
+          ("pre_activation_mean", "fc1 pre-act. mean", False), ("gate", "active fc1 units", False),
+          ("gelu_rms", "GELU out rms", True), ("mlp_specific", "token-spec. MLP", True),
+          ("mlp_write", "MLP write ratio", True), ("token_cosine", "token cosine", False)]
 
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("checkpoint"); parser.add_argument("specification")
     parser.add_argument("--figure", default=None)
-    parser.add_argument("--blocks", default="0-8", help="blocks the specification covers (and the checkpoint prefix uses)")
+    parser.add_argument("--blocks", default=None, help="blocks the specification covers (and the checkpoint prefix uses); default: read from the specification")
     parser.add_argument("--images", type=int, default=64, help="images for the calibration and for the figure (main.py uses the specification's count)")
     parser.add_argument("--seed", type=int, default=0, help="seed of the model and of the sink calibration images (as in training)")
     parser.add_argument("--image_seed", type=int, default=1, help="seed of the images the figure is measured on")
@@ -74,7 +75,7 @@ def parse_arguments():
 
 @torch.no_grad()
 def forward_statistics(model, images):
-    """Per block: the eight quantities of PANELS."""
+    """Per block: the quantities of PANELS."""
     model.eval()
     stream, result = utils.block_input_stream(model, images), []
     for block in model.blocks:
@@ -85,7 +86,7 @@ def forward_statistics(model, images):
         after_attention = stream + attention_out
         pre_activation = block.mlp.fc1(block.norm2(after_attention))
         mlp_out = block.mlp(block.norm2(after_attention))
-        patches = attention_out[:, 1:]
+        patches, mlp_patches = attention_out[:, 1:], mlp_out[:, 1:]
         tokens = torch.nn.functional.normalize(stream[:, 1:], dim=-1)
         result.append({
             "entropy": float(-(probabilities * (probabilities + 1e-12).log()).sum(-1).mean()),
@@ -93,6 +94,8 @@ def forward_statistics(model, images):
             "common_query": float((query_mean.pow(2).sum(-1) / query_flat.pow(2).sum(-1).mean(1, keepdim=True)).mean()),
             "attention_specific": float((patches - patches.mean(1, keepdim=True)).pow(2).sum() / patches.pow(2).sum()),
             "attention_write": float((attention_out.norm(dim=-1) / stream.norm(dim=-1)).mean()),
+            "stream_rms": float(stream.pow(2).mean().sqrt()),
+            "mlp_specific": float((mlp_patches - mlp_patches.mean(1, keepdim=True)).pow(2).sum() / mlp_patches.pow(2).sum()),
             "mlp_write": float((mlp_out.norm(dim=-1) / after_attention.norm(dim=-1)).mean()),
             "gate": float((pre_activation > 0).float().mean()),
             "pre_activation_mean": float(pre_activation.mean()),
@@ -144,9 +147,12 @@ def plot_scales(arguments, models, blocks, figure_path):
 
 def main():
     arguments = parse_arguments()
-    first, last = (int(x) for x in arguments.blocks.split("-"))
-    blocks = list(range(first, last + 1))
     specification = json.load(open(arguments.specification))
+    if arguments.blocks is None:
+        blocks = sorted(int(block) for block in specification["q"]["per_block"])
+    else:
+        first, last = (int(x) for x in arguments.blocks.split("-"))
+        blocks = list(range(first, last + 1))
 
     model_arguments = training_main.get_args_parser().parse_args(
         ["--model", "vit_base", "--data_set", "IMNET", "--data_path", arguments.data_path, "--input_size", "224", "--nb_classes", "1000"])
@@ -168,12 +174,12 @@ def main():
     models["checkpoint prefix"] = prefix
     recipe = fresh()
     utils.apply_analytic_profile(recipe, specification, blocks, seed=arguments.seed)
-    joint = {key: specification[key] for key in ("qk_sink", "fc1_gate") if key in specification}
+    joint = {key: specification[key] for key in ("qk_entropy", "fc1_gate", "common_write", "write_ratio") if key in specification}
     if joint:
         without_joint = fresh()
         utils.apply_analytic_profile(without_joint, specification, blocks, seed=arguments.seed)
         models["specification, second moments only"] = without_joint
-        utils.calibrate_joint_statistics(recipe, joint, calibration_images, seed=arguments.seed)
+        utils.calibrate_joint_statistics(recipe, {**joint, **{key: specification[key] for key in ("gain_fold",) if key in specification}}, calibration_images, seed=arguments.seed)
     models["specification"] = recipe
     models["random"] = fresh()
 
@@ -185,9 +191,9 @@ def main():
         for name in statistics:
             print(f"{key:36s} {name:24s} " + " ".join(f"{statistics[name][b][key]:7.3f}" for b in range(depth)))
 
-    plt.rcParams.update(bundles.iclr2024(usetex=not arguments.no_tex, family="serif", nrows=2, ncols=5))
+    plt.rcParams.update(bundles.iclr2024(usetex=not arguments.no_tex, family="serif", nrows=2, ncols=6))
     width = plt.rcParams["figure.figsize"][0]
-    figure, axes = plt.subplots(2, 5, sharex=True, figsize=(width, 0.42 * width))
+    figure, axes = plt.subplots(2, 6, sharex=True, figsize=(width, 0.36 * width))
     order = ["checkpoint prefix", "specification", "specification, second moments only", "random"]
     for axis, (key, label, log_scale) in zip(axes.flat, PANELS):
         for name in order:
@@ -196,7 +202,7 @@ def main():
         axis.axvspan(blocks[-1] + 0.5, depth - 0.5, color="#b0b0b0", alpha=0.08, linewidth=0)
         if log_scale:
             axis.set_yscale("log")
-        axis.set_title(label, fontsize=plt.rcParams["font.size"] - 1)
+        axis.set_title(label, fontsize=plt.rcParams["font.size"] - 2)
         axis.grid(True, color="#e6e6e6", linewidth=0.5); axis.set_axisbelow(True)
         for side in ("top", "right"):
             axis.spines[side].set_visible(False)

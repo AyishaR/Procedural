@@ -13,6 +13,7 @@ from timm.utils import accuracy, ModelEma
 from pprint import pprint
 import torch.nn.functional as F
 import utils
+from row_lr_mask import _step_value
 import json
 import os
 import sys
@@ -50,6 +51,11 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                     custom_block_targets=None, custom_non_block_targets=None, args=None):
     model.train(True)
     metric_logger = utils.MetricLogger(delimiter="  ")
+    release_cfg = (args.release_start, args.release_end) if (args is not None and getattr(args, 'release_blocks', '')) else None
+    if release_cfg is not None: print(f"[release] epoch {epoch}: lr factor of blocks {args.release_blocks} = {release_factor(float(epoch), *release_cfg):.3f} at its start (0 before epoch {release_cfg[0]}, 1 from epoch {release_cfg[1]})")
+    aux_lens = getattr(model_without_ddp, '_aux_lens', None)
+    aux_lens_active = aux_lens.set_epoch(epoch) if aux_lens is not None else False
+    if aux_lens is not None: print(f"[aux-lens] epoch {epoch}: {'ON' if aux_lens_active else 'off'} ({aux_lens.mode}, block {aux_lens.block}, weight {aux_lens.weight}, until epoch {aux_lens.until})")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('min_lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
 
@@ -84,10 +90,9 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
         # Update LR & WD for the first acc
         if data_iter_step % update_freq == 0:
             if lr_schedule_values is not None or wd_schedule_values is not None:
-                if custom_lr_layer:
+                if custom_lr_layer and lr_schedule_values is not None:
                     apply_custom_lr_to_optimizer(
                         optimizer=optimizer,
-                        model=model_without_ddp,
                         base_lr=lr_schedule_values[it],
                         epoch=epoch,
                         custom_block_targets=custom_block_targets,
@@ -95,13 +100,20 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                         transition_start=custom_lr_transition_start,
                         transition_end=custom_lr_transition_end
                     )
-                else:
-                    for i, param_group in enumerate(optimizer.param_groups):
-                        # print(f"Step {it}: Before update, param group {i} has lr: {param_group['lr']}, weight_decay: {param_group['weight_decay']}")
-                        if lr_schedule_values is not None:
-                            param_group["lr"] = lr_schedule_values[it] * param_group.get("lr_scale", 1)
-                            # print(f"Step {it}: Updated lr for param group {i} to {param_group['lr']:.6f} with original {lr_schedule_values[it]:.6f} and scale {param_group.get('lr_scale', 1)}")
-                        if wd_schedule_values is not None and param_group["weight_decay"] > 0:
+                elif lr_schedule_values is not None:
+                    for param_group in optimizer.param_groups:
+                        param_group["lr"] = lr_schedule_values[it] * param_group.get("lr_scale", 1)
+                    if release_cfg is not None:                      # delayed start of the --release_blocks groups (frozen while the factor is 0)
+                        release_now = release_factor(it / num_training_steps_per_epoch, *release_cfg)
+                        for param_group in optimizer.param_groups:
+                            if param_group.get("release"):
+                                param_group["lr"] = param_group["lr"] * release_now
+                # the weight-decay schedule is independent of how the learning rate is set
+                if wd_schedule_values is not None:
+                    for param_group in optimizer.param_groups:
+                        if "decay" not in param_group:                       # set once, from the constructor's coefficient
+                            param_group["decay"] = param_group["weight_decay"] > 0
+                        if param_group["decay"]:
                             param_group["weight_decay"] = wd_schedule_values[it] * param_group.get("wd_scale", 1)
                             # print(f"Step {it}: Updated weight decay for param group {i} to {param_group['weight_decay']:.6f} with original {wd_schedule_values[it]:.6f} and scale {param_group.get('wd_scale', 1)}")
 
@@ -117,16 +129,24 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
             with torch.cuda.amp.autocast(dtype=utils.AMP_DTYPE):
                 output = model(samples)
                 loss = criterion(output, targets)
+                aux_value = None
+                if aux_lens_active:                                # auxiliary lens loss (group C); the logged `loss` stays the main loss
+                    aux = aux_lens(criterion, targets); aux_value = aux.item(); main_value = loss.item(); loss = loss + aux_lens.weight * aux
         else: # full precision
             output = model(samples)
             loss = criterion(output, targets)
+            aux_value = None
+            if aux_lens_active:
+                aux = aux_lens(criterion, targets); aux_value = aux.item(); main_value = loss.item(); loss = loss + aux_lens.weight * aux
 
         loss_value = loss.item()
 
         if not math.isfinite(loss_value): # this could trigger if using AMP
             print("Loss is {}, stopping training".format(loss_value))
+            utils.dump_nonfinite_state(model, samples, targets, output, epoch, data_iter_step, args)   # diagnostics only, never raises
             assert math.isfinite(loss_value)
 
+        grad_norm, parameter_norm = None, None
         if use_amp:
             is_update_step = (data_iter_step + 1) % update_freq == 0
             is_first_update = (update_steps_done == 10)
@@ -148,11 +168,13 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                                 wd_x = group['weight_decay']
                                 break
                         wd_delta = -lr_x * wd_x * weight_t_minus_1
+                        step_before = _step_value(optimizer.state.get(param))
                         tracking_data[layer][param_name] = {
                             "weight_t_minus_1": weight_t_minus_1,
                             "lr": lr_x,
                             "wd": wd_x,
-                            "wd_delta": wd_delta
+                            "wd_delta": wd_delta,
+                            "step_before": step_before
                         }
                         print(f"LR Scaling: Tracking data collected for layer {layer} param {param_name}: lr={lr_x}, wd={wd_x}")
                         if wandb_logger:
@@ -176,6 +198,9 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                         if param_name not in tracking_data[layer]:
                             continue
                         data = tracking_data[layer][param_name]
+                        if _step_value(optimizer.state.get(param)) == data["step_before"]:
+                            print(f"LR Scaling: layer {layer} param {param_name}: the optimizer step was skipped (AMP overflow), no diagnostic")
+                            continue
                         weight_t = param.detach().data.clone()
 
                         # deltas
@@ -225,6 +250,8 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
             loss /= update_freq
             loss.backward()
             if (data_iter_step + 1) % update_freq == 0:
+                if max_norm is not None:                    # same rule as the AMP scaler: clip only when a norm is given
+                    grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm))
                 optimizer.step()
                 optimizer.zero_grad()
                 if model_ema is not None:
@@ -236,7 +263,8 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
             class_acc = (output.max(-1)[-1] == targets).float().mean()
         else:
             class_acc = None
-        metric_logger.update(loss=loss_value)
+        metric_logger.update(loss=loss_value if aux_value is None else main_value)
+        if aux_value is not None: metric_logger.update(aux_lens_loss=aux_value)
         metric_logger.update(class_acc=class_acc)
         min_lr = 10.
         max_lr = 0.
@@ -259,7 +287,7 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
             metric_logger.update(grad_norm=grad_norm)
 
         if log_writer is not None:
-            log_writer.update(loss=loss_value, head="loss")
+            log_writer.update(loss=loss_value if aux_value is None else main_value, head="loss")   # main loss, as the console line and log.txt
             log_writer.update(class_acc=class_acc, head="loss")
             log_writer.update(lr=max_lr, head="opt")
             log_writer.update(min_lr=min_lr, head="opt")
@@ -276,7 +304,7 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
 
         if wandb_logger:
             wandb_logger._wandb.log({
-                'Rank-0 Batch Wise/train_loss': loss_value,
+                'Rank-0 Batch Wise/train_loss': loss_value if aux_value is None else main_value,
                 'Rank-0 Batch Wise/train_max_lr': max_lr,
                 'Rank-0 Batch Wise/train_min_lr': min_lr
             }, commit=False)
@@ -465,7 +493,8 @@ def model_analyse(
                     x = F.softmax(x[:, 0, :].squeeze(), dim=-1)
                 # layer_wise_blk_logits[i] = x.argmax(dim=-1)
 
-                ece_metric.update(x, target)
+                if i == max(layers_to_analyse):             # the last block's lens IS the model output: the classifier's ECE
+                    ece_metric.update(x, target)
 
                 blk_pred = accuracy(x, target)
                 detailed_metrics_logger.meters[f'{prefix}blk_acc_layer{i}'].update(blk_pred[0].item(), n=images.shape[0])
@@ -677,7 +706,7 @@ def attention_analyse_final(data_loader, device, args, classes=None, wandb_logge
         print(f"Loading fine-tuned model from: {ft_path}")
         model = utils.build_model(args)
         model.load_state_dict(model_rand_without_ddp.state_dict())
-        model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model)
+        model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model, keep_all=True)
         model_analyse(
             model=model_without_ddp,
             data_loader=data_loader,
@@ -1063,7 +1092,7 @@ def cka_final(data_loader, device, args, classes=None, wandb_logger=None):
         print(f"Loading fine-tuned model from: {ft_path}")
         model = utils.build_model(args)
         model.load_state_dict(pre_ft_without_ddp.state_dict())
-        model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model)
+        model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model, keep_all=True)
     
     if args.model == "vit_small":
         kdyck_embeddings_path = "kdyck/kdyck_orthogonal_embeddings_vits.pt"
@@ -1130,7 +1159,7 @@ def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
         print(f"Loading fine-tuned model from: {ft_path}")
         model = utils.build_model(args)
         model.load_state_dict(random_model_without_ddp.state_dict())
-        model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model)
+        model, model_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model, keep_all=True)
 
     print("*"*20, "CKA - model A vs model A", "*"*20)
     cka_calculate_self(
@@ -1149,7 +1178,7 @@ def cka_compare(data_loader, device, args, classes=None, wandb_logger=None):
         print(f"Loading fine-tuned model from: {ft_path}")
         model_B = utils.build_model(args)
         model_B.load_state_dict(random_model_without_ddp.state_dict())
-        model_B, model_B_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model_B)
+        model_B, model_B_without_ddp = utils.ft_load_model(ft_path, args, device, delete_blocks=args.delete_blocks, model=model_B, keep_all=True)
     else:
         return   # only comparing model A with random, skipping model B
 

@@ -1,0 +1,122 @@
+{
+ "blocks.0.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    0.5
+   ],
+   [
+    768,
+    1536,
+    0.5
+   ]
+  ]
+ },
+ "blocks.0.mlp.fc1.weight": 0.5,
+ "blocks.1.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    0.5
+   ],
+   [
+    768,
+    1536,
+    0.5
+   ]
+  ]
+ },
+ "blocks.1.mlp.fc1.weight": 0.5,
+ "blocks.2.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    0.5
+   ],
+   [
+    768,
+    1536,
+    0.5
+   ]
+  ]
+ },
+ "blocks.2.mlp.fc1.weight": 0.5,
+ "blocks.3.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    0.5
+   ],
+   [
+    768,
+    1536,
+    0.5
+   ]
+  ]
+ },
+ "blocks.3.mlp.fc1.weight": 0.5,
+ "blocks.4.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    0.5
+   ],
+   [
+    768,
+    1536,
+    0.5
+   ]
+  ]
+ },
+ "blocks.4.mlp.fc1.weight": 0.5,
+ "blocks.5.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    0.5
+   ],
+   [
+    768,
+    1536,
+    0.5
+   ]
+  ]
+ },
+ "blocks.5.mlp.fc1.weight": 0.5,
+ "blocks.6.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    0.5
+   ],
+   [
+    768,
+    1536,
+    0.5
+   ]
+  ]
+ },
+ "blocks.6.mlp.fc1.weight": 0.5,
+ "blocks.7.attn.qkv.weight": {
+  "rows": [
+   [
+    0,
+    768,
+    0.5
+   ],
+   [
+    768,
+    1536,
+    0.5
+   ]
+  ]
+ },
+ "blocks.7.mlp.fc1.weight": 0.5
+}
