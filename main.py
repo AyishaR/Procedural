@@ -147,6 +147,24 @@ def get_args_parser():
                              "at init), trainable -- the control. Refuses to compose with "
                              "--resid_routing.")
 
+    # Progressive layer unfreezing (unfreeze.py, docs/unfreeze_vit_handoff.md): the 12 blocks
+    # in C contiguous chunks, frozen chunks' grads dropped before unscale_ / the step (no update,
+    # no weight decay, no Adam state) until their unfreeze step; the non-block tensors always
+    # train. Tag u<C><f|b>-<lin|geo|one><E>[-w<W>]; W (the per-chunk lr ramp) defaults to one
+    # epoch's worth of steps. '' = vanilla.
+    parser.add_argument('--unfreeze_arm', type=str, default='',
+                        help="e.g. u4f-lin0.2 (front chunk first, the others evenly until 0.2 of "
+                             "the run) or u4b-one0.2 (only blocks 0-2 frozen until 0.2 of the run)")
+    # smoke-test knobs (engine.save_smoke_snapshot): off by default
+    parser.add_argument('--smoke_snapshot_every', type=int, default=0,
+                        help='>0: snapshot model + optimizer + scaler to <output_dir>/snapshots '
+                             'every N optimizer steps (plus the init)')
+    parser.add_argument('--smoke_snapshot_steps', type=str, default='',
+                        help='comma list of extra snapshot steps (t = optimizer steps done)')
+    parser.add_argument('--smoke_stop_step', type=int, default=0,
+                        help='>0: stop training after this many optimizer steps in total (no '
+                             'eval / checkpoint of the partial epoch)')
+
     # Augmentation parameters
     parser.add_argument('--color_jitter', type=float, default=0.4, metavar='PCT',
                         help='Color jitter factor (default: 0.4)')
@@ -1447,6 +1465,22 @@ def main(args):
         "head": 1.0
     }
     
+    unfreeze_plan = None
+    if args.unfreeze_arm:
+        # per-chunk param groups over EVERY parameter; the schedule is a pure function of the
+        # global step, T = the lr schedule's length (epochs x steps per epoch)
+        from unfreeze import UnfreezePlan
+        unfreeze_plan = UnfreezePlan.from_arm(model_without_ddp, args.unfreeze_arm,
+                                              len(lr_schedule_values), num_training_steps_per_epoch)
+        args.unfreeze_T = unfreeze_plan.max_iters
+        args.unfreeze_iters = list(unfreeze_plan.iters)
+        args.unfreeze_warmup_steps = unfreeze_plan.warmup
+        print(unfreeze_plan.describe(), flush=True)
+        if wandb_logger:
+            wandb_logger._wandb.config.update(
+                {'unfreeze_T': args.unfreeze_T, 'unfreeze_iters': args.unfreeze_iters,
+                 'unfreeze_warmup_steps': args.unfreeze_warmup_steps}, allow_val_change=True)
+
     optimizer = create_optimizer(
         args, model_without_ddp, skip_list=None,
         get_num_layer=assigner.get_layer_id if assigner is not None else None, 
@@ -1455,7 +1489,8 @@ def main(args):
         custom_block_targets = custom_block_targets,
         custom_non_block_targets = custom_non_block_targets,
         custom_lr_transition_start = args.custom_lr_transition_start,
-        custom_lr_transition_end = args.custom_lr_transition_end
+        custom_lr_transition_end = args.custom_lr_transition_end,
+        unfreeze_plan = unfreeze_plan
     )
 
     if args.weight_decay_end is None:
@@ -2060,8 +2095,13 @@ def main(args):
             custom_lr_transition_start=args.custom_lr_transition_start,
             custom_lr_transition_end=args.custom_lr_transition_start,
             custom_block_targets=custom_block_targets,
-            custom_non_block_targets=custom_non_block_targets, args=args
+            custom_non_block_targets=custom_non_block_targets, args=args,
+            unfreeze_plan=unfreeze_plan
         )
+        if args.smoke_stop_step > 0 and (epoch + 1) * num_training_steps_per_epoch > args.smoke_stop_step:
+            print(f"[smoke] stopped after {args.smoke_stop_step} optimizer steps (epoch {epoch}, "
+                  f"partial: no eval, no checkpoint)", flush=True)
+            return
         if utils.is_main_process():
             parameter_norm["epoch"] = epoch
             parameter_norm["seed"] = args.seed
@@ -2184,6 +2224,11 @@ def main(args):
                     f.write(json.dumps({'epoch': epoch,
                                         'a': router.coefficient_matrix().cpu().tolist()}) + '\n')
 
+        # progressive unfreezing: the schedule's state at the epoch's last step
+        if unfreeze_plan is not None:
+            last = (epoch + 1) * num_training_steps_per_epoch - 1
+            log_stats.update(unfreeze_plan.wandb_scalars(last, lr_schedule_values[last]))
+
         # readout-only routing: the same split -- readout/* scalars in log_stats, the full
         # 25-vector plus the per-weight gradient-sign statistics of this epoch in readout.jsonl.
         # The sign counters are per epoch (reset here, after logging).
@@ -2243,6 +2288,7 @@ if __name__ == '__main__':
     # one intervention at a time -- must run BEFORE main(args), which rewrites several flags
     # in place ('' -> [] / {}) and would make the comparison against the defaults meaningless
     utils.assert_routing_isolated(args, parser)
+    utils.assert_unfreeze_isolated(args, parser)
     if args.output_dir and not args.output_dir.endswith(".pth"):
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     if args.accuracy_json and not args.accuracy_json.endswith(".json"):

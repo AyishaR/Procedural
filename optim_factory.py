@@ -150,7 +150,7 @@ def build_step_matched_param_groups(model, weight_decay, ckpt_path, blocks, skip
     return list(groups.values())
 
 
-def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filter_bias_and_bn=True, skip_list=None, start_lr=None, custom_block_targets=None, custom_non_block_targets=None, custom_lr_transition_start=90, custom_lr_transition_end=110):
+def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filter_bias_and_bn=True, skip_list=None, start_lr=None, custom_block_targets=None, custom_non_block_targets=None, custom_lr_transition_start=90, custom_lr_transition_end=110, unfreeze_plan=None):
     opt_lower = args.opt.lower()
     weight_decay = args.weight_decay
     # if weight_decay and filter_bias_and_bn:
@@ -169,6 +169,14 @@ def create_optimizer(args, model, get_num_layer=None, get_layer_scale=None, filt
         blocks = [int(x) for x in str(args.lr_match_blocks).split(",") if x.strip() != ""]
         parameters = build_step_matched_param_groups(model, args.weight_decay, args.lr_match_ckpt, blocks,
                                                      skip_list=skip if filter_bias_and_bn else ())
+        weight_decay = 0.
+
+    if unfreeze_plan is not None:
+        # progressive unfreezing (unfreeze.py): 2C+2 groups over EVERY parameter, frozen chunks
+        # included, with get_parameter_groups' decay rule; main.py refuses the other group
+        # builders (lr_match_ckpt, custom_lr_layer, layer decay) alongside it
+        assert filter_bias_and_bn, "unfreeze_plan needs the decay / no-decay split"
+        parameters = unfreeze_plan.param_groups(args.weight_decay, skip)
         weight_decay = 0.
 
     if args.custom_lr_layer:

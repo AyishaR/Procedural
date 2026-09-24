@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
+import time
 import random
 from typing import Iterable, Optional
 import torch
@@ -38,6 +39,21 @@ plt.rcParams.update(bundles.iclr2024(usetex=True, rel_width=1.0, nrows=1, ncols=
 
 from optim_factory import *
 
+SMOKE_SKIPPED_STEPS = []  # global steps whose optimizer.step GradScaler skipped (smoke runs only)
+
+
+def save_smoke_snapshot(args, t, model_without_ddp, optimizer, loss_scaler):
+    """<output_dir>/snapshots/step_<t>.pt after t optimizer steps (rank 0): fp32 model,
+    optimizer (state + group lrs of step t-1), scaler, the skipped-step list and the args."""
+    if not (args.output_dir and utils.is_main_process()):
+        return
+    d = os.path.join(args.output_dir, 'snapshots')
+    os.makedirs(d, exist_ok=True)
+    torch.save({'t': t, 'model': model_without_ddp.state_dict(), 'optimizer': optimizer.state_dict(),
+                'scaler': loss_scaler.state_dict(), 'skipped': list(SMOKE_SKIPPED_STEPS),
+                'time': time.time(), 'args': args}, os.path.join(d, f'step_{t}.pt'))
+
+
 def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
@@ -47,7 +63,8 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                     custom_lr_layer=False,
                     custom_lr_transition_start=None,
                     custom_lr_transition_end=None,
-                    custom_block_targets=None, custom_non_block_targets=None, args=None):
+                    custom_block_targets=None, custom_non_block_targets=None, args=None,
+                    unfreeze_plan=None):
     model.train(True)
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -75,12 +92,24 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
         lr_final_stats = None
     update_steps_done = 0
 
+    # smoke-test knobs (off by default): stop after --smoke_stop_step optimizer steps in total,
+    # and snapshot model + optimizer + scaler after every --smoke_snapshot_every-th step and the
+    # listed --smoke_snapshot_steps (t = optimizer steps done; t = 0 is the init)
+    smoke_stop = int(getattr(args, 'smoke_stop_step', 0) or 0)
+    snap_every = int(getattr(args, 'smoke_snapshot_every', 0) or 0)
+    snap_steps = {int(x) for x in str(getattr(args, 'smoke_snapshot_steps', '') or '').split(',') if x.strip()}
+    snapshots = bool(snap_every or snap_steps)
+    if snapshots and start_steps == 0:
+        save_smoke_snapshot(args, 0, model_without_ddp, optimizer, loss_scaler)
+
     # for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
     for data_iter_step, batch_inputs in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         step = data_iter_step // update_freq
         if step >= num_training_steps_per_epoch:
             continue
         it = start_steps + step  # global training iteration
+        if smoke_stop and it >= smoke_stop:
+            break
         # Update LR & WD for the first acc
         if data_iter_step % update_freq == 0:
             if lr_schedule_values is not None or wd_schedule_values is not None:
@@ -96,9 +125,14 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                         transition_end=custom_lr_transition_end
                     )
                 else:
+                    if unfreeze_plan is not None and lr_schedule_values is not None:
+                        # frozen chunks lr 0, ramping chunks < lr; the wd loop below is unchanged
+                        unfreeze_plan.apply_lr(optimizer, it, lr_schedule_values[it])
+                        if unfreeze_plan.is_event(it) and utils.is_main_process():
+                            print(unfreeze_plan.describe(it), flush=True)
                     for i, param_group in enumerate(optimizer.param_groups):
                         # print(f"Step {it}: Before update, param group {i} has lr: {param_group['lr']}, weight_decay: {param_group['weight_decay']}")
-                        if lr_schedule_values is not None:
+                        if lr_schedule_values is not None and unfreeze_plan is None:
                             param_group["lr"] = lr_schedule_values[it] * param_group.get("lr_scale", 1)
                             # print(f"Step {it}: Updated lr for param group {i} to {param_group['lr']:.6f} with original {lr_schedule_values[it]:.6f} and scale {param_group.get('lr_scale', 1)}")
                         if wd_schedule_values is not None and param_group["weight_decay"] > 0:
@@ -165,9 +199,15 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
             # this attribute is added by timm on one optimizer (adahessian)
             is_second_order = hasattr(optimizer, 'is_second_order') and optimizer.is_second_order
             loss /= update_freq
+            if snapshots and is_update_step:
+                scale_before = loss_scaler._scaler.get_scale()
             grad_norm, parameter_norm = loss_scaler(loss, optimizer, clip_grad=max_norm,
                                     parameters=model.named_parameters(), create_graph=is_second_order,
-                                    update_grad=(data_iter_step + 1) % update_freq == 0)
+                                    update_grad=(data_iter_step + 1) % update_freq == 0,
+                                    pre_unscale=(lambda: unfreeze_plan.mask_grads(it))
+                                    if unfreeze_plan is not None else None)
+            if snapshots and is_update_step and loss_scaler._scaler.get_scale() < scale_before:
+                SMOKE_SKIPPED_STEPS.append(it)  # an overflow: GradScaler skipped optimizer.step
 
             if log_lr_scaling_targets and lr_target_params is not None:
                 for layer, layer_param_dict in lr_target_params.items():
@@ -225,11 +265,15 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                 update_steps_done += 1
                 if model_ema is not None:
                     model_ema.update(model)
+                if snapshots and ((snap_every and (it + 1) % snap_every == 0) or (it + 1) in snap_steps):
+                    save_smoke_snapshot(args, it + 1, model_without_ddp, optimizer, loss_scaler)
 
         else: # full precision
             loss /= update_freq
             loss.backward()
             if (data_iter_step + 1) % update_freq == 0:
+                if unfreeze_plan is not None:
+                    unfreeze_plan.mask_grads(it)  # after DDP's all-reduce, before the step
                 optimizer.step()
                 mixer = getattr(model_without_ddp, 'readout_mixer', None)
                 if mixer is not None:

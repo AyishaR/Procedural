@@ -468,6 +468,7 @@ class NativeScalerWithGradNormCount:
         parameters=None,   # should be model.named_parameters()
         create_graph=False,
         update_grad=True,
+        pre_unscale=None,
     ):
         self._scaler.scale(loss).backward(create_graph=create_graph)
 
@@ -475,6 +476,11 @@ class NativeScalerWithGradNormCount:
         norm = None
 
         if update_grad:
+            # progressive unfreezing (unfreeze.py): drop the frozen chunks' grads here -- after
+            # the last micro-step's backward (DDP has all-reduced them) and BEFORE unscale_, so
+            # the inf check, the grad norms / clip and the step all see trainable grads only
+            if pre_unscale is not None:
+                pre_unscale()
             self._scaler.unscale_(optimizer)
 
             if clip_grad is not None:
@@ -623,6 +629,18 @@ def auto_load_model(args, model, model_without_ddp, optimizer, loss_scaler, mode
                     f"but {args.routing_bound} here; the coefficients would change meaning")
                 # routing_impl is deliberately NOT forced: same parameters and same math, so
                 # the implementation choice on the command line wins on resume
+        # progressive unfreezing: the schedule is a pure function of the global step, so a run
+        # must resume with its own arm and its own T (the u_k depend on it); a vanilla
+        # checkpoint into an unfreeze run (or the reverse) is a different group layout
+        want_uf = str(getattr(args, 'unfreeze_arm', ''))
+        have_uf = str(getattr(ck_args, 'unfreeze_arm', '')) if ck_args is not None else None
+        assert have_uf == want_uf or (have_uf is None and want_uf == ''), (
+            f"resume: {args.resume} was trained with unfreeze_arm={have_uf!r} but this run has "
+            f"unfreeze_arm={want_uf!r}; a run keeps its schedule")
+        if want_uf:
+            assert getattr(ck_args, 'unfreeze_T', None) == getattr(args, 'unfreeze_T', None), (
+                f"resume: checkpoint unfreeze_T={getattr(ck_args, 'unfreeze_T', None)} != "
+                f"{getattr(args, 'unfreeze_T', None)} (the unfreeze steps depend on it)")
         if want:  # strict for the router subset only
             missing = [k for k in model_without_ddp.state_dict() if k.startswith('router.') and k not in sd]
             assert not missing, (
@@ -781,6 +799,36 @@ def assert_routing_isolated(args, parser):
         f"defaults: {bad}. If one of them is genuinely harmless here, add it to "
         "utils.ROUTING_ALLOWED_NON_DEFAULT after checking what it does to the residual path.")
     print(f"[routing] isolation check passed ({len(defaults)} flags inspected)", flush=True)
+
+
+# --unfreeze_arm composes with the same recipe knobs as routing (never with routing itself:
+# router / mixer tensors belong to no chunk) plus the smoke-test snapshot knobs. Every other
+# param-group builder (--custom_lr_layer, --lr_match_ckpt, --layer_decay), --model_ema (a frozen
+# chunk's EMA would sit at the init), --freeze_blocks (requires_grad=False drops the tensors from
+# the optimizer) and every init intervention stay at their defaults.
+UNFREEZE_ALLOWED_NON_DEFAULT = (
+    ROUTING_ALLOWED_NON_DEFAULT
+    - {"resid_routing", "routing_bound", "routing_impl", "readout_routing"}
+) | {"unfreeze_arm", "smoke_snapshot_every", "smoke_snapshot_steps", "smoke_stop_step"}
+
+
+def assert_unfreeze_isolated(args, parser):
+    """One intervention at a time: refuse --unfreeze_arm composed with anything outside
+    UNFREEZE_ALLOWED_NON_DEFAULT, and a malformed tag. Same contract as assert_routing_isolated
+    (call it BEFORE main(args))."""
+    tag = str(getattr(args, "unfreeze_arm", ""))
+    if tag == "":
+        return
+    from unfreeze import parse_arm
+    parse_arm(tag)  # ValueError on a malformed tag, before any GPU work
+    defaults = {a.dest: a.default for a in parser._actions if a.dest != "help"}
+    bad = sorted(k for k, d in defaults.items()
+                 if k not in UNFREEZE_ALLOWED_NON_DEFAULT and getattr(args, k, d) != d)
+    assert not bad, (
+        f"--unfreeze_arm composes with no other intervention, but these flags are off their "
+        f"defaults: {bad}. If one of them is genuinely harmless here, add it to "
+        "utils.UNFREEZE_ALLOWED_NON_DEFAULT after checking what it does to the param groups.")
+    print(f"[unfreeze] isolation check passed ({len(defaults)} flags inspected)", flush=True)
 
 
 SPECTRAL_INTERVENTION_MATRICES = ["attn.qkv.weight", "attn.proj.weight", "mlp.fc1.weight", "mlp.fc2.weight"]
