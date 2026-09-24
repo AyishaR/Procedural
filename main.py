@@ -2032,7 +2032,7 @@ def main(args):
                 filename="final_res_stats",
                 detailed=False
             )
-            for block_idx in range(len(model_without_ddp.blocks)):
+            for block_idx in range(len(model_without_ddp.blocks) if wandb_logger else 0):  # --enable_wandb false (smokes)
                 wandb_logger.update_config(f"final_layer_{block_idx}_attn_delta_in_norm_ratio", updated_stats[block_idx]["norm_ratio_attn_delta_in_mean"])
                 wandb_logger.update_config(f"final_layer_{block_idx}_mlp_delta_in_norm_ratio", updated_stats[block_idx]["norm_ratio_mlp_delta_in_mean"])
                 # wandb_logger.update_config(f"final_attn_delta_in_norm_ratio", updated_stats[11]["norm_ratio_attn_delta_in_mean"])
