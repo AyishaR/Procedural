@@ -505,3 +505,72 @@ vectors, checks that D/E equal the hand-computed `head(fc_norm(pool(norm(x0 + x6
 the same with `x_after_block0`) at toy depth 6, and extends the fixed-arm, summary and resume-guard
 tests. That makes 15 tests. `routing/readout_gate.py --arms DE` gates the two arms on the real
 ViT-B.
+
+### Gate (job 29768022, one H200)
+
+`READOUT_GATE_ARMS=DE`; artefacts in `kempfe/routing/gate_readout_skip/`. Both arms add exactly the
+25-float buffer, and every other tensor equals the same-seed base. D and E match the hand-computed
+readout from base's own stream: 1.2e-6 / 1.4e-6 in fp32, 9.8e-4 (one fp16 ulp) under autocast. They
+match the weighted sum of the hooked sources exactly. One AMP step leaves the GradScaler in base's
+state. HookCollector works on D. Cost is base 77.7 ms, D/E 78.8–78.9 ms (+1.4%), +0.8 GB.
+
+### Runs
+
+Chains launched 2026-09-23 16:20 from the stable clone at `eedbcf8`:
+D `readout_D_29768024/s0`, E `readout_E_29768025/s0` under `kempfe/routing/runs/`.
+
+* Both first segments were PREEMPTED at 18:11 (D at epoch 21, E at 19) and resumed cleanly.
+* The login node rebooted on 2026-09-24 and killed both chain drivers. Afterwards both jobs died
+  with the transient DataLoader `/dev/shm` unlink error: D at epoch 232, E at 240.
+* The drivers were restarted (`SLURM_ID=`, `WAIT_JOB=`) and every resume came from the
+  last checkpoint. E finished at 17:36, D at 17:38.
+
+## Result (2026-09-24): a direct input path to the head is worth +1.1–1.2 top-1
+
+Last-epoch (299) test top-1, one seed per arm:
+
+| arm | top-1 | vs base 78.079 ± 0.189 | top-5 | train loss |
+|---|---|---|---|---|
+| **D** `fixed_emb_last3` (emb + blocks 9–11) | **79.292** | **+1.21 (+6.4 sd)** | 93.36 | 2.233 |
+| **E** `fixed_b0_last3` (stream after block 0 + blocks 9–11) | **79.196** | **+1.12 (+5.9 sd)** | 93.24 | 2.237 |
+| A `fixed_last4` (blocks 8–11, no skip) | 78.156 | +0.08 | 92.53 | 2.212 |
+| B `learn_last4` | 78.380 | +0.30 | 92.90 | 2.207 |
+| C `learn_ones` | 78.420 | +0.34 | 93.47 | 2.317 |
+| base r s0 / s1 / s2 | 78.284 / 78.040 / 77.912 | | 93.48 / 92.43 / 92.71 | 2.289 / 2.192 / 2.195 |
+
+Figure: `kempfe/routing/figures/readout_skip_curves.png`
+(`python routing/readout_curves.py --run A=… --run D=… --run E=… --prefix readout_skip --out …`).
+
+**Mean gap to the base seed mean, by epoch window:**
+
+| epochs | A | B | C | D | E |
+|---|---|---|---|---|---|
+| 0–50 | +0.54 | +0.37 | −0.42 | +0.64 | +0.82 |
+| 60–119 | −0.02 | +0.01 | −0.50 | +0.26 | +0.34 |
+| 120–179 | −0.02 | +0.06 | −0.51 | +0.37 | +0.37 |
+| 180–239 | +0.01 | +0.37 | −0.27 | +0.98 | +0.94 |
+| 240–299 | −0.00 | +0.30 | +0.20 | +1.11 | +1.11 |
+
+**Reading.**
+
+* **This is the first arm in the routing series that clears the ±0.4 bar, by a wide margin.** Both
+  skip arms end about 6 base sd above the base mean. Every late eval is above every base seed: the
+  minimum gap after epoch 180 is +0.51 (D) / +0.58 (E).
+* **Shape of the curve.** Like A, D and E lead early (epochs 0–50). Unlike A, they never merge back
+  into base. They sit a steady +0.3 to +0.4 above base through the middle of training. The gap
+  then roughly triples from epoch ~180, in the low-learning-rate cosine tail, and holds at +1.1
+  through epoch 299. B gave back some of its late gain (+0.42 → +0.30); D and E did not.
+* **Not a train-fit effect.** Epoch-299 train loss for D and E (2.23–2.24) is inside the base
+  seeds' spread (2.19–2.29) and slightly *above* A's. The gain is in generalisation. This is the
+  opposite of the free router, which fitted train better and generalised worse.
+* **Block 0 adds nothing over the raw tokens.** D − E = +0.10, well inside one base sd, and the two
+  curves overlap across training. Whatever helps is already in `emb` (patch embedding + position
+  embedding + CLS token).
+* **What is not settled:**
+  * *The missing control.* Without `fixed_last3` we cannot say whether the gain comes from the
+    input skip or from the harder cut (blocks 9–11 instead of 8–11). A (last 4, no skip) was +0.08,
+    so a last-3 cut alone giving +1.1 would be surprising, but it is untested.
+  * *One seed per arm.* Two independent arms agree to 0.1, but they share seed 0 and most of their
+    readout, so they are not independent replicates.
+  * The next runs, in order of information per GPU-hour: `fixed_last3` (the attribution), then a
+    second seed of D.
