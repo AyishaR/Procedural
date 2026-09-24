@@ -181,7 +181,13 @@ def check_uf(run_dir, stop):
         f"skipped steps {last['skipped']}")
     row("finite", finite_ok, "every model tensor and Adam moment finite")
     row("lr", lr_ok, "group lr == cosine schedule[t-1] x lr_mult (rtol 1e-12)")
-    cov = max(snaps) == stop and all(u in snaps and u + 1 in snaps for u in us if u > 0)
+    # the last snapshot: the stop step itself (engine snapshots it), or for smokes that predate
+    # that the last scheduled one before the stop
+    every = int(getattr(a, "smoke_snapshot_every", 0) or 0)
+    sched = {int(x) for x in str(a.smoke_snapshot_steps or "").split(",") if x.strip()}
+    sched |= set(range(every, stop + 1, every)) if every else set()
+    cov = max(snaps) in (stop, max(t for t in sched if t <= stop)) and \
+        all(u in snaps and u + 1 in snaps for u in us if u > 0)
     row("coverage", cov, f"last snapshot t={max(snaps)} (stop {stop}); brackets u_k>0: "
         f"{[(u, u in snaps, u + 1 in snaps) for u in us if u > 0]}")
     for n in notes[:12]:

@@ -265,7 +265,8 @@ def train_one_epoch(model: torch.nn.Module, model_without_ddp, criterion: torch.
                 update_steps_done += 1
                 if model_ema is not None:
                     model_ema.update(model)
-                if snapshots and ((snap_every and (it + 1) % snap_every == 0) or (it + 1) in snap_steps):
+                if snapshots and ((snap_every and (it + 1) % snap_every == 0) or (it + 1) in snap_steps
+                                  or (it + 1) == smoke_stop):
                     save_smoke_snapshot(args, it + 1, model_without_ddp, optimizer, loss_scaler)
 
         else: # full precision
