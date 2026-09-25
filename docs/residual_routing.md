@@ -582,3 +582,31 @@ Figure: `kempfe/routing/figures/readout_skip_curves.png`
     readout, so they are not independent replicates.
   * The next runs, in order of information per GPU-hour: `fixed_last3` (the attribution), then a
     second seed of D.
+
+### Follow-up 2b (2026-09-25): is the constant c large? No, and at eval it does nothing
+
+`routing/readout_norms.py` (job 29787104, full 50k ImageNet val, epoch-299 checkpoints of A–E and
+base r s0–2). Artefacts: `kempfe/routing/readout_norms/{norms.json,readout_norms.png,z_<tag>.pt}`.
+The recomputed top-1 matches every logged `test_acc1` to ≤ 0.01.
+
+| model | \|c\| | head input \|v\| (all but c) | c's share of LN-centred energy | top-1 as trained | c removed / added | LN σ frozen |
+|---|---|---|---|---|---|---|
+| A | 20.2 (not read) | 202 | 0 | 78.16 | 78.08 (added) | 78.18 |
+| D | 16.7 | 160 | 0.01 | 79.29 | **79.29** (removed) | 79.28 |
+| E | 18.5 | 157 | 0.02 | 79.20 | 79.14 (removed) | 79.20 |
+| base r0 / r1 / r2 | 16–19 | 315–383 | ≤ 0.01 | 78.28 / 78.04 / 77.91 | 78.33 / 78.06 / 77.89 | unchanged |
+
+* **c is small**: about 10% of the head input's norm and 1–2% of its energy after LayerNorm's
+  centring, in every model. Scaling it from 0 to 2× at eval leaves D flat (79.29 ± 0.02). So the
+  LayerNorm-offset hypothesis is refuted for the finished models. Freezing LN's per-image scale
+  σ to its dataset mean changes nothing either (≤ 0.06 in all models).
+* **The last three blocks do not write more in D/E.** The head input is *smaller* in D/E (|v|
+  ≈ 160) than in A (202) and base (315–383). Blocks 9–11's CLS-row outputs in D/E are at or below
+  A's.
+* **What does differ is upstream of the read window.** At the CLS row, blocks 6–8, which the
+  head does not read in D/E, write more than in A and base: `mlp_6` 111/115 (A 91, base 48),
+  `attn_7`/`mlp_7` 54/79 in D (A 34/39), `attn_8` 38/56 in D/E (A 18). As a result the stream
+  entering the read window is larger: |x9| 428/420 vs A 329 and base 200–257.
+* Not settled: c could matter *during* training (early on, the head input is small, so c's direct
+  gradient may be relatively larger) even though it is irrelevant at the end. G (`fixed_emb_last4`)
+  vs A tests that directly.
