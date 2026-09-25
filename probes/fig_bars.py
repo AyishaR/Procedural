@@ -39,6 +39,9 @@ ARM = {"p":             (0, "k-Dyck D4"),
 CLS = [("imagenet_val", "IN-val"), ("imagenet_v2", "IN-V2"), ("imagenet_r", "IN-R"),
        ("imagenet_sketch", "IN-Sketch"), ("imagenet_a", "IN-A"), ("objectnet", "ObjectNet"),
        ("imagenet_c", "IN-C")]
+# the bars are differences of percentages, so the unit is percentage points; "vs." keeps "over" from reading
+# as a ratio.  One line to change if a different wording is wanted.
+YLABEL = r"$\Delta$ Top-1 vs.\ random init (pp)"
 OTHER = [("voc_miou", "VOC 2012", "mIoU"), ("ade_miou", "ADE20K", "mIoU"),
          ("nyu_delta1", "NYU", r"$\delta_1$"), ("spair_pck", "SPair-71k", "PCK@0.1")]
 
@@ -91,12 +94,13 @@ def draw(args):
     bars(ax, keys)
     ax.set_xticks(np.arange(len(keys)))
     ax.set_xticklabels([lab[k] for k in keys])
-    ax.set_ylabel(rf"Accuracy over random (top-1, {pct})")
+    ax.set_ylabel(YLABEL, fontsize=plt.rcParams["axes.labelsize"] + 1)
+    ax.tick_params(axis="y", labelsize=plt.rcParams["ytick.labelsize"] + 1)
     top = ax.secondary_xaxis("top")                       # random's own score, so the bars read back as absolutes
     top.set_xticks(np.arange(len(keys)))
     top.set_xticklabels([f"{A[base][k][0]:.1f}" for k in keys])
-    top.set_xlabel(rf"Random init (top-1, {pct})", labelpad=2, fontsize=plt.rcParams["axes.labelsize"] - 1)
-    top.tick_params(length=0, pad=1, labelsize=plt.rcParams["xtick.labelsize"] - 1)
+    top.set_xlabel(rf"Random init (top-1, {pct})", labelpad=6, fontsize=plt.rcParams["axes.labelsize"] - 1)
+    top.tick_params(length=0, pad=3, labelsize=plt.rcParams["xtick.labelsize"] - 1)
     top.spines["top"].set_visible(False)
     save(fig, "fig25_bars_classification", len(handles))
 
@@ -109,7 +113,7 @@ def draw(args):
         ax.set_xticks([])
         ax.set_title(rf"{tlab}, {unit}" + "\n" + rf"\textit{{random {A[base][k][0]:.1f}}}",
                      loc="center", fontsize=plt.rcParams["axes.labelsize"])
-    fig.supylabel("Score over random", fontsize=plt.rcParams["axes.labelsize"])
+    fig.supylabel(r"$\Delta$ vs.\ random init", fontsize=plt.rcParams["axes.labelsize"] + 1)
     save(fig, "fig26_bars_other_tasks", len(handles))
 
 
