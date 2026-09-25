@@ -20,7 +20,9 @@ from scipy.stats import norm
 from probes import ood_data
 from probes import registry
 
-MAIN_SETS = [("imagenet_v2", "ImageNet-V2 (10k)"), ("imagenet_r", "ImageNet-R (30k, 200-class mask)"), ("imagenet_c", "ImageNet-C mean (15 x 5, 5k/cell)")]
+MAIN_SETS = [("imagenet_v2", "ImageNet-V2 (10k)"), ("imagenet_r", "ImageNet-R (30k, 200-class mask)"),
+             ("imagenet_sketch", "ImageNet-Sketch (50k)"), ("imagenet_a", "ImageNet-A (7.5k, 200-class mask)"),
+             ("objectnet", "ObjectNet (18.6k, 113 classes)"), ("imagenet_c", "ImageNet-C mean (15 x 5, 5k/cell)")]
 N1 = ("ftb4o", "ftbrhos", "ftblrm")       # single-seed arms (dashed / hollow)
 
 
@@ -33,26 +35,40 @@ def inv_probit(z):
 
 
 def load():
+    """Every stored model record that has the ImageNet val anchor; sets missing for some model are dropped later.
+
+    `complete` means "every set in ood_data.SETS is stored", which is False while a set is still being added,
+    so it must not be the filter here.
+    """
     recs = []
     for f in sorted((registry.RES / "ood").glob("*.json")):
         if "__limit" in f.name:
             continue
         r = json.load(open(f))
-        if r.get("complete"):
+        if "imnet_val" in r.get("sets", {}):
             recs.append(r)
     return recs
 
 
+# key -> (record name, field); a set missing from a model's JSON is simply absent from its readouts
+PLAIN = {"imnet_val": ("imnet_val", "top1"), "imagenet_v2": ("imagenet_v2", "top1"),
+         "imagenet_r": ("imagenet_r", "top1_masked"), "imagenet_r_unmasked": ("imagenet_r", "top1"),
+         "imagenet_sketch": ("imagenet_sketch", "top1"), "imagenet_a": ("imagenet_a", "top1_masked"),
+         "imagenet_a_unmasked": ("imagenet_a", "top1"), "objectnet": ("objectnet", "top1_masked"),
+         "objectnet_unmasked": ("objectnet", "top1"), "imnet_val_c_draw": ("imnet_val_c_draw", "top1")}
+
+
 def readouts(r):
-    """Flat {key: top-1} for one model: the three main sets, C per group / severity / corruption / cell."""
+    """Flat {key: top-1} for one model: every stored set, plus C per group / severity / corruption / cell."""
     s = r["sets"]
-    c = s["imagenet_c"]
-    out = {"imnet_val": s["imnet_val"]["top1"], "imagenet_v2": s["imagenet_v2"]["top1"], "imagenet_r": s["imagenet_r"]["top1_masked"],
-           "imagenet_r_unmasked": s["imagenet_r"]["top1"], "imagenet_c": c["top1"], "imnet_val_c_draw": s["imnet_val_c_draw"]["top1"]}
-    out.update({f"c_group/{g}": v for g, v in c["per_group"].items()})
-    out.update({f"c_sev/{k}": v for k, v in c["per_severity"].items()})
-    out.update({f"c_corr/{k}": v for k, v in c["per_corruption"].items()})
-    out.update({f"c_cell/{k}/{sv}": c["cells"][k][sv]["top1"] for k in c["cells"] for sv in c["cells"][k]})
+    out = {k: s[name][field] for k, (name, field) in PLAIN.items() if name in s and field in s[name]}
+    c = s.get("imagenet_c")
+    if c:
+        out["imagenet_c"] = c["top1"]
+        out.update({f"c_group/{g}": v for g, v in c["per_group"].items()})
+        out.update({f"c_sev/{k}": v for k, v in c["per_severity"].items()})
+        out.update({f"c_corr/{k}": v for k, v in c["per_corruption"].items()})
+        out.update({f"c_cell/{k}/{sv}": c["cells"][k][sv]["top1"] for k in c["cells"] for sv in c["cells"][k]})
     return out
 
 
@@ -67,6 +83,10 @@ class RefLine:
     def predict(self, x):
         return inv_probit(probit(x) - self.x0 + self.y0)
 
+    def predict_ols(self, x):
+        """Same anchor, but the slope fitted over all finals -- the sensitivity check when that slope is not 1."""
+        return inv_probit(self.ols[0] * (probit(x) - self.x0) + self.y0)
+
     def offset_pts(self, x, y):
         return np.asarray(y, dtype=float) - self.predict(x)
 
@@ -79,7 +99,13 @@ def analyse(recs):
     R = {r["model"]: readouts(r) for r in recs}
     arm_of = {r["model"]: r["arm"] for r in recs}
     names = [m["name"] for m in registry.MODELS if m["name"] in R]
-    keys = [k for k in R[names[0]] if k != "imnet_val"]
+    common = set(R[names[0]])
+    for n in names[1:]:
+        common &= set(R[n])
+    dropped = sorted((set(R[names[0]]) | set().union(*(set(R[n]) for n in names))) - common)
+    if dropped:
+        print(f"[fig_ood] {len(dropped)} readouts are missing for at least one model and are skipped: {dropped[:6]}")
+    keys = [k for k in R[names[0]] if k != "imnet_val" and k in common]
     x_all = np.array([R[n]["imnet_val"] for n in names])
     r_names = [n for n in names if arm_of[n] == "r"]
     if not r_names:
@@ -109,9 +135,12 @@ def main():
     R, arm_of, names, keys, x_all, lines, arms, per_arm, arm_off = (A[k] for k in ("R", "arm_of", "names", "keys", "x_all", "lines", "arms", "per_arm", "arm_off"))
 
     # ---------------------------------------------------------------- fig22: scatter + per-arm offsets
-    fig, axes = plt.subplots(2, 3, figsize=(14, 8.6), gridspec_kw=dict(height_ratios=[1.35, 1]))
-    for j, (k, lab) in enumerate(MAIN_SETS):
-        ax = axes[0, j]
+    sets = [(k, lab) for k, lab in MAIN_SETS if k in lines]
+    nr = int(np.ceil(len(sets) / 3))
+    fig, axf = plt.subplots(nr, 3, figsize=(14, 4.3 * nr), squeeze=False)
+    fig2, axo = plt.subplots(nr, 3, figsize=(14, 3.4 * nr), squeeze=False)
+    for j, (k, lab) in enumerate(sets):
+        ax = axf[j // 3][j % 3]
         L = lines[k]
         xs = np.linspace(x_all.min() - 1.5, x_all.max() + 1.0, 50)
         ax.plot(probit(xs), probit(L.predict(xs)), color="0.15", lw=1.4, label="random's line (slope 1, probit)")
@@ -131,7 +160,7 @@ def main():
         ax.tick_params(labelsize=7); ax.grid(alpha=0.3)
         if j == 0:
             ax.legend(fontsize=6, loc="upper left", ncol=2)
-        ax = axes[1, j]
+        ax = axo[j // 3][j % 3]
         for i, a in enumerate(arms):
             m, s, n = arm_off(a, k)
             c = registry.ARM_COLOR[a]
@@ -142,9 +171,13 @@ def main():
         ax.set_xticks(range(len(arms))); ax.set_xticklabels(arms, fontsize=7, rotation=30, ha="right")
         ax.set_ylabel("offset from random's line (top-1 pts)", fontsize=8); ax.tick_params(labelsize=7); ax.grid(alpha=0.3, axis="y")
         ax.set_title(lab, fontsize=8)
-    fig.suptitle("fig22: zero-shot effective robustness of the 21 final checkpoints (own head) -- ID = ImageNet val, y = OOD top-1; "
-                 "random's finals define the reference line (+ = arm mean; hollow = n=1)", fontsize=9)
-    fig.tight_layout(rect=(0, 0, 1, 0.96)); fig.savefig(registry.FIGS / "fig22_ood_effective_robustness.png", dpi=300); plt.close(fig)
+    for j in range(len(sets), nr * 3):
+        axf[j // 3][j % 3].axis("off"); axo[j // 3][j % 3].axis("off")
+    fig.suptitle(f"fig22: zero-shot effective robustness of the {len(names)} final checkpoints (own head) -- ID = ImageNet val, "
+                 "y = OOD top-1; random's finals define the reference line (+ = arm mean; hollow = n=1)", fontsize=9)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.04 / nr)); fig.savefig(registry.FIGS / "fig22_ood_effective_robustness.png", dpi=300); plt.close(fig)
+    fig2.suptitle("fig22b: effective robustness per arm -- offset from random's slope-1 probit line at the arm's own ImageNet accuracy", fontsize=9)
+    fig2.tight_layout(rect=(0, 0, 1, 1 - 0.05 / nr)); fig2.savefig(registry.FIGS / "fig22b_ood_offsets.png", dpi=300); plt.close(fig2)
 
     # ---------------------------------------------------------------- fig23: ImageNet-C groups x severity, per corruption
     fig = plt.figure(figsize=(14, 8))
@@ -189,10 +222,10 @@ def main():
     # ---------------------------------------------------------------- tables
     with open(registry.FIGS / "ood_models.csv", "w", newline="") as f:
         cols = ["model", "arm", "seed", "imnet_val"] + keys
-        w = csv.writer(f); w.writerow(cols + [f"off_{k}" for k in ("imagenet_v2", "imagenet_r", "imagenet_c")])
+        w = csv.writer(f); w.writerow(cols + [f"off_{k}" for k, _ in MAIN_SETS if k in lines])
         for n in names:
             w.writerow([n, arm_of[n], registry.BY_NAME[n]["seed"], R[n]["imnet_val"]] + [round(R[n][k], 3) for k in keys]
-                       + [round(float(lines[k].offset_pts(R[n]["imnet_val"], R[n][k])), 3) for k in ("imagenet_v2", "imagenet_r", "imagenet_c")])
+                       + [round(float(lines[k].offset_pts(R[n]["imnet_val"], R[n][k])), 3) for k, _ in MAIN_SETS if k in lines])
     rows = []
     for a in arms:
         xa = np.array([R[n]["imnet_val"] for n in per_arm[a]])
@@ -202,28 +235,53 @@ def main():
             ya = np.array([R[n][k] for n in per_arm[a]])
             m, s, n = arm_off(a, k)
             zp = np.mean([lines[k].offset_probit(R[nn]["imnet_val"], R[nn][k]) for nn in per_arm[a]])
+            mo = float(np.mean([R[nn][k] - lines[k].predict_ols(R[nn]["imnet_val"]) for nn in per_arm[a]]))
+            rnoise = float(np.std([lines[k].offset_pts(R[nn]["imnet_val"], R[nn][k]) for nn in per_arm["r"]], ddof=1)) if len(per_arm["r"]) > 1 else 0.0
             rows.append(dict(arm=a, n=n, set=k, id_mean=round(xa.mean(), 3), ood_mean=round(ya.mean(), 3), ood_sd=round(ya.std(ddof=1) if n > 1 else 0.0, 3),
                              offset_pts=round(float(m), 3), offset_pts_sd=round(float(s), 3), offset_probit=round(float(zp), 4),
-                             ols_slope=round(float(lines[k].ols[0]), 3)))
+                             offset_pts_ols_slope=round(mo, 3), ols_slope=round(float(lines[k].ols[0]), 3),
+                             random_seed_sd=round(rnoise, 3)))
     with open(registry.FIGS / "ood_offsets.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
-    md = ["| arm | n | ImageNet val | V2 | R (200) | C mean | noise | blur | weather | digital | sev 1 | sev 5 |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    shown = [k for k, _ in MAIN_SETS if k in lines] + ["c_group/noise", "c_group/blur", "c_group/weather", "c_group/digital", "c_sev/1", "c_sev/5"]
+    shown = [k for k in shown if k in lines]
+    hdr = {"imagenet_v2": "V2", "imagenet_r": "R (200)", "imagenet_sketch": "Sketch", "imagenet_a": "A (200)",
+           "objectnet": "ObjectNet", "imagenet_c": "C mean"}
+    md = ["| arm | n | ImageNet val | " + " | ".join(hdr.get(k, k.split("/")[-1]) for k in shown) + " |",
+          "|---" * (3 + len(shown)) + "|"]
     for a in arms:
         xa = np.mean([R[n]["imnet_val"] for n in per_arm[a]])
         cells = []
-        for k in ["imagenet_v2", "imagenet_r", "imagenet_c", "c_group/noise", "c_group/blur", "c_group/weather", "c_group/digital", "c_sev/1", "c_sev/5"]:
+        for k in shown:
             m, s, n = arm_off(a, k)
             ya = np.mean([R[n][k] for n in per_arm[a]])
             cells.append(f"{ya:.1f} ({m:+.1f})")
         md.append(f"| {a} | {len(per_arm[a])} | {xa:.2f} | " + " | ".join(cells) + " |")
     md.append("")
-    md.append("cell = arm-mean OOD top-1 (mean per-model offset from random's slope-1 probit line, each at that model's own ImageNet accuracy, in top-1 points); "
-              "OLS slopes over the finals: " + ", ".join(f"{k} {lines[k].ols[0]:.2f}" for k, _ in MAIN_SETS))
+    md.append("cell = arm-mean OOD top-1 (mean per-model offset from random's slope-1 probit line, each at that model's own ImageNet accuracy, in top-1 points).")
+    md.append("")
+    md.append("Sensitivity of the offset to the reference slope (a slope far from 1 makes the slope-1 offset unreliable "
+              "for the arms furthest from random's accuracy):")
+    md.append("")
+    md.append("| set | OLS slope | random's seed sd | " + " | ".join(f"{a}: slope 1 / OLS" for a in arms if a != "r") + " |")
+    md.append("|---" * (4 + len(arms) - 2) + "|")
+    for k, _ in MAIN_SETS:
+        if k not in lines:
+            continue
+        rn = np.std([lines[k].offset_pts(R[n]["imnet_val"], R[n][k]) for n in per_arm["r"]], ddof=1) if len(per_arm["r"]) > 1 else 0.0
+        cells = []
+        for a in arms:
+            if a == "r":
+                continue
+            o1 = np.mean([lines[k].offset_pts(R[n]["imnet_val"], R[n][k]) for n in per_arm[a]])
+            o2 = np.mean([R[n][k] - lines[k].predict_ols(R[n]["imnet_val"]) for n in per_arm[a]])
+            cells.append(f"{o1:+.2f} / {o2:+.2f}")
+        md.append(f"| {k} | {lines[k].ols[0]:.2f} | {rn:.2f} | " + " | ".join(cells) + " |")
     (registry.FIGS / "ood_summary.md").write_text("\n".join(md) + "\n")
     print("\n".join(md))
     diffs = [r["sets"]["imnet_val"]["diff_vs_log"] for r in recs if r["sets"]["imnet_val"].get("diff_vs_log") is not None]
     chk = f"max |diff| {max(abs(d) for d in diffs):.3f} over {len(diffs)} models" if diffs else "log comparison unavailable"
-    print(f"\nval top-1 vs log.txt: {chk}; wrote fig22, fig23, ood_*.csv, ood_summary.md to {registry.FIGS}")
+    print(f"\nval top-1 vs log.txt: {chk}; wrote fig22, fig22b, fig23, ood_*.csv, ood_summary.md to {registry.FIGS}")
 
 
 if __name__ == "__main__":

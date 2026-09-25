@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name probe_dense
-#SBATCH --partition lmbdlc2_gpu-h200
+#SBATCH --partition alldlc2_gpu-h200
 #SBATCH --nodes 1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task 16

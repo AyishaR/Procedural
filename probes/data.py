@@ -12,7 +12,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageFile
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True   # a handful of ObjectNet PNGs are truncated; decode what is there
 from torch.utils.data import Dataset
 
 from probes import registry
