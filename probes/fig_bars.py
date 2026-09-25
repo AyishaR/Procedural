@@ -1,20 +1,18 @@
-"""fig25: the arm comparison as bar charts -- classification on the left, the other tasks on the right.
+"""fig25 / fig26: the arm comparison as bar charts -- classification (main text), the other tasks (appendix).
 
 Plot style follows plots/fig_sink_gate_paper.py (tueplots ICLR bundle with usetex, family serif, no top/right
 spines, seaborn tab10 colours, legend above the axes, grid alpha 0.3, pdf + png through one `save`).
 
 Bars are the difference from random, which is the quantity with a meaningful zero: bars of raw accuracy would
-need a truncated axis to show 1-5 point differences on a 0-70 scale.  Random's own score is printed under each
-dataset so the bars can be read back as absolutes.
+need a truncated axis to show 1-5 point differences on a 0-70 scale.  Random's own score is on the top axis of
+the classification figure and in the panel titles of the appendix one, so the bars read back as absolutes.
 
-The two halves are drawn differently on purpose.  Every classification column is the same metric (top-1 of the
-model's own head), so those bars share one axis and their heights are comparable across datasets.  The other
-tasks are not: mIoU, delta1 and PCK have different scales and different floors (VOC mIoU floors at 3.0,
-NYU delta1 at 39.6), so a shared axis would invite a comparison that means nothing.  Each gets its own panel and
-its own axis.  All four are higher-is-better, delta1 included -- it is the share of patches within 1.25x of the
-true depth, so the negative bars there mean every arm is worse than random at depth.
-
-Error bars are the standard deviation over seeds and appear only for arms that have more than one seed.
+Two figures, because the two halves cannot share an axis.  Every classification column is the same metric
+(top-1 of the model's own head), so those bars belong on one axis and their heights are comparable across
+datasets.  The other tasks are not: mIoU, delta1 and PCK have different scales and different floors (VOC mIoU
+floors at 3.0, NYU delta1 at 39.6), so each gets its own panel and its own axis.  All four are
+higher-is-better, delta1 included -- it is the share of patches within 1.25x of the true depth, so the negative
+bars there mean every arm is worse than random at depth.
 
   python -m probes.fig_bars [--arms r,p,ftb3b,ftbanapermb7i,ftbc7lm] [--venue iclr2024] [--no-usetex]
 """
@@ -33,11 +31,16 @@ from tueplots import bundles, figsizes
 from probes import registry
 from probes.fig_arms import arm_table, per_model_values
 
-SLOT = {"p": 0, "ftb3b": 1, "ftbanapermb7i": 2, "ftbc7lm": 3}        # tab10 slots, as in fig_sink_gate_paper
-CLS = [("imagenet_val", "val"), ("imagenet_v2", "V2"), ("imagenet_r", "R"), ("imagenet_sketch", "Sketch"),
-       ("imagenet_a", "A"), ("objectnet", "ObjectNet"), ("imagenet_c", "C")]
-OTHER = [("voc_miou", "VOC 2012, mIoU"), ("ade_miou", "ADE20K, mIoU"),
-         ("nyu_delta1", r"NYU, $\delta_1$"), ("spair_pck", "SPair-71k, PCK@0.1")]
+# arm -> (tab10 slot, label in the paper's terms)
+ARM = {"p":             (0, "k-Dyck D4"),
+       "ftb3b":         (1, "Random init w/ PW residual write ratios"),
+       "ftbanapermb7i": (2, "Random init w/ PW early-layer targets"),
+       "ftbc7lm":       (3, "Combined")}
+CLS = [("imagenet_val", "IN-val"), ("imagenet_v2", "IN-V2"), ("imagenet_r", "IN-R"),
+       ("imagenet_sketch", "IN-Sketch"), ("imagenet_a", "IN-A"), ("objectnet", "ObjectNet"),
+       ("imagenet_c", "IN-C")]
+OTHER = [("voc_miou", "VOC 2012", "mIoU"), ("ade_miou", "ADE20K", "mIoU"),
+         ("nyu_delta1", "NYU", r"$\delta_1$"), ("spair_pck", "SPair-71k", "PCK@0.1")]
 
 
 def latest_venue():
@@ -48,57 +51,66 @@ def draw(args):
     venue = args.venue or latest_venue()
     bundle, figsize = getattr(bundles, venue), getattr(figsizes, venue)
     usetex = (not args.no_usetex) and shutil.which("latex") is not None
-    A = arm_table(per_model_values(), args.arms.split(","))
     arms = args.arms.split(",")
     base, comps = arms[0], arms[1:]
-    colour = {a: sns.color_palette("tab10")[SLOT[a]] for a in comps}
+    A = arm_table(per_model_values(), arms)
+    tab10 = sns.color_palette("tab10")
+    colour = {a: tab10[ARM[a][0]] for a in comps}
+    pct = r"\%" if usetex else "%"
 
-    plt.rcParams.update(bundle(usetex=usetex, rel_width=1.0, nrows=1, ncols=1, family="serif"))
-    plt.rcParams.update(figsize(rel_width=1.0, nrows=1, ncols=1, height_to_width_ratio=0.42))
-    plt.rcParams.update({"axes.spines.top": False, "axes.spines.right": False})
+    def style(rel_width, nrows, ncols, ratio):
+        plt.rcParams.update(bundle(usetex=usetex, rel_width=rel_width, nrows=nrows, ncols=ncols, family="serif"))
+        plt.rcParams.update(figsize(rel_width=rel_width, nrows=nrows, ncols=ncols, height_to_width_ratio=ratio))
+        plt.rcParams.update({"axes.spines.top": False, "axes.spines.right": False})
 
     def bars(ax, keys, width=0.78):
         w = width / len(comps)
         x = np.arange(len(keys))
         for j, a in enumerate(comps):
             off = (j - (len(comps) - 1) / 2) * w
-            d = [A[a][k][0] - A[base][k][0] for k in keys]
-            e = [A[a][k][1] if A[a][k][2] > 1 else 0.0 for k in keys]
-            ax.bar(x + off, d, w * 0.9, color=colour[a], zorder=2,
-                   yerr=e, error_kw=dict(ecolor="0.3", lw=0.7, capsize=1.5, zorder=3))
+            ax.bar(x + off, [A[a][k][0] - A[base][k][0] for k in keys], w * 0.9, color=colour[a], zorder=2)
         ax.axhline(0, color="black", linewidth=1, zorder=3)
         ax.set_xlim(-0.6, len(keys) - 0.4)
         ax.grid(True, alpha=0.3, axis="y")
         ax.set_axisbelow(True)
 
-    fig = plt.figure()
-    left, right = fig.subfigures(1, 2, width_ratios=[1.62, 1], wspace=0.02)
-    axc = left.subplots()
+    handles = [Patch(facecolor=colour[a], label=ARM[a][1]) for a in comps]
+
+    def save(fig, name, ncol):
+        fig.legend(handles=handles, loc="outside upper center", ncol=ncol, frameon=False)
+        for ext, dpi in (("pdf", None), ("png", 1500)):
+            fig.savefig(registry.FIGS / f"{name}.{ext}", bbox_inches="tight", dpi=dpi)
+        plt.close(fig)
+        print(f"wrote {name}.pdf/.png ({fig.get_size_inches()[0]:.2f} x {fig.get_size_inches()[1]:.2f} in before the legend)")
+
+    # ------------------------------------------------------------------ main text: classification, full width
+    style(1.0, 1, 1, 0.42)
     keys = [k for k, _ in CLS if all(k in A[a] for a in arms)]
     lab = dict(CLS)
-    bars(axc, keys)
-    axc.set_xticks(np.arange(len(keys)))
-    axc.set_xticklabels([f"{lab[k]}\n" + rf"\textit{{{A[base][k][0]:.1f}}}" for k in keys])
-    axc.set_ylabel(r"Top-1 $-$ random")
+    fig, ax = plt.subplots()
+    bars(ax, keys)
+    ax.set_xticks(np.arange(len(keys)))
+    ax.set_xticklabels([lab[k] for k in keys])
+    ax.set_ylabel(rf"Accuracy over random (top-1, {pct})")
+    top = ax.secondary_xaxis("top")                       # random's own score, so the bars read back as absolutes
+    top.set_xticks(np.arange(len(keys)))
+    top.set_xticklabels([f"{A[base][k][0]:.1f}" for k in keys])
+    top.set_xlabel(rf"Random init (top-1, {pct})", labelpad=2, fontsize=plt.rcParams["axes.labelsize"] - 1)
+    top.tick_params(length=0, pad=1, labelsize=plt.rcParams["xtick.labelsize"] - 1)
+    top.spines["top"].set_visible(False)
+    save(fig, "fig25_bars_classification", len(handles))
+
+    # ------------------------------------------------------------------ appendix: the other tasks, full width
     shown = [t for t in OTHER if all(t[0] in A[a] for a in arms)]
-    axs = right.subplots(2, 2)
-    for i, (ax, (k, tlab)) in enumerate(zip(axs.flat, shown)):
+    style(1.0, 1, len(shown), 1.05)
+    fig, axs = plt.subplots(1, len(shown))
+    for ax, (k, tlab, unit) in zip(np.atleast_1d(axs), shown):
         bars(ax, [k], width=0.72)
         ax.set_xticks([])
-        ax.set_title(rf"{tlab}" + "\n" + rf"\textit{{random {A[base][k][0]:.1f}}}",
-                     loc="left", fontsize=plt.rcParams["axes.labelsize"] - 1.5)
-        if i % 2 == 0:
-            ax.set_ylabel(r"$-$ random", fontsize=plt.rcParams["axes.labelsize"] - 1)
-    for ax in axs.flat[len(shown):]:
-        ax.axis("off")
-    handles = [Patch(facecolor=colour[a], label=rf"\texttt{{{a}}} ($n={A[a][keys[0]][2]}$)") for a in comps]
-    fig.legend(handles=handles, loc="outside upper center", ncol=len(handles), frameon=False)
-
-    out = registry.FIGS
-    for ext, dpi in (("pdf", None), ("png", 1500)):
-        fig.savefig(out / f"fig25_bars.{ext}", bbox_inches="tight", dpi=dpi)
-    plt.close(fig)
-    print(f"wrote fig25_bars.pdf/.png  [{venue}, usetex={usetex}]  -> {out}")
+        ax.set_title(rf"{tlab}, {unit}" + "\n" + rf"\textit{{random {A[base][k][0]:.1f}}}",
+                     loc="center", fontsize=plt.rcParams["axes.labelsize"])
+    fig.supylabel("Score over random", fontsize=plt.rcParams["axes.labelsize"])
+    save(fig, "fig26_bars_other_tasks", len(handles))
 
 
 def main():
