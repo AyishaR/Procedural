@@ -81,6 +81,9 @@ def draw(args):
 
     def save(fig, name, ncol):
         fig.legend(handles=handles, loc="outside upper center", ncol=ncol, frameon=False)
+        engine = fig.get_layout_engine()                     # constrained layout packs the legend right onto the
+        if engine is not None:                               # axes; give the y label some air under it
+            engine.set(h_pad=0.10)
         for ext, dpi in (("pdf", None), ("png", 1500)):
             fig.savefig(registry.FIGS / f"{name}.{ext}", bbox_inches="tight", dpi=dpi)
         plt.close(fig)
