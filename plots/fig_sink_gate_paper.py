@@ -1,31 +1,39 @@
-"""Paper figure: attention sink and MLP gate of the procedurally pretrained blocks, against a random initialisation.
+"""Paper figure: attention sink, MLP gate and effective weight scales of the procedurally pretrained blocks, against a random
+initialisation. Plot style follows visualise/report_plots_clean.ipynb and visualise/delta_norm_epoch_analysis_clean.ipynb
+(tueplots iclr2024 bundle with usetex, no top/right spines, seaborn tab10 colours, legend above the axes, grid alpha 0.3,
+mean +- standard deviation bands).
 
-Three per-block quantities of a ViT-B/16 BEFORE any ImageNet training, measured on random ImageNet training images:
+Per-block quantities of a ViT-B/16 BEFORE any ImageNet training, measured on random ImageNet training images:
 
-  attention entropy       mean entropy (nats) of the attention rows, over images, heads and query tokens; ln(197) = 5.28
-                          is uniform attention, a sink drives it towards 0
-  fc1 pre-activation      mean of the MLP's fc1 output before the GELU, over images, tokens and hidden units (--preact mean,
-                          the statistic the recipe's gate is calibrated to), or the mean L2 norm of a token's pre-activation
-                          vector (--preact norm)
-  active units            fraction of positive fc1 pre-activations (the GELU passes those; the rest is switched off)
+  entropy   attention entropy: mean of -sum_j p_j ln p_j over the attention rows (images, heads, query tokens), in nats;
+            ln(197) = 5.28 is uniform attention, a sink drives it towards 0
+  preact    mean of the MLP's fc1 output before the GELU, over images, tokens and hidden units (--preact mean, the statistic the
+            recipe's gate is calibrated to), or the mean L2 norm of a token's pre-activation vector (--preact norm)
+  scale     effective weight scale of q, k and fc1, the three matrices the committed recipe rescales (extract_profile.py,
+            --gain_fold exact): rms(W diag(gamma)) / 0.02 with gamma the gain of the LayerNorm the matrix reads, i.e. the size of
+            the matrix the forward pass applies relative to the initialisation standard deviation. Weights only, no images;
+            the random init reads 1.00 by construction.
+  active    fraction of positive fc1 pre-activations (the GELU passes those; the rest is switched off); off by default
 
-Series: random init (timm), kdyck, ksd. A procedural series is a fresh timm ViT-B whose 12 blocks hold the checkpoint's
-tensors; the ImageNet patch / position embeddings and the class token stay random, as in every run that loads a procedural
-checkpoint (utils.pr_load_model drops them). The statistics of block b depend on blocks 0..b only, so blocks 0-7 are also
-exactly the blocks-0-7 prefix arm (ftb4i). Every series is measured in --seeds random contexts (seed s: torch.manual_seed(s),
-then the model is built; the three series of one seed share the random embeddings) on the same --n_images training images
-(seeded uniform draw, evaluation transform). Lines are the mean over the contexts, bands the range (min to max).
+Series: random init (timm), k-Dyck-D4 (kdyck) and k-Dyck-Shuffled-D98 (ksd). A procedural series is a fresh timm ViT-B whose
+12 blocks hold the checkpoint's tensors; the ImageNet patch / position embeddings and the class token stay random, as in every
+run that loads a procedural checkpoint (utils.pr_load_model drops them). The statistics of block b depend on blocks 0..b only,
+so blocks 0-7 are the same construction as the blocks-0-7 prefix arm (ftb4i), up to the seed of the random parts. Every series
+is measured in --seeds random contexts (seed s:
+torch.manual_seed(s), then the model is built; the three series of one seed share the random embeddings) on the same
+--n_images training images (seeded uniform draw, evaluation transform). Lines are the mean over the contexts, bands +- one
+standard deviation (the procedural scales do not depend on the context: no band).
 
 Everything is measured here with hooks on the model's own forward pass; nothing is read from a cache or a profile JSON. The
 numbers are written next to the figures (statistics.json), and --replot redraws from that file without a GPU.
 
 usage (on a GPU node, ~3 min):   .venv/bin/python plots/fig_sink_gate_paper.py
-       restyle only:             .venv/bin/python plots/fig_sink_gate_paper.py --replot [--preact norm] [--blocks 0-7] [--usetex]
-output: plots/out/fig_sink_gate/{row,column}.pdf, panel_{entropy,preact,active}.pdf + legend.pdf (and .png previews)
-  row     one figure at full line width, three panels of 1/3 line width each
-  column  one figure of 1/3 line width, three stacked panels sharing the block axis
-  panel_* the three panels as separate files of 1/3 line width each (for subfigures), legend.pdf the matching legend strip"""
-import argparse, contextlib, hashlib, io, json, math, os, sys, textwrap, time
+       restyle only:             .venv/bin/python plots/fig_sink_gate_paper.py --replot [--preact norm] [--blocks 0-7] [--panels entropy,preact,scale,active]
+output: plots/out/fig_sink_gate/early_{row,column}.pdf, early_<panel>.pdf + early_legend.pdf (and .png previews)
+  early_row      one figure at full line width, one panel per quantity side by side
+  early_column   one figure of --panel_width line widths (default 1/2), the panels stacked and sharing the layer axis
+  early_<panel>  the panels as separate files of --panel_width line widths each (for subfigures), early_legend.pdf the legend strip"""
+import argparse, contextlib, hashlib, io, json, math, os, shutil, sys, textwrap, time
 import numpy as np
 import torch
 
@@ -33,20 +41,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 CHECKPOINTS = {"kdyck": "results/pr_vitb_n/pr_6066174_final.pth", "ksd": "results/pr_vitb_ksd/pr_6463456_final.pth"}
-# series key, legend label, colour, marker, line style. Colour follows the entity (the neutral gray is the baseline on purpose);
-# marker and line style repeat the identity for print and colour-blind readers.
-SERIES = [("random", "random init", "#898781", "o", (0, (4, 1.5))),
-          ("kdyck", "k-Dyck-D4", "#2a78d6", "s", "-"),
-          ("ksd", "k-Dyck-Shuffled-D98", "#eb6834", "^", "-")]
-UNIFORM = dict(color="black", lw=0.7, ls=(0, (1, 1.2)))                                              # uniform attention, ln(tokens)
+SERIES = [("random", "Random init", 0), ("kdyck", "k-Dyck-D4", 1), ("ksd", "k-Dyck-Shuffled-D98", 2)]   # key, label, tab10 slot
+SCALED = [("q", "-", r"$W_Q$"), ("k", "--", r"$W_K$"), ("fc1", ":", r"$W_{\mathrm{fc1}}$")]   # the recipe's matrices: key, line style, label
+INIT_STD, GAIN_FOLD = 0.02, "exact"                                                           # the committed arms' convention
+PANELS = {"entropy": ("entropy", "Attention entropy"), "preact": None, "scale": ("scale", "Effective weight scale"),
+          "active": ("active_units", "Fraction of active fc1 units")}
 
 
 # ---------------------------------------------------------------------------------------------------------------- measurement
 class BlockStatistics:
-    """Sums of the three quantities per block, collected by hooks while the model runs its own forward pass.
+    """Sums of the forward-pass quantities per block, collected by hooks while the model runs its own forward pass.
 
     attention: a pre-hook on block.attn receives norm1(stream), i.e. exactly what the attention reads; the probabilities are
-    recomputed from it with the block's own qkv, q/k norm and scale (timm's fused attention does not expose them).
+    recomputed from it with the block's own qkv, q/k norm and scale (fused attention does not expose them).
     MLP: a forward hook on block.mlp.fc1 receives the pre-activations themselves."""
 
     def __init__(self, model):
@@ -82,6 +89,14 @@ class BlockStatistics:
                 "preact_mean": [s["preact"] / s["entries"] for s in self.sums],
                 "preact_norm": [s["preact_norm"] / s["tokens"] for s in self.sums],
                 "active_units": [s["active"] / s["entries"] for s in self.sums]}
+
+
+def effective_scales(model):
+    """{"q" | "k" | "fc1": [per block]} of the model's current weights, in the committed recipe's convention."""
+    from extract_profile import effective_scales as scales_of_block
+    state_dict = {key: tensor.detach().cpu() for key, tensor in model.state_dict().items()}
+    per_block = [scales_of_block(state_dict, block, INIT_STD, GAIN_FOLD) for block in range(len(model.blocks))]
+    return {name: [one[name] for one in per_block] for name, *_ in SCALED}
 
 
 def training_images(data_path, n, seed, model_arguments):
@@ -125,42 +140,85 @@ def measure(arguments):
             statistics = BlockStatistics(model)
             for start in range(0, len(images), arguments.batch_size):
                 model(images[start:start + arguments.batch_size].to(device))
-            values[name].append(statistics.result())
+            values[name].append({**statistics.result(), "scale": effective_scales(model)})
             print(f"seed {seed} {name:7s} entropy " + " ".join(f"{v:5.2f}" for v in values[name][-1]["entropy"]), flush=True)
     return {"values": values, "blocks": len(model.blocks), "tokens": statistics.sequence_length,
             "seeds": arguments.seeds, "n_images": len(images), "image_seed": arguments.image_seed, "data_path": arguments.data_path,
             "images_sha256": hashlib.sha256("\n".join(paths).encode()).hexdigest(), "first_images": paths[:5],
-            "checkpoints": CHECKPOINTS, "device": device, "date": time.strftime("%Y-%m-%d %H:%M")}
+            "checkpoints": CHECKPOINTS, "scale_convention": f"rms(W diag(gain)) / {INIT_STD}, gain_fold {GAIN_FOLD}",
+            "device": device, "date": time.strftime("%Y-%m-%d %H:%M")}
 
 
 # ------------------------------------------------------------------------------------------------------------------- figure
+def per_seed(record, name, key, shown):
+    """(seeds, shown blocks) array of one quantity; `key` may be "scale/q"."""
+    rows = []
+    for one in record["values"][name]:
+        value = one
+        for part in key.split("/"):
+            value = value[part]
+        rows.append(value)
+    return np.array(rows, float)[:, shown]
+
+
 def draw(arguments, record, out_dir):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
-    from matplotlib.ticker import LogLocator, MultipleLocator, NullFormatter
+    from matplotlib.ticker import LogLocator, NullFormatter
+    import seaborn as sns
     from tueplots import bundles, figsizes
 
+    usetex = arguments.usetex and shutil.which("latex") is not None
+    if arguments.usetex and not usetex:
+        print("no latex on this node: rendering the text with matplotlib's own fonts")
     bundle, figsize = getattr(bundles, arguments.venue), getattr(figsizes, arguments.venue)
-    plt.rcParams.update(bundle(usetex=arguments.usetex))
 
+    narrow = {"panel": False}                                # set by style(): a panel below ~0.45 line widths gets wrapped labels, fewer ticks
+
+    def style(rel_width, nrows, ncols, height_to_width_ratio=None):
+        """The notebooks' pattern: the bundle sets fonts, sizes and the golden-ratio figure height, spines off. A height ratio is
+        given only where the bundle's height is too small for the labels (several narrow panels side by side)."""
+        plt.rcParams.update(bundle(usetex=usetex, rel_width=rel_width, nrows=nrows, ncols=ncols, family="serif"))
+        if height_to_width_ratio is not None:
+            plt.rcParams.update(figsize(rel_width=rel_width, nrows=nrows, ncols=ncols, height_to_width_ratio=height_to_width_ratio))
+        plt.rcParams.update({"axes.spines.top": False, "axes.spines.right": False})
+        narrow["panel"] = rel_width / ncols < 0.45
+
+    tab10 = sns.color_palette("tab10")
+    colour = {name: tab10[slot] for name, _, slot in SERIES}
     first, last = (int(v) for v in arguments.blocks.split("-"))
     shown = np.arange(first, last + 1)
-    preact = {"mean": ("preact_mean", "Mean fc1 pre-activation"), "norm": ("preact_norm", "fc1 pre-activation norm")}[arguments.preact]
-    panels = [("entropy", "entropy", "Attention entropy"), ("preact", *preact), ("active", "active_units", "Fraction of active fc1 units")]
+    PANELS["preact"] = {"mean": ("preact_mean", "Mean fc1 pre-activation"), "norm": ("preact_norm", "fc1 pre-activation norm")}[arguments.preact]
+    panels = [(tag, *PANELS[tag]) for tag in arguments.panels.split(",")]
+    uniform = dict(color="black", linestyle="--", linewidth=1)                                  # uniform attention, ln(tokens)
+
+    def line(ax, name, key, linestyle="-", band=True):
+        data = per_seed(record, name, key, shown)
+        mean, std = data.mean(0), (data.std(0, ddof=1) if len(data) > 1 else np.zeros(len(shown)))
+        if band and std.max() > 0:
+            ax.fill_between(shown, mean - std, mean + std, color=colour[name], alpha=0.2, linewidth=0)
+        ax.plot(shown, mean, marker="o", markersize=1.5, linewidth=1, linestyle=linestyle, color=colour[name], zorder=2)
 
     def panel(ax, tag, key, label, x_label=True, label_as_title=False):
-        for name, _, colour, marker, style in SERIES:
-            per_seed = np.array([one[key] for one in record["values"][name]])[:, shown]        # (seeds, blocks)
-            ax.fill_between(shown, per_seed.min(0), per_seed.max(0), color=colour, alpha=0.2, lw=0)
-            ax.plot(shown, per_seed.mean(0), color=colour, ls=style, lw=1.1, marker=marker, ms=2.6, mew=0, zorder=3)
-        if tag == "entropy":                                                                    # uniform attention over all tokens
-            uniform = math.log(record["tokens"])
-            ax.axhline(uniform, zorder=4, **UNIFORM)                                            # on top: the random series sits on it
-            ax.set_ylim(0, uniform * 1.15)
-        if tag == "preact" and arguments.preact == "mean":
-            ax.axhline(0, color="gray", lw=0.6, ls=":", zorder=1)
+        if tag == "scale":
+            for name, *_ in SERIES:
+                for weight, linestyle, _ in SCALED:
+                    line(ax, name, f"scale/{weight}", linestyle)
+        else:
+            for name, *_ in SERIES:
+                line(ax, name, key)
+        if tag == "entropy":                                                                    # the reference belongs to this panel only
+            ax.axhline(math.log(record["tokens"]), zorder=3, **uniform)
+            ax.set_ylim(bottom=0)
+            ax.legend(handles=[Line2D([], [], label="uniform attention", **uniform)], loc="upper right", bbox_to_anchor=(1.0, 0.9),
+                      frameon=False, handlelength=1.8)
+        if tag == "scale":                                                                      # the line styles belong to this panel only
+            low, high = ax.get_ylim()
+            ax.set_ylim(top=high + 0.3 * (high - low))
+            ax.legend(handles=[Line2D([], [], color="black", linewidth=1, linestyle=linestyle, label=label) for _, linestyle, label in SCALED],
+                      loc="upper left", ncol=len(SCALED), frameon=False, handlelength=1.3, handletextpad=0.5, columnspacing=0.8)
         if tag == "preact" and arguments.preact == "norm":
             ax.set_ylim(bottom=0)
         if tag == "active":                                                                     # spans 4 decades on kdyck
@@ -168,60 +226,58 @@ def draw(arguments, record, out_dir):
             ax.yaxis.set_major_locator(LogLocator(numticks=6)); ax.yaxis.set_minor_formatter(NullFormatter())
             ax.set_ylim(top=1.0)
         if label_as_title:                                                                      # stacked panels: no room for a vertical label
-            ax.set_title(label, loc="left", fontsize=plt.rcParams["axes.labelsize"], pad=2.5)
-        else:                                                                                   # a 1/3-width panel is ~1.1 in tall
-            ax.set_ylabel(textwrap.fill(label, 18, break_on_hyphens=False) if len(label) > 20 else label)
+            ax.set_title(label, loc="left", fontsize=plt.rcParams["axes.labelsize"])
+        else:                                                                                   # a narrow panel is short
+            ax.set_ylabel(textwrap.fill(label, 18, break_on_hyphens=False) if narrow["panel"] and len(label) > 20 else label)
         ax.set_xlabel("Layer" if x_label else "")
-        ax.xaxis.set_major_locator(MultipleLocator(2 if len(shown) > 8 else 1)); ax.set_xlim(first - 0.4, last + 0.4)
-        ax.grid(which="major")
-        ax.spines[["top", "right"]].set_visible(False)
+        ax.set_xlim(first - 0.5, last + 0.5)
+        ax.set_xticks(shown[::2] if narrow["panel"] and len(shown) > 8 else shown)
+        ax.grid(True, alpha=0.3)
 
-    handles = [Line2D([], [], color=colour, ls=style, lw=1.1, marker=marker, ms=2.6, mew=0) for _, _, colour, marker, style in SERIES]
-    labels = [label for _, label, *_ in SERIES]
-    handles.append(Line2D([], [], **UNIFORM)); labels.append("uniform attention")
-    legend_inches = 0.17                                                                        # height of one legend line
+    handles = [Line2D([], [], color=colour[name], marker="o", markersize=1.5, linewidth=1, label=label) for name, label, _ in SERIES]
 
     def save(fig, name):
-        for extension in ("pdf", "png"):
-            fig.savefig(os.path.join(out_dir, f"{name}.{extension}"), dpi=400)
+        for extension, dpi in (("pdf", None), ("png", 1500)):
+            fig.savefig(os.path.join(out_dir, f"{name}.{extension}"), bbox_inches="tight", dpi=dpi)
         plt.close(fig)
-        print(f"wrote {os.path.relpath(out_dir, ROOT)}/{name}.pdf ({fig.get_size_inches()[0]:.2f} x {fig.get_size_inches()[1]:.2f} in)")
+        print(f"wrote {os.path.relpath(out_dir, ROOT)}/{name}.pdf ({fig.get_size_inches()[0]:.2f} x {fig.get_size_inches()[1]:.2f} in before the legend)")
 
-    # row: full line width, three panels
-    width, height = figsize(nrows=1, ncols=3, height_to_width_ratio=0.8)["figure.figsize"]
-    fig, axes = plt.subplots(1, 3, figsize=(width, height + legend_inches))
-    for ax, (tag, key, label) in zip(axes, panels):
+    # row: full line width, one panel per quantity
+    style(1.0, 1, len(panels), 0.85)
+    fig, axes = plt.subplots(1, len(panels))
+    for ax, (tag, key, label) in zip(np.atleast_1d(axes), panels):
         panel(ax, tag, key, label)
-    fig.legend(handles, labels, loc="outside upper center", ncols=len(handles), frameon=False, handlelength=2.2, columnspacing=1.2, borderaxespad=0)
-    save(fig, "row")
+    fig.legend(handles=handles, loc="outside upper center", ncol=min(len(handles), 4), frameon=False)
+    save(fig, "early_row")
 
-    # column: 1/3 line width, three stacked panels sharing the block axis
-    width, height = figsize(rel_width=1 / 3, nrows=3, ncols=1, height_to_width_ratio=0.62)["figure.figsize"]
-    fig, axes = plt.subplots(3, 1, figsize=(width, height + 2 * legend_inches), sharex=True)     # legend in two lines
-    for position, (ax, (tag, key, label)) in enumerate(zip(axes, panels)):
-        panel(ax, tag, key, label, x_label=position == 2, label_as_title=True)
-    fig.legend(handles, labels, loc="outside upper center", ncols=2, frameon=False, handlelength=1.6, columnspacing=0.8,
-               handletextpad=0.4, borderaxespad=0)
-    save(fig, "column")
+    # column: the panels stacked and sharing the layer axis
+    style(arguments.panel_width, len(panels), 1)
+    fig, axes = plt.subplots(len(panels), 1, sharex=True)
+    for position, (ax, (tag, key, label)) in enumerate(zip(np.atleast_1d(axes), panels)):
+        panel(ax, tag, key, label, x_label=position == len(panels) - 1, label_as_title=True)
+    fig.legend(handles=handles, loc="outside upper center", ncol=2, frameon=False)
+    save(fig, "early_column")
 
-    # separate panels of 1/3 line width each, and the legend as its own strip
-    width, height = figsize(rel_width=1 / 3, nrows=1, ncols=1, height_to_width_ratio=0.8)["figure.figsize"]
+    # separate panels, and the legend alone as a strip
+    style(arguments.panel_width, 1, 1)
     for tag, key, label in panels:
-        fig, ax = plt.subplots(figsize=(width, height))
+        fig, ax = plt.subplots()
         panel(ax, tag, key, label)
-        save(fig, f"panel_{tag}")
-    fig = plt.figure(figsize=(figsize(nrows=1, ncols=1)["figure.figsize"][0], legend_inches))
-    fig.legend(handles, labels, loc="center", ncols=len(handles), frameon=False, handlelength=2.2, columnspacing=1.2, borderaxespad=0)
-    save(fig, "legend")
+        save(fig, f"early_{tag}")
+    style(1.0, 1, 1)
+    fig = plt.figure(figsize=(plt.rcParams["figure.figsize"][0], 0.2))
+    fig.legend(handles=handles, loc="center", ncol=len(handles), frameon=False)
+    save(fig, "early_legend")
 
 
-def table(record, preact_key):
-    print(f"\nmean over {record['seeds']} contexts [min, max], {record['n_images']} training images")
-    for key, form in (("entropy", "{:6.3f}"), (preact_key, "{:+7.3f}"), ("active_units", "{:8.5f}")):
+def table(record, arguments):
+    print(f"\nmean over {record['seeds']} contexts, {record['n_images']} training images")
+    keys = [("entropy", "{:6.3f}"), ({"mean": "preact_mean", "norm": "preact_norm"}[arguments.preact], "{:+7.3f}"),
+            ("active_units", "{:8.5f}")] + [(f"scale/{weight}", "{:6.3f}") for weight, *_ in SCALED]
+    for key, form in keys:
         print(f"  {key}")
         for name, *_ in SERIES:
-            per_seed = np.array([one[key] for one in record["values"][name]])
-            print(f"    {name:7s}" + " ".join(form.format(v) for v in per_seed.mean(0)))
+            print(f"    {name:7s}" + " ".join(form.format(v) for v in per_seed(record, name, key, np.arange(record["blocks"])).mean(0)))
 
 
 if __name__ == "__main__":
@@ -233,10 +289,12 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=100)
     parser.add_argument("--out", default=os.path.join(ROOT, "plots/out/fig_sink_gate"), help="output directory")
     parser.add_argument("--replot", action="store_true", help="redraw from <out>/statistics.json without measuring")
-    parser.add_argument("--preact", choices=("mean", "norm"), default="mean", help="middle panel: mean pre-activation or mean token L2 norm")
+    parser.add_argument("--panels", default="entropy,preact,scale", help="panels in order, from entropy, preact, scale, active")
+    parser.add_argument("--preact", choices=("mean", "norm"), default="mean", help="preact panel: mean pre-activation or mean token L2 norm")
     parser.add_argument("--blocks", default="0-11", help="blocks shown, e.g. 0-7")
-    parser.add_argument("--venue", default="iclr2024", help="tueplots bundle (iclr2024 and neurips2024: 5.5 in line width)")
-    parser.add_argument("--usetex", action="store_true", help="render the text with LaTeX (needs a LaTeX installation on the node)")
+    parser.add_argument("--panel_width", type=float, default=0.5, help="width of the separate panels and the column, in line widths")
+    parser.add_argument("--venue", default="iclr2024", help="tueplots bundle")
+    parser.add_argument("--no_usetex", dest="usetex", action="store_false", help="do not render the text with LaTeX (the notebooks do)")
     arguments = parser.parse_args()
 
     os.makedirs(arguments.out, exist_ok=True)
@@ -247,5 +305,5 @@ if __name__ == "__main__":
         record = measure(arguments)
         json.dump(record, open(record_path, "w"), indent=1)
         print(f"wrote {os.path.relpath(record_path, ROOT)}")
-    table(record, {"mean": "preact_mean", "norm": "preact_norm"}[arguments.preact])
+    table(record, arguments)
     draw(arguments, record, arguments.out)
