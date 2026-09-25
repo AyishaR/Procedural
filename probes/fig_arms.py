@@ -106,9 +106,11 @@ READOUTS = [
     ("ade_miou", "ADE20K seg mIoU (best)", "frozen features"),
     ("nyu_delta1", "NYU depth delta1 (best)", "frozen features"),
     ("spair_pck", "SPair-71k PCK@0.1 (best)", "training-free"),
-    ("corloc", "TokenCut CorLoc, stream (best)", "training-free"),
-    ("corloc_keys", "TokenCut CorLoc, keys (best)", "training-free"),
 ]
+# TokenCut object discovery is deliberately NOT here: on these supervised ViTs the normalised cut is bimodal --
+# in 45 of 175 (model, variant, depth) cells it selects a small spurious component instead of the object (mean
+# box area < 0.15), so per-depth CorLoc carries a seed sd of up to 15.5 points and no depth orders the arms
+# stably.  The profiles are kept in results/discovery for the record; see the docs.
 
 
 B11 = {k: k + "__b11" for k in ("transfer_best", "knn_best", "voc_miou", "ade_miou", "nyu_delta1",

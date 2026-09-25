@@ -228,6 +228,129 @@ decide it. Caveats: the finals span only 75-80 % ID, so any slope-dependent stat
 trajectories; random's 2-point seed spread on ImageNet-R sets the noise floor there; ImageNet-C cells are 5k images
 (random's per-group seed sd ≈ 1 point), `ftb4o` / `ftbrhos` / `ftblrm` are n=1.
 
+### 0e.1 Three arms across every readout: does the composed checkpoint-free init reproduce proc off ImageNet? (2026-09-25)
+
+**Question.** §0e and its effective-robustness addendum compared nine arms on ImageNet-centred readouts. This pass
+asks the narrower question the paper needs: on *everything that is not plain ImageNet accuracy*, how far is proc
+from random, and does the checkpoint-free composed init reproduce that distance? Three arms only — `r` (n=3,
+78.08), `p` (n=3, 80.08) and **`ftbc7lm`** (n=1, **80.48**, SLURM 29768863: `--init_method analytic_profile` on
+blocks 0-7, no checkpoint, bf16 AMP).
+
+**What was added** (code: `probes/ood_data.py`, `probes/ood_eval.py`, `probes/discovery.py`,
+`probes/correspondence.py`, `probes/fig_arms.py`; launcher `probes/sbatch/tasks.sh`; jobs 29783409/29784124/
+29784127/29784130/29783431 for `ftbc7lm`'s §0e pipeline, 29784298/29784334/29784366/29784367 for the shifted
+sets, 29784518 for the two new tasks):
+
+* *Three more shifted sets, still zero-shot with the model's own head*: **ImageNet-Sketch** (50 889 images, all
+  1000 classes), **ImageNet-A** (7 500, logits masked to its 200 classes) and **ObjectNet** (18 574 images over
+  the 113 classes that overlap ImageNet; logits masked to the 125 ImageNet classes those map to and the winner
+  mapped back to the ObjectNet class; the 2-pixel red border is cropped before the eval transform). Together
+  with V2, R and C this is the standard shift suite. Sanity: ObjectNet unmasked 26.0 (r) / 29.4 (p) and
+  ImageNet-A masked 18.9 / 20.5 sit where the literature puts supervised ViT-B/16 at this accuracy.
+* *Two task families that need no training at all*, read off the frozen patch tokens at all 13 depths:
+  **semantic correspondence** on SPair-71k (12 234 test pairs, 88 328 keypoints; a source keypoint's feature is
+  matched to its nearest target patch, PCK@0.1 of the target box's longer side) and **single-object discovery**
+  on VOC12 trainval (11 540 images, CorLoc at IoU 0.5). Correspondence works; discovery does not, for reasons
+  that are about the readout rather than the models — see the last paragraph.
+* `ftbc7lm` was put through every existing §0e readout as well, so all of fig18-fig24 now carry ten arms.
+
+**Raw accuracies.** Every shifted set orders `r < p ≤ ftbc7lm`:
+
+| | ImageNet | V2 | R (200) | Sketch | A (200) | ObjectNet | C (mean) |
+|---|---|---|---|---|---|---|---|
+| `r` (n=3) | 78.08 ± 0.19 | 65.56 ± 0.44 | 36.22 ± 2.18 | 25.58 ± 1.34 | 18.91 ± 1.06 | 33.47 ± 0.82 | 55.16 ± 0.86 |
+| `p` (n=3) | 80.08 ± 0.13 | 68.22 ± 0.43 | 38.50 ± 0.27 | 27.42 ± 0.37 | 20.46 ± 0.43 | 36.81 ± 0.58 | 58.56 ± 0.09 |
+| `ftbc7lm` | 80.48 | 68.89 | 39.65 | 27.99 | 22.09 | 39.10 | 58.13 |
+
+**But none of that is robustness.** `p` is 2.0 ImageNet points above `r` and `ftbc7lm` 2.4, and on these sets
+accuracy buys accuracy. Placing each model on random's slope-1 probit line at its own ImageNet accuracy
+(fig22/fig22b, the stage-1 protocol) leaves offsets of, for `p` / `ftbc7lm`: V2 +0.1 / +0.3, R −0.4 / +0.2,
+Sketch −0.5 / −0.4, A −0.4 / +0.8, ObjectNet +0.8 / +2.5, C +0.7 / −0.3, against a random seed sd of 0.2 (V2),
+2.0 (R), 1.1 (Sketch), 0.9 (A), 0.6 (ObjectNet), 0.6 (C). Two things then have to be separated, because the
+slope-1 assumption is not equally safe across the six sets. Fitting the slope over all 22 finals gives
+
+| set | fitted slope | 95 % CI | is 1 inside? |
+|---|---|---|---|
+| ImageNet-V2 | 1.02 | [0.94, 1.11] | yes |
+| ImageNet-R | 1.01 | [0.72, 1.30] | yes |
+| ImageNet-Sketch | 0.91 | [0.68, 1.15] | yes |
+| ImageNet-C | 1.15 | [1.03, 1.27] | **no** |
+| ObjectNet | 1.52 | [1.39, 1.65] | **no** |
+| ImageNet-A | 1.73 | [1.33, 2.13] | **no** |
+
+On **V2, R and Sketch** a slope of 1 is defensible, the offsets are the right statistic, and every arm is on the
+line to within a seed sd: there is no effective robustness to find. On **A, ObjectNet and C** the line is
+steeper than 1 — those sets reward ImageNet accuracy more than proportionally — so a slope-1 reference credits
+the most accurate arm with an offset it has not earned, which is exactly what produced `ftbc7lm`'s +2.5 on
+ObjectNet. Re-anchoring on the fitted slope through random's mean gives `p` / `ftbc7lm` of −1.9 / −1.0 on A,
+−0.6 / +0.8 on ObjectNet and +0.25 / −0.85 on C. **Under either convention, neither proc nor the composed init
+has a robustness gain that survives; the raw improvements on the shifted sets are what their higher ImageNet
+accuracy already predicts.** (The fitted slope is itself confounded — the 22 finals differ by arm, not by
+training progress, and span only 75-80.5 % — which is what the stage-2 trajectories of
+[[effective-robustness-plan]] are for. But the two readings bracket the answer, and neither yields a gain.)
+
+**The one shift effect that was real is NOT reproduced.** The stage-1 pass found exactly one gain that survived
+the accuracy matching: ImageNet-C **blur**, where proc sits +2.6 above random's line on all four blur
+corruptions, and which needed proc's actual early weights (`ftb3i`, the proc prefix, +2.7; `ftbqmlnvo`, proc's
+rank-mapped marginals, +1.0; the late recipe ~0). `ftbc7lm` scores **+0.28 ± 0.00** — a third of random's seed
+sd (0.87), i.e. nothing — while still being the most accurate arm, which under the C slope of 1.15 would if
+anything flatter it. The other three corruption groups agree: noise −1.0, weather −0.8, digital +0.2 against
+proc's −0.1 / −0.6 / +0.8. **So an analytic profile on blocks 0-7 reproduces proc's top-block generality but not
+its front-lever blur tolerance** — the two effects §0e kept trying to unify come apart here, and the blur effect
+remains attached to something in proc's actual early weights that neither a marginal rank-map nor a closed-form
+profile captures.
+
+**Off-task, the picture is different, and it lives in the last block.** At each readout's *best* depth the three
+arms are close, and proc is actually worse on depth. At **block 11** the gaps open up, because random's last
+block specialises to ImageNet and loses everything else, while proc's and the composed init's do not:
+
+| readout (frozen features) | `r` best → b11 | `p` best → b11 | `ftbc7lm` best → b11 | Δ at b11: `p` / `ftbc7lm` |
+|---|---|---|---|---|
+| transfer mean of 7 | 69.17 → 65.75 | 70.24 → 68.83 | 71.06 → 68.44 | **+3.07 / +2.69** |
+| k-NN transfer | 52.77 → 46.40 | 53.40 → 51.97 | 52.61 → 51.89 | **+5.58 / +5.49** |
+| VOC segmentation mIoU | 54.62 → 51.41 | 56.13 → 55.89 | 55.88 → 54.11 | +4.48 / +2.70 |
+| ADE20K segmentation mIoU | 22.17 → 21.23 | 23.14 → 23.14 | 22.57 → 21.92 | +1.91 / +0.69 |
+| NYU depth delta1 | 58.97 → 56.35 | 58.23 → 57.64 | 57.05 → 56.30 | +1.29 / −0.05 |
+| SPair-71k PCK@0.1 | 23.20 → 7.44 | 25.61 → 13.61 | 24.85 → 12.94 | **+6.18 / +5.50** |
+
+Correspondence is the sharpest case and it is a task nothing in this notebook was tuned for: random's PCK peaks
+at b6 (23.2) and collapses to 7.4 by b11, proc peaks later (b8, 25.6) and holds 13.6, and `ftbc7lm` traces proc's
+whole profile (b8 24.9, b11 12.9) including the lowered front. The composed init reproduces proc's final-block
+advantage essentially exactly on k-NN (+5.5 vs +5.6) and correspondence (+5.5 vs +6.2), about 60 % of it on VOC,
+a third on ADE20K, and not at all on NYU depth — the one readout where both arms are *below* random (best-depth
+δ1 −0.7 for proc and −1.9 for `ftbc7lm`).
+
+**Reading.** The composed intervention reproduces what proc does, on two task families that were never part of
+its design, and it does so through the same mechanism §0e identified: not better features in absolute terms — at
+its best depth it is within a point of random on most readouts, and worse on depth — but a last block that stays
+general instead of collapsing onto the ImageNet head. Off-distribution classification is the weakest part of the
+case: every shifted set improves in raw accuracy, but at matched ImageNet accuracy the improvements are inside
+the noise or inside the slope ambiguity. The honest one-line summary is that proc and the composed init buy
+**final-block generality**, not robustness to distribution shift.
+
+**The object-discovery readout does not work on these models, and that is worth recording.** LOST's degree rule
+(the usual first choice) is outright degenerate here: on a supervised ViT almost every pair of patch tokens is
+positively correlated, so every patch is marked foreground, the box is the whole frame, and all ten arms score
+identically — mean box area exactly 1.00 with the attention keys. TokenCut's normalised cut cannot return the
+whole frame and was used instead, but it turns out to be bimodal on these features: in **45 of the 175
+(model, variant, depth) cells** the cut selects a small spurious component instead of the object (mean box area
+below 0.15, CorLoc ≈ 1 %), and in the rest it finds something object-like (CorLoc 30-40 %). The result is a
+per-depth seed sd of up to **15.5 points** on random alone, and no depth that orders the three arms stably: at
+key-depth b3 the arms read 30.5 ± 3.2 / 33.8 ± 2.6 / 33.8, at b4 they read 28.5 ± 3.9 / 21.4 ± 17.0 / 40.0.
+The profiles are kept in `results/discovery/` and drawn on the results page with their seed bands, but the
+readout is **excluded from fig24 and from any claim here**. Published CorLoc for TokenCut drops sharply from
+DINO to supervised features, so weak numbers were expected; the instability was not, and it means single-object
+discovery needs a different formulation (or self-supervised features) before it can say anything about these
+arms.
+
+**Caveats.** `ftbc7lm` is n=1 against n=3, so any gap under ~1 random seed sd is not evidence (the sd is printed
+per readout in `figures/arms_summary.csv`); random's seed spread is large on ImageNet-R (2.2), SPair (2.2) and
+k-NN (1.7). One of the 18 574 ObjectNet PNGs is truncated in the shared copy and is decoded partially. The
+correspondence and discovery protocols squash images to 224×224 rather than centre-cropping, so no keypoint or
+object leaves the frame; both are scored in original image coordinates. LOST's degree rule, the usual object
+discovery baseline, is degenerate on these supervised ViTs (every patch comes out foreground and the box is the
+whole image), so TokenCut is used instead and the mean box area is reported next to CorLoc.
+
 ## 0c. CURRENT UNDERSTANDING: the early blocks carry the VALUE DISTRIBUTION (2026-09-02, rev 2)
 
 > **2026-09-05: read §0d first.** A run-by-run verification pass (configs re-read from every run's own
