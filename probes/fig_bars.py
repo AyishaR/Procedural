@@ -96,13 +96,12 @@ def draw(args):
     ax.set_xticklabels([lab[k] for k in keys])
     ax.set_ylabel(YLABEL, fontsize=plt.rcParams["axes.labelsize"] + 1)
     ax.tick_params(axis="y", labelsize=plt.rcParams["ytick.labelsize"] + 1)
-    # random's own score as a row inside the axes: an extra axis on top costs height the figure does not have
+    # random's own score as a row inside the axes: an extra axis on top costs height the figure does not have.
+    # No row header -- the y label already names random init, and a header here would sit in the y-axis margin.
     hi = max(A[a][k][0] - A[base][k][0] for a in comps for k in keys)
     ax.set_ylim(top=hi * 1.26)
     row = hi * 1.15
-    ax.set_xlim(-1.02, len(keys) - 0.42)
-    ax.text(-0.70, row, r"\textit{random init}", ha="right", va="center",
-            fontsize=plt.rcParams["xtick.labelsize"] - 0.5, color="0.25")
+    ax.set_xlim(-0.6, len(keys) - 0.4)
     for i, k in enumerate(keys):
         ax.text(i, row, rf"\textit{{{A[base][k][0]:.1f}}}", ha="center", va="center",
                 fontsize=plt.rcParams["xtick.labelsize"] - 0.5, color="0.25")
