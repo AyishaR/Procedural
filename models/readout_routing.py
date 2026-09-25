@@ -36,6 +36,11 @@ Modes ("last k blocks" = blocks L-k .. L-1 = sources 2(L-k)+1 .. 2L, i.e. 17..24
                      -- readout input emb + (x_{L-1} - x_{L-4}): the input tokens skip to the head
     fixed_b0_last3   fixed_last3 + sources 0..2, a buffer
                      -- readout input x_0 + (x_{L-1} - x_{L-4}): the stream after block 0 skips to it
+    fixed_emb_last4  fixed_last4 + the embedding (source 0), a buffer
+                     -- completes the 2x2 {last 4, last 3} x {without, with emb}. The head reads the
+                        CLS row, where the embedding is the constant cls_token + pos_embed[0]
+                        (docs/readout_intervention_math.md), so "with emb" means a learned offset
+                        inside the final LayerNorm, not image content
 
 The weight is 1-D, so optim_factory.get_parameter_groups puts it in the no_decay group at the
 backbone LR (no decay toward init, by decision). Gradient SIGN consistency per weight is counted
@@ -59,6 +64,7 @@ _SPECS = {
     "fixed_last3": ((), 3, False),
     "fixed_emb_last3": ((0,), 3, False),
     "fixed_b0_last3": ((0, 1, 2), 3, False),
+    "fixed_emb_last4": ((0,), 4, False),
 }
 READOUT_MODES = ("off",) + tuple(_SPECS)
 

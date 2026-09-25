@@ -40,8 +40,8 @@ N = 2 * DEPTH + 1                      # sources: emb + 2*depth branch outputs
 FIRST_LATE = 2 * (DEPTH - 4) + 1       # first source of the last 4 blocks (17 at depth 12)
 FIRST_LATE3 = 2 * (DEPTH - 3) + 1      # first source of the last 3 blocks (19 at depth 12)
 ARMS = {"A": "fixed_last4", "B": "learn_last4", "C": "learn_ones",
-        "D": "fixed_emb_last3", "E": "fixed_b0_last3", "L3": "fixed_last3"}
-FIXED = ("fixed_last4", "fixed_last3", "fixed_emb_last3", "fixed_b0_last3")
+        "D": "fixed_emb_last3", "E": "fixed_b0_last3", "F": "fixed_last3", "G": "fixed_emb_last4"}
+FIXED = ("fixed_last4", "fixed_last3", "fixed_emb_last3", "fixed_b0_last3", "fixed_emb_last4")
 
 
 def _model(seed, **kw):
@@ -130,8 +130,10 @@ def test_readout_init_vectors():
     for bad in ("off", "learn_last3"):
         with pytest.raises(AssertionError):
             readout_init(bad, 12)
+    w, t = readout_init("fixed_emb_last4", 12)
+    assert not t and w.tolist() == [1.0] + [0.0] * 16 + [1.0] * 8
     assert READOUT_MODES == ("off", "fixed_last4", "learn_last4", "learn_ones",
-                             "fixed_last3", "fixed_emb_last3", "fixed_b0_last3")
+                             "fixed_last3", "fixed_emb_last3", "fixed_b0_last3", "fixed_emb_last4")
 
 
 def test_default_off_bit_identical():
@@ -207,12 +209,15 @@ def test_skip_arms_are_emb_or_block0_plus_the_last_three_blocks_delta():
     states = _stream_states(v, x)
     hist = _history(v, x)
     late3 = states[DEPTH] - states[DEPTH - 3]                     # x_after_last - x_after_last-3
+    late4 = states[DEPTH] - states[DEPTH - 4]
     refs = {"fixed_last3": late3,
             "fixed_emb_last3": states[0] + late3,                 # the input tokens skip
-            "fixed_b0_last3": states[1] + late3}                  # the stream after block 0 skips
+            "fixed_b0_last3": states[1] + late3,                  # the stream after block 0 skips
+            "fixed_emb_last4": states[0] + late4}                 # the 2x2's missing corner
     sums = {"fixed_last3": sum(hist[FIRST_LATE3 - 1:]),
             "fixed_emb_last3": states[0] + sum(hist[FIRST_LATE3 - 1:]),
-            "fixed_b0_last3": states[0] + hist[0] + hist[1] + sum(hist[FIRST_LATE3 - 1:])}
+            "fixed_b0_last3": states[0] + hist[0] + hist[1] + sum(hist[FIRST_LATE3 - 1:]),
+            "fixed_emb_last4": states[0] + sum(hist[FIRST_LATE - 1:])}
     outs = {}
     for mode, mixed in refs.items():
         m = _model(0, readout_routing=mode)
@@ -224,6 +229,7 @@ def test_skip_arms_are_emb_or_block0_plus_the_last_three_blocks_delta():
     # the three are different functions of the same backbone
     assert not torch.allclose(outs["fixed_last3"], outs["fixed_emb_last3"])
     assert not torch.allclose(outs["fixed_emb_last3"], outs["fixed_b0_last3"])
+    assert not torch.allclose(outs["fixed_emb_last4"], outs["fixed_emb_last3"])
 
 
 def test_mixer_reference_and_dtype():
@@ -424,7 +430,8 @@ def test_auto_load_model_guards_the_mode(tmp_path):
         return _model(0) if mode == "off" else _model(0, readout_routing=mode)
 
     dirs = {}
-    for mode in ("off", "fixed_last4", "learn_last4", "fixed_emb_last3", "fixed_b0_last3"):
+    for mode in ("off", "fixed_last4", "learn_last4", "fixed_emb_last3", "fixed_b0_last3",
+                 "fixed_last3", "fixed_emb_last4"):
         d = tmp_path / mode
         d.mkdir()
         m = build(mode)
@@ -448,14 +455,16 @@ def test_auto_load_model_guards_the_mode(tmp_path):
     assert a.start_epoch == 4 and m.readout_mixer.weight[0].item() == 0.25
     run("fixed_last4", "fixed_last4")
     run("off", "off")
-    for mode in ("fixed_emb_last3", "fixed_b0_last3"):
+    for mode in ("fixed_emb_last3", "fixed_b0_last3", "fixed_last3", "fixed_emb_last4"):
         _, m = run(mode, mode)
         assert torch.equal(m.readout_mixer.weight, readout_init(mode, DEPTH)[0])
     # fixed <-> fixed swaps are shape-compatible buffers: only the mode string catches them
     for ckpt, mode in (("off", "learn_last4"), ("learn_last4", "off"),
                        ("fixed_last4", "learn_last4"), ("learn_last4", "fixed_last4"),
                        ("fixed_emb_last3", "fixed_b0_last3"), ("fixed_b0_last3", "fixed_emb_last3"),
-                       ("fixed_last4", "fixed_emb_last3"), ("off", "fixed_b0_last3")):
+                       ("fixed_last4", "fixed_emb_last3"), ("off", "fixed_b0_last3"),
+                       ("fixed_last4", "fixed_emb_last4"), ("fixed_last3", "fixed_emb_last3"),
+                       ("fixed_emb_last4", "fixed_emb_last3")):
         with pytest.raises(AssertionError, match="readout_routing"):
             run(ckpt, mode)
 

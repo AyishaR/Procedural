@@ -57,7 +57,7 @@ sys.path.insert(0, str(REPO))
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 import utils  # noqa: E402
-from models.readout_routing import readout_init  # noqa: E402
+from models.readout_routing import _SPECS, readout_init  # noqa: E402
 from models.residual_routing import source_labels  # noqa: E402
 from routing.gate import (  # noqa: E402
     BASE_ARGV, _forward, _maxdev, amp_step_grads, branch_outputs, build_args, check_function,
@@ -65,8 +65,10 @@ from routing.gate import (  # noqa: E402
 
 DEFAULT_OUT = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/gate_readout"
 ARMS = {"A": "fixed_last4", "B": "learn_last4", "C": "learn_ones"}
-SKIP_ARMS = {"D": "fixed_emb_last3", "E": "fixed_b0_last3"}
-ALL_ARMS = {**ARMS, **SKIP_ARMS}
+# fixed arms gated by main_gate_skip, by --arms: DE = the skip follow-up, FG = its 2x2 completion
+SKIP_SETS = {"DE": {"D": "fixed_emb_last3", "E": "fixed_b0_last3"},
+             "FG": {"F": "fixed_last3", "G": "fixed_emb_last4"}}
+ALL_ARMS = {**ARMS, **SKIP_SETS["DE"], **SKIP_SETS["FG"]}
 
 
 def build(seed, mode="off"):
@@ -138,16 +140,19 @@ def check_fixed_arm(base, A, B, batches, amp, tol, label):
 
 
 def check_skip_arm(base, M, mode, batches, amp, tol, label):
-    """A skip arm == head(fc_norm(pool(norm(head_state + x_L - x_{L-3})))) built from the
-    baseline's stream (head_state = x entering block 0 for D, x after block 0 for E), and == the
+    """A fixed arm == head(fc_norm(pool(norm(head_state + x_L - x_{L-k})))) built from the
+    baseline's stream (k = the mode's last-block count; head_state = nothing, x entering block 0
+    or x after block 0, by the mode's head sources), and == the
     readout of the weighted sum of the hooked sources [x entering block 0] + branch outputs."""
     depth = len(base.blocks)
     w, _ = readout_init(mode, depth)
-    head_state = {"fixed_emb_last3": 0, "fixed_b0_last3": 1}[mode]
+    head, last, _ = _SPECS[mode]
+    head_state = {(): None, (0,): 0, (0, 1, 2): 1}[tuple(head)]
     dev, dev_hist = 0.0, 0.0
     for x, _ in batches:
         states = stream_states(base, x, amp)
-        ref = readout(base, states[head_state] + (states[depth] - states[depth - 3]), amp)
+        late = states[depth] - states[depth - last]
+        ref = readout(base, late if head_state is None else states[head_state] + late, amp)
         srcs = [states[0]] + list(branch_outputs(base, x, amp))
         mixed = sum(float(w[j]) * srcs[j].float() for j in range(len(srcs)) if w[j] != 0)
         ref2 = readout(base, mixed.to(states[0].dtype), amp)
@@ -205,14 +210,14 @@ def plot(res, path):
     width = 0.8 / len(tags)
     for i, tag in enumerate(tags):
         w = np.array(res["weights"][tag]["weight"])
-        ax[0].bar(xs + (i - (len(tags) - 1) / 2) * width, w, width=width, color=f"C{'ABCDE'.index(tag)}",
+        ax[0].bar(xs + (i - (len(tags) - 1) / 2) * width, w, width=width, color=f"C{'ABCDEFG'.index(tag)}",
                   label=f"{tag} = {ALL_ARMS[tag]}")
     ax[0].set_xticks(xs); ax[0].set_xticklabels(labels, rotation=70, fontsize=7)
     ax[0].set_ylabel("readout weight at init"); ax[0].legend(); ax[0].set_title("readout rows at init")
     t = res.get("timing", {})
     if t:
         tags = list(t)
-        colors = ["0.5" if k == "base" else f"C{'ABCDE'.index(k)}" for k in tags]
+        colors = ["0.5" if k == "base" else f"C{'ABCDEFG'.index(k)}" for k in tags]
         ax[1].bar(tags, [t[k]["ms_micro"] for k in tags], color=colors)
         for i, k in enumerate(tags):
             ax[1].text(i, t[k]["ms_micro"], f"{t[k]['ms_micro']:.1f}", ha="center", va="bottom", fontsize=8)
@@ -226,7 +231,8 @@ def plot(res, path):
 
 
 def main_gate_skip(a, base, batches, device):
-    """--arms DE: the two fixed skip arms (see the module docstring)."""
+    """--arms DE / FG: two fixed arms (see the module docstring)."""
+    SKIP_ARMS = SKIP_SETS[a.arms]
     arms = {tag: build(a.seed, mode).to(device).eval() for tag, mode in SKIP_ARMS.items()}
     depth = len(base.blocks)
     res = {"meta": dict(seed=a.seed, batch=a.batch, n_batches=a.n_batches, probe=a.probe,
@@ -247,8 +253,9 @@ def main_gate_skip(a, base, batches, device):
             f"{t} vs hand {v['max_dev_vs_stream']:.2e} / vs summed sources {v['max_dev_vs_summed_sources']:.2e}"
             for t, v in res[key].items()))
     with torch.no_grad():
-        la, ld, le = (_forward(m, batches[0][0], False) for m in (base, arms["D"], arms["E"]))
-    assert not torch.equal(la, ld) and not torch.equal(ld, le), "the arms must be distinct functions"
+        outs = [_forward(m, batches[0][0], False) for m in [base] + list(arms.values())]
+    assert all(not torch.equal(outs[i], outs[j]) for i in range(len(outs)) for j in range(i)), \
+        "the arms must be distinct functions (and differ from base)"
 
     x, y = batches[0]
     lb, gbse, sb, nb, _ = amp_step_grads(build(a.seed).to(device), x, y)
@@ -265,8 +272,9 @@ def main_gate_skip(a, base, batches, device):
     print(f"[4/6] grads     OK  scale {sb:g} on all arms; grad norm base {float(nb):.3f} " +
           " ".join(f"{t} {v['grad_norm']:.3f}" for t, v in grads.items()))
 
-    res["collector"] = check_collector(base, arms["D"], x, same_output=False)
-    print(f"[5/6] collector OK  HookCollector on arm D: {res['collector']['layers']} blocks, "
+    first = next(iter(arms))
+    res["collector"] = check_collector(base, arms[first], x, same_output=False)
+    print(f"[5/6] collector OK  HookCollector on arm {first}: {res['collector']['layers']} blocks, "
           f"block activations equal to base")
 
     res["timing"] = {}
@@ -296,7 +304,7 @@ def main_gate(a):
     print(f"[gate] {len(batches)} probe batches of {a.batch} ({a.probe}) on {torch.cuda.get_device_name(0)}")
 
     base = build(a.seed).to(device).eval()
-    if a.arms == "DE":
+    if a.arms in SKIP_SETS:
         res = main_gate_skip(a, base, batches, device)
         out = Path(a.out)
         out.mkdir(parents=True, exist_ok=True)
@@ -406,7 +414,7 @@ if __name__ == "__main__":
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", default=os.environ.get("ROUTING_GATE_OUT", DEFAULT_OUT))
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--arms", choices=("ABC", "DE"), default=os.environ.get("READOUT_GATE_ARMS", "ABC"),
+    p.add_argument("--arms", choices=("ABC", "DE", "FG"), default=os.environ.get("READOUT_GATE_ARMS", "ABC"),
                    help="ABC: the readout-routing arms; DE: the fixed skip arms (emb / block 0 + last 3)")
     p.add_argument("--batch", type=int, default=128, help="the real per-GPU batch")
     p.add_argument("--n-batches", type=int, default=2)
