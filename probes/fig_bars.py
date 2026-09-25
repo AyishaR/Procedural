@@ -87,7 +87,7 @@ def draw(args):
         print(f"wrote {name}.pdf/.png ({fig.get_size_inches()[0]:.2f} x {fig.get_size_inches()[1]:.2f} in before the legend)")
 
     # ------------------------------------------------------------------ main text: classification, full width
-    style(1.0, 1, 1, 0.42)
+    style(1.0, 1, 1, 0.36)
     keys = [k for k, _ in CLS if all(k in A[a] for a in arms)]
     lab = dict(CLS)
     fig, ax = plt.subplots()
@@ -96,12 +96,16 @@ def draw(args):
     ax.set_xticklabels([lab[k] for k in keys])
     ax.set_ylabel(YLABEL, fontsize=plt.rcParams["axes.labelsize"] + 1)
     ax.tick_params(axis="y", labelsize=plt.rcParams["ytick.labelsize"] + 1)
-    top = ax.secondary_xaxis("top")                       # random's own score, so the bars read back as absolutes
-    top.set_xticks(np.arange(len(keys)))
-    top.set_xticklabels([f"{A[base][k][0]:.1f}" for k in keys])
-    top.set_xlabel(rf"Random init (top-1, {pct})", labelpad=6, fontsize=plt.rcParams["axes.labelsize"] - 1)
-    top.tick_params(length=0, pad=3, labelsize=plt.rcParams["xtick.labelsize"] - 1)
-    top.spines["top"].set_visible(False)
+    # random's own score as a row inside the axes: an extra axis on top costs height the figure does not have
+    hi = max(A[a][k][0] - A[base][k][0] for a in comps for k in keys)
+    ax.set_ylim(top=hi * 1.26)
+    row = hi * 1.15
+    ax.set_xlim(-1.02, len(keys) - 0.42)
+    ax.text(-0.70, row, r"\textit{random init}", ha="right", va="center",
+            fontsize=plt.rcParams["xtick.labelsize"] - 0.5, color="0.25")
+    for i, k in enumerate(keys):
+        ax.text(i, row, rf"\textit{{{A[base][k][0]:.1f}}}", ha="center", va="center",
+                fontsize=plt.rcParams["xtick.labelsize"] - 0.5, color="0.25")
     save(fig, "fig25_bars_classification", len(handles))
 
     # ------------------------------------------------------------------ appendix: the other tasks, full width
