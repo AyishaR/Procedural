@@ -485,7 +485,7 @@ Both arms are fixed (a buffer, like A); every block connection stays vanilla:
 
 | arm | `--readout_routing` | readout input (pre-norm) | sources = 1 |
 |-----|---------------------|--------------------------|-------------|
-| D   | `fixed_emb_last3`   | `emb + (x12 − x9)` — the input tokens skip to the head | 0, 19..24 |
+| D   | `fixed_emb_last3`   | `emb + (x12 − x9)` — at the CLS row the head reads, `emb` is the constant `cls_token + pos_embed[0]` | 0, 19..24 |
 | E   | `fixed_b0_last3`    | `x_after_block0 + (x12 − x9)` = `emb + attn_0 + mlp_0 + (x12 − x9)` | 0, 1, 2, 19..24 |
 
 (`x_b` = the stream after block `b−1`, so `x12 − x9` = `sum(h[19..24])` = `attn_9 .. mlp_11`.)
@@ -525,7 +525,14 @@ D `readout_D_29768024/s0`, E `readout_E_29768025/s0` under `kempfe/routing/runs/
 * The drivers were restarted (`SLURM_ID=`, `WAIT_JOB=`) and every resume came from the
   last checkpoint. E finished at 17:36, D at 17:38.
 
-## Result (2026-09-24): a direct input path to the head is worth +1.1–1.2 top-1
+## Result (2026-09-24): D / E end +1.2 / +1.1 top-1 above base
+
+**Correction (2026-09-25).** The head reads only the CLS row (`global_pool='token'`). At that row
+`emb` is the image-independent learned constant `c = cls_token + pos_embed[0]`, so D's "input
+skip" carries no image information. D is A's construction cut to the last 3 blocks, plus a
+learned offset `c` inside the final LayerNorm. E adds `attn_0 + mlp_0` at the CLS row, which does
+depend on the image. Full derivation: `docs/readout_intervention_math.md`. The bullets below are
+corrected accordingly.
 
 Last-epoch (299) test top-1, one seed per arm:
 
@@ -563,13 +570,14 @@ Figure: `kempfe/routing/figures/readout_skip_curves.png`
 * **Not a train-fit effect.** Epoch-299 train loss for D and E (2.23–2.24) is inside the base
   seeds' spread (2.19–2.29) and slightly *above* A's. The gain is in generalisation. This is the
   opposite of the free router, which fitted train better and generalised worse.
-* **Block 0 adds nothing over the raw tokens.** D − E = +0.10, well inside one base sd, and the two
-  curves overlap across training. Whatever helps is already in `emb` (patch embedding + position
-  embedding + CLS token).
+* **Block 0's image information adds nothing.** D − E = +0.10, well inside one base sd, and the
+  two curves overlap across training. E's extra terms (`attn_0 + mlp_0` at the CLS row) carry image
+  content; D's `emb` term at that row is only the learned constant `c`. So the gain does not come
+  from routing image content from the bottom of the network to the head.
 * **What is not settled:**
   * *The missing control.* Without `fixed_last3` we cannot say whether the gain comes from the
-    input skip or from the harder cut (blocks 9–11 instead of 8–11). A (last 4, no skip) was +0.08,
-    so a last-3 cut alone giving +1.1 would be surprising, but it is untested.
+    learned constant `c` inside the final LayerNorm (which vanilla also has, and A removed) or from
+    the harder cut (blocks 9–11 instead of 8–11). A (last 4, no `c`) was +0.08.
   * *One seed per arm.* Two independent arms agree to 0.1, but they share seed 0 and most of their
     readout, so they are not independent replicates.
   * The next runs, in order of information per GPU-hour: `fixed_last3` (the attribution), then a
