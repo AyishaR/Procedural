@@ -133,7 +133,7 @@ def arm_table(V, arms):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arms", default="r,p,ftbc7lm")
+    ap.add_argument("--arms", default="r,p,ftb3b,ftbanapermb7i,ftbc7lm")
     args = ap.parse_args()
     registry.ensure_dirs()
     arms = args.arms.split(",")
@@ -162,49 +162,54 @@ def main():
                     label=f"{a} (n={A[a][keys[0]][2]})")
     ax.axvline(0, color=registry.ARM_COLOR[base], lw=1.6, zorder=2)
     # numeric columns on the right, one per arm, outside the data range
-    colx = [xlim * (1.12 + 0.17 * j) for j in range(len(arms) - 1)]
+    colx = [xlim * (1.14 + 0.30 * j) for j in range(len(arms) - 1)]
     for j, a in enumerate(arms[1:]):
-        ax.text(colx[j], y[0] + 0.85, a, ha="center", va="bottom", fontsize=7.5, color=registry.ARM_COLOR[a], fontweight="bold")
+        ax.text(colx[j], y[0] + 0.7, a, ha="center", va="bottom", fontsize=6.5, color=registry.ARM_COLOR[a],
+                fontweight="bold", rotation=30)
         for i, k in enumerate(keys):
             ax.text(colx[j], y[i], f"{A[a][k][0] - A[base][k][0]:+.2f}", ha="center", va="center",
                     fontsize=7, color=registry.ARM_COLOR[a], family="monospace")
     ax.set_xlim(-xlim, colx[-1] + xlim * 0.12)
-    ax.set_ylim(y[-1] - 0.7, y[0] + 1.3)
+    ax.set_ylim(y[-1] - 0.7, y[0] + 1.9)
     ax.set_yticks(y); ax.set_yticklabels([labels[k] for k in keys], fontsize=8)
     ax.spines["right"].set_visible(False); ax.spines["top"].set_visible(False)
     ax.set_xticks([t for t in ax.get_xticks() if -xlim <= t <= xlim])
     ax.set_xlabel(f"difference from {base}, in points of each readout's own metric\n(grey band = {base}'s ±1 seed sd)", fontsize=8)
     ax.tick_params(labelsize=7); ax.grid(alpha=0.25, axis="x")
-    ax.legend(fontsize=8, loc="lower right", framealpha=0.95)
+    ax.legend(fontsize=7, loc="lower left", framealpha=0.95, ncol=2)
     ax.set_title("Every readout, as a distance from random", fontsize=9.5)
 
     ax = axes[1]
-    tgt, comp = arms[1], arms[-1]
-    pts = [k for k in keys if k != "imagenet_val"]          # the ID axis is the control variable, not a readout
-    dx = {k: (A[tgt][k][0] - A[base][k][0]) / max(A[base][k][1], 1e-6) for k in pts}
-    dy = {k: (A[comp][k][0] - A[base][k][0]) / max(A[base][k][1], 1e-6) for k in pts}
-    lim = max(2.5, max(abs(v) for v in list(dx.values()) + list(dy.values())) * 1.2)
-    ax.plot([-lim, lim], [-lim, lim], color="0.45", lw=1, ls="--", zorder=1, label=f"{comp} reproduces {tgt} exactly")
-    ax.fill_between([-lim, lim], [-1, -1], [1, 1], color="0.9", zorder=0)
-    ax.fill_betweenx([-lim, lim], [-1, -1], [1, 1], color="0.9", zorder=0)
-    ax.axhline(0, color="0.6", lw=0.8, zorder=1); ax.axvline(0, color="0.6", lw=0.8, zorder=1)
-    GC = {"own head": "#1f78b4", "frozen features": "#e6ab02", "training-free": "#7570b3"}
-    order = sorted(pts, key=lambda k: dx[k])
-    for i, k in enumerate(order):
-        col = GC[group[k]]
-        ax.scatter(dx[k], dy[k], s=48, color=col, edgecolor="white", linewidth=0.9, zorder=4)
-        dxo, dyo = (7, 5) if i % 2 == 0 else (-7, -11)
-        ax.annotate(labels[k], (dx[k], dy[k]), xytext=(dxo, dyo), textcoords="offset points", fontsize=6.3,
-                    color="0.2", ha="left" if dxo > 0 else "right", zorder=5)
-    for g, col in GC.items():
-        ax.scatter([], [], s=48, color=col, label=g)
-    ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim)
-    ax.set_xlabel(f"{tgt} − {base}, in units of {base}'s seed sd", fontsize=8)
-    ax.set_ylabel(f"{comp} − {base}, in units of {base}'s seed sd", fontsize=8)
-    ax.tick_params(labelsize=7); ax.grid(alpha=0.25)
-    ax.legend(fontsize=7, loc="upper left", framealpha=0.95)
-    ax.set_title(f"Does {comp} reproduce {tgt}?   (grey = within one seed sd of {base}; ImageNet val excluded)", fontsize=9.5)
-    fig.suptitle(f"fig24: {' vs '.join(arms)} across every readout — own-head accuracy on ImageNet and six shifted sets, "
+    tgt, comps = arms[1], arms[2:]
+    sd = {k: max(A[base][k][1], 1e-6) for k in keys}
+    # the ratio only means something where proc actually GAINED: a negative denominator makes
+    # "fraction of the gain reproduced" unreadable (NYU depth, where every arm is below random)
+    usable = [k for k in keys if k != "imagenet_val" and (A[tgt][k][0] - A[base][k][0]) > sd[k]]
+    yy = np.arange(len(usable))[::-1]
+    ax.axvspan(0.75, 1.25, color="0.92", zorder=0)
+    ax.axvline(1.0, color="0.35", lw=1.3, ls="--", zorder=1, label=f"reproduces {tgt} exactly")
+    ax.axvline(0.0, color="0.6", lw=1, zorder=1, label=f"no change from {base}")
+    for j, c in enumerate(comps):
+        col = registry.ARM_COLOR[c]
+        off = (j - (len(comps) - 1) / 2) * 0.19
+        fr = [(A[c][k][0] - A[base][k][0]) / (A[tgt][k][0] - A[base][k][0]) for k in usable]
+        clipped = [min(max(v, -0.6), 2.2) for v in fr]
+        ax.scatter(clipped, yy + off, s=46, color=col, edgecolor="white", linewidth=0.8, zorder=4,
+                   label=f"{c} (n={A[c][usable[0]][2]})")
+        for i, (v, cv) in enumerate(zip(fr, clipped)):
+            if v != cv:                                   # mark that the true value is off-scale
+                ax.annotate("", (cv + (0.08 if v > cv else -0.08), yy[i] + off), (cv, yy[i] + off),
+                            arrowprops=dict(arrowstyle="->", color=col, lw=1))
+    ax.set_yticks(yy); ax.set_yticklabels([labels[k] for k in usable], fontsize=8)
+    ax.set_ylim(yy[-1] - 0.7, yy[0] + 0.7)
+    ax.set_xlim(-0.75, 2.35)
+    ax.set_xlabel(f"(intervention − {base}) / ({tgt} − {base}), per readout", fontsize=8)
+    ax.tick_params(labelsize=7); ax.grid(alpha=0.25, axis="x")
+    ax.spines["right"].set_visible(False); ax.spines["top"].set_visible(False)
+    ax.legend(fontsize=7, loc="lower right", framealpha=0.95)
+    ax.set_title(f"What fraction of {tgt}'s gain does each intervention reproduce?\n"
+                 f"(only readouts where {tgt} gains more than one {base} seed sd over {base})", fontsize=9.5)
+    fig.suptitle(f"fig24: {', '.join(arms)} across every readout — own-head accuracy on ImageNet and six shifted sets, "
                  f"frozen-feature probes at their best depth, and training-free correspondence / object discovery", fontsize=9.5)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(registry.FIGS / "fig24_arms.png", dpi=300)

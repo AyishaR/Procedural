@@ -24,3 +24,7 @@ plots/cache/*.npz
 /grad_norms.json
 /o
 /pid,*
+
+# probe/analysis outputs on the shared workspace (symlinked for convenience, never committed)
+figures
+probes_out

@@ -25,7 +25,7 @@ DATASETS_ROOT = Path(os.environ.get("DATASETS_ROOT", "/data/datasets"))
 DEPTHS = list(range(13))          # 0 = patch+pos embedding, d = output of block d-1
 DEPTH_LABELS = ["emb"] + [f"b{i}" for i in range(12)]
 
-ARM_ORDER = ["r", "ftblrm", "ftbrhos", "ftb4o", "ftbrho", "ftb3b", "ftb3i", "ftbqmlnvo", "ftbc7lm", "p"]
+ARM_ORDER = ["r", "ftblrm", "ftbrhos", "ftb4o", "ftbrho", "ftb3b", "ftb3i", "ftbqmlnvo", "ftbanapermb7i", "ftbc7lm", "p"]
 ARM_LABEL = {
     "r": "random",
     "ftblrm": "random, Adam steps matched to proc 0-8",
@@ -35,12 +35,13 @@ ARM_LABEL = {
     "ftb3b": "random, 9-11 rho-matched to proc",
     "ftb3i": "proc 0-8, random 9-11",
     "ftbqmlnvo": "proc marginals rank-mapped 0-8",
+    "ftbanapermb7i": "statistics-only profile 0-7, checkpoint-free",
     "ftbc7lm": "analytic profile 0-7, checkpoint-free",
     "p": "proc (all 12)",
 }
 ARM_COLOR = {
     "r": "0.15", "ftblrm": "#1b9e77", "ftbrhos": "#a6761d", "ftb4o": "#66a61e",
-    "ftbrho": "#e6ab02", "ftb3b": "#d95f02", "ftb3i": "#7570b3", "ftbqmlnvo": "#e7298a", "ftbc7lm": "#e31a1c", "p": "#1f78b4",
+    "ftbrho": "#e6ab02", "ftb3b": "#d95f02", "ftb3i": "#7570b3", "ftbqmlnvo": "#e7298a", "ftbanapermb7i": "#795548", "ftbc7lm": "#e31a1c", "p": "#1f78b4",
 }
 # accuracies from log.txt (last epoch) are read at runtime; these are only for labelling
 _IB = "imnet_base/results_IMNET_BASE_{sid}/s{seed}/checkpoint-299-model.pth"
@@ -60,6 +61,7 @@ MODELS = [
     _e("ftb4o", 0, 29451652),
     _e("ftbrhos", 0, 29538140),
     _e("ftblrm", 0, 29545846),
+    *[_e("ftbanapermb7i", s, 29737095) for s in range(3)],   # statistics-only profile, s1/s2 still training
     _e("ftbc7lm", 0, 29768863),        # checkpoint-free analytic profile on blocks 0-7 (bf16 AMP), 80.48
 ]
 BY_NAME = {m["name"]: m for m in MODELS}
