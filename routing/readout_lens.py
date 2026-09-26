@@ -168,8 +168,8 @@ def plot(out):
            "rescale ftb3b": ("ftb3b", "#1baf7a", "-"), "rescale ftbrho": ("ftbrho", "#1baf7a", "--")}
     fig, ax = plt.subplots(1, 3, figsize=(18, 5.6), layout="constrained")
     depth = np.arange(K)
-    metrics = (("top1", "top-1 vs truth (%)"), ("agree", "agreement with the model's output (%)"),
-               ("kl", "KL(model output || lens)"))
+    metrics = (("top1", "top-1 vs truth (percent)"), ("agree", "agreement with the model's output (percent)"),
+               ("kl", "KL divergence: model output to lens"))
     for label, (arm, col, ls) in ref.items():
         runs = [json.load(open(CACHED / f"{arm}_s{s}.json"))["logit_lens"] for s in range(3)]
         for (mk, _), a_ in zip(metrics, ax):
