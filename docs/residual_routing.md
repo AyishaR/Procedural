@@ -667,3 +667,29 @@ Mean gap to the base seed mean, by epoch window:
 * Caveat: one seed per arm. But the two independent last-3 arms (F and D, different readouts)
   agree to 0.08, and the two last-4 arms agree to 0.16. The depth effect is therefore replicated
   across c, although not across seeds.
+
+### Follow-up 3b (2026-09-26): logit lens of the last-3 arms
+
+`routing/readout_lens.py` (job 29828048), on the protocol of the cached `probes/lens.py` results: full
+50k val, CLS row, bf16. Re-running `r_s0` reproduces its cached curves to ≤ 0.04 top-1, ≤ 0.06
+agreement and ≤ 0.001 KL. Figure `kempfe/routing/readout_lens/readout_lens.png`.
+
+| stream lens top-1 at depth | 8 | 9 | 10 | 11 | 12 | mean prediction depth |
+|---|---|---|---|---|---|---|
+| random r (3 seeds) | 14.6 | 23.2 | 39.1 | 73.3 | 78.1 | 10.33 |
+| procedural p | 0.4 | 1.5 | 5.9 | 39.0 | 80.1 | 11.52 |
+| rescale ftb3b / ftbrho | 0.2 | 0.3 | 0.8 / 1.1 | 58.2 / 41.7 | 80.0 / 79.7 | 11.34 / 11.54 |
+| readout F (last 3) | 0.0 | 0.0 | 1.3 | 33.9 | 78.3* | 11.61 |
+| readout D (last 3 + c) | 0.0 | 0.0 | 1.5 | 35.4 | 77.9* | 11.59 |
+
+\* For F/D the stream at depth 12 is not what the head reads. The **window lens** (the head's actual
+input if the window stopped after block l) gives 0.1 / 20.8 / 57.9 / 79.3 top-1 at depths 9–12 for F
+(D: 0.1 / 16.9 / 56.8 / 79.3). Mean prediction depth on the window is 11.14 (F) / 11.18 (D).
+
+**Reading.** The last-3 arms have the late, sharp lens profile of procedural and late rescaling, not
+random's. Their stream is unreadable by the head through block 9, as with p (random reaches 23% at
+depth 9 and 39% at depth 10), and their mean prediction depth is 11.6, at or beyond p's 11.5 (random
+10.3). Cutting blocks 0–8 out of the readout reproduces the "readout pushed to the last blocks"
+signature that procedural initialisation and late rescaling produce, and it recovers 60–80% of
+their accuracy gain. This supports the idea that the shared ingredient is late readout rather than
+the initialisation per se. It is correlational: the lens shape is part of what the cut imposes.
