@@ -658,8 +658,8 @@ Mean gap to the base seed mean, by epoch window:
 * **It is not monotone in the number of blocks read.** Reading all 12 (base) and reading 8–11 (A)
   are equal; reading 9–11 is +1.2. Either block 8's own output specifically hurts when it goes
   straight to the head, or the effect sets in only for a short enough window. Arms that would tell
-  these apart: last 2 (blocks 10–11); "last 4 minus block 8" (blocks 8's outputs excluded, 9–11
-  plus nothing else is F, so the useful one is last 5 minus block 8, or 7 + 9–11).
+  these apart: last 2 (blocks 10–11), which tests "shorter is better", and blocks 7 + 9–11 (4 blocks
+  read, block 8 skipped), which tests "block 8 specifically".
 * **Mechanism, from 2b:** in D/E, blocks 6–8 (outside the window) write larger CLS-row outputs and
   the stream entering the window is larger (|x9| 420–430 vs A 329). A plausible reading is that
   once block 8's output no longer counts at the head, blocks ≤ 8 are trained only for what blocks
