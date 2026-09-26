@@ -95,7 +95,18 @@ def main(out):
         ax.annotate(name, (epochs[-1], y), xytext=(epochs[-1] + 6, yy), fontsize=8.5, color="#222222",
                     va="center", arrowprops=dict(arrowstyle="-", color=col, lw=0.8))
     ax.set_xlim(0, epochs[-1] + 62)
+    ax.set_xticks(range(0, 301, 50))
     ax.set_ylim(-1.2, 2.6)
+    # the y-range is zoomed on the late phase; say what falls outside it
+    clipped = []
+    for g in ("p", "rescale"):
+        for lab_prefix in sorted({l.split(" s")[0] for l in acc[g]}):
+            labs = [l for l in acc[g] if l.startswith(lab_prefix + " s")]
+            m_ = [np.mean([acc[g][l][e] for l in labs]) - rmean[e] for e in epochs]
+            i_lo, i_hi = int(np.argmin(m_)), int(np.argmax(m_))
+            clipped.append(f"{lab_prefix}: min {m_[i_lo]:+.1f} @ ep {epochs[i_lo]}, max {m_[i_hi]:+.1f} @ ep {epochs[i_hi]}")
+    ax.text(0.99, 0.02, "outside the axis range (seed means):\n" + "\n".join(clipped), transform=ax.transAxes,
+            ha="right", va="bottom", fontsize=7.5, color="#52514e")
     ax.set_xlabel("epoch")
     ax.set_ylabel("test top-1 minus random seed mean (points)")
     ax.set_title("Accuracy gap to random over training (lines: seed mean; bands: seed range)", fontsize=11)
@@ -118,7 +129,7 @@ def main(out):
         m = float(np.mean(vals))
         if len(vals) > 1:
             bx.plot([m, m], [y - 0.28, y + 0.28], color="#222222", lw=1.4, zorder=4)
-        bx.annotate(f"{m:.2f}", (m, y), xytext=(0, 9), textcoords="offset points", ha="center", fontsize=8,
+        bx.annotate(f"{m:.2f}", (m, y), xytext=(0, 12), textcoords="offset points", ha="center", fontsize=8,
                     color="#222222")
         finals.append(dict(arm=lab, n_seeds=len(vals), top1_mean=round(m, 3), top1=[round(v, 3) for v in vals]))
     rm = np.mean([a[299] for a in acc["r"].values()])
