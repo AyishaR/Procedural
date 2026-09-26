@@ -159,46 +159,42 @@ def run(a):
 
 
 def plot(out):
+    """Random / procedural / late-layer rescaling (cached, 3 seeds each) and the last-3 readout (arm F)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     # hues as in routing/readout_vs_arms.py (validated categorical order; random neutral gray)
-    ref = {"random (r)": ("r", "#8a8984", "-"), "procedural (p)": ("p", "#eb6834", "-"),
-           "rescale ftb3b": ("ftb3b", "#1baf7a", "-"), "rescale ftbrho": ("ftbrho", "#1baf7a", "--")}
-    fig, ax = plt.subplots(1, 3, figsize=(18, 5.6), layout="constrained")
+    ref = [("Random init", "r", "#8a8984", "-"), ("Procedural init", "p", "#eb6834", "-"),
+           ("Late-layer rescaling", "ftb3b", "#1baf7a", "-")]
+    fig, ax = plt.subplots(1, 2, figsize=(14, 5.4), layout="constrained")
     depth = np.arange(K)
-    metrics = (("top1", "top-1 vs truth (percent)"), ("agree", "agreement with the model's output (percent)"),
-               ("kl", "KL divergence: model output to lens"))
-    for label, (arm, col, ls) in ref.items():
+    metrics = (("top1", "top-1 accuracy (percent)"), ("agree", "agreement with the final prediction (percent)"))
+    for label, arm, col, ls in ref:
         runs = [json.load(open(CACHED / f"{arm}_s{s}.json"))["logit_lens"] for s in range(3)]
         for (mk, _), a_ in zip(metrics, ax):
             v = np.array([r[mk] for r in runs])
-            a_.plot(depth, v.mean(0), color=col, ls=ls, lw=1.8, marker="o", ms=3.5, label=f"{label}, 3 seeds")
+            a_.plot(depth, v.mean(0), color=col, ls=ls, lw=2.0, marker="o", ms=4, label=f"{label} (3 seeds)")
             a_.fill_between(depth, v.min(0), v.max(0), color=col, alpha=0.15, lw=0)
-    for t, lab, ls in (("F", "readout F (last 3)", "-"), ("D", "readout D (last 3 + c)", "--")):
-        f = out / f"lens_{t}.json"
-        if not f.exists():
-            continue
-        r = json.load(open(f))
-        for (mk, _), a_ in zip(metrics, ax):
-            a_.plot(depth, r["logit_lens"][mk], color="#2a78d6", ls=ls, lw=1.8, marker="o", ms=3.5,
-                    label=f"{lab}: stream lens")
-            w = r["window_lens"]
-            a_.plot(depth[w["start"]:], w[mk], color="#2a78d6", ls=ls, lw=3.2, marker="s", ms=6, alpha=0.45,
-                    label=f"{lab}: window lens (the head's input)")
+    r = json.load(open(out / "lens_F.json"))
+    for (mk, _), a_ in zip(metrics, ax):
+        a_.plot(depth, r["logit_lens"][mk], color="#2a78d6", lw=2.0, marker="o", ms=4,
+                label="Last-3 readout (1 seed)")
     for (mk, yl), a_ in zip(metrics, ax):
         a_.set_ylabel(yl)
-        a_.set_xlabel("residual stream after l blocks (CLS row)")
+        a_.set_xlabel("after block (0 = embedding)")
         a_.set_xticks(depth)
         a_.grid(color="#e6e6e3", lw=0.8)
         for s in ("top", "right"):
             a_.spines[s].set_visible(False)
-    ax[0].set_title("logit lens: accuracy by depth")
-    ax[1].set_title("logit lens: agreement with the final prediction")
-    ax[2].set_title("logit lens: KL to the final prediction")
-    ax[0].legend(fontsize=7.5, loc="upper left", frameon=False)
-    fig.savefig(out / "readout_lens.png", dpi=140)
+    ax[0].set_title("Logit lens: the final head applied after each block")
+    ax[1].set_title("Logit lens: agreement with the model's final prediction")
+    ax[0].legend(fontsize=8.5, loc="upper left", frameon=False)
+    fig.text(0.5, -0.02, "ImageNet val (50k), CLS token. Last-3 readout: the head reads only the summed outputs of "
+             "blocks 9-11, so at depth 12 (the full stream, never read by its head) the lens is below its actual "
+             "accuracy of 79.3.", ha="center", fontsize=8.5,
+             color="#52514e")
+    fig.savefig(out / "readout_lens.png", dpi=140, bbox_inches="tight")
     print("wrote", out / "readout_lens.png")
 
 
