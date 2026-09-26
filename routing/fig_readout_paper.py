@@ -121,13 +121,13 @@ def main(a):
 
         # logit lens over layers
         fig, ax = plt.subplots()
-        layers = np.arange(13)
+        layers = np.arange(1, 13)                   # layer 0 (the embedding, before any block) is not shown
         for _, label, slot, _, lens in series:
-            top1 = np.mean([json.load(open(p))["logit_lens"]["top1"] for p in lens], axis=0)
+            top1 = np.mean([json.load(open(p))["logit_lens"]["top1"] for p in lens], axis=0)[1:]
             ax.plot(layers, top1, marker="o", markersize=1.5, linewidth=1, color=tab10[slot], zorder=2)
         ax.set_xlabel("Layer")
         ax.set_ylabel(f"Logit lens accuracy ({pct})")
-        ax.set_xlim(-0.5, 12.5)
+        ax.set_xlim(0.5, 12.5)
         ax.set_xticks(layers[::2] if a.rel_width < 0.45 else layers)
         ax.set_ylim(bottom=0)
         ax.grid(True, alpha=0.3)

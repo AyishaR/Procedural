@@ -168,21 +168,21 @@ def plot(out):
     ref = [("Random init", "r", "#8a8984", "-"), ("Procedural init", "p", "#eb6834", "-"),
            ("Late-layer rescaling", "ftb3b", "#1baf7a", "-")]
     fig, ax = plt.subplots(1, 2, figsize=(14, 5.4), layout="constrained")
-    depth = np.arange(K)
+    depth = np.arange(1, K)                     # depth 0 (the embedding) is not shown
     metrics = (("top1", "top-1 accuracy (percent)"), ("agree", "agreement with the final prediction (percent)"))
     for label, arm, col, ls in ref:
         runs = [json.load(open(CACHED / f"{arm}_s{s}.json"))["logit_lens"] for s in range(3)]
         for (mk, _), a_ in zip(metrics, ax):
-            v = np.array([r[mk] for r in runs])
+            v = np.array([r[mk][1:] for r in runs])
             a_.plot(depth, v.mean(0), color=col, ls=ls, lw=2.0, marker="o", ms=4, label=f"{label} (3 seeds)")
             a_.fill_between(depth, v.min(0), v.max(0), color=col, alpha=0.15, lw=0)
     r = json.load(open(out / "lens_F.json"))
     for (mk, _), a_ in zip(metrics, ax):
-        a_.plot(depth, r["logit_lens"][mk], color="#2a78d6", lw=2.0, marker="o", ms=4,
+        a_.plot(depth, r["logit_lens"][mk][1:], color="#2a78d6", lw=2.0, marker="o", ms=4,
                 label="Last-3 readout (1 seed)")
     for (mk, yl), a_ in zip(metrics, ax):
         a_.set_ylabel(yl)
-        a_.set_xlabel("after block (0 = embedding)")
+        a_.set_xlabel("after block")
         a_.set_xticks(depth)
         a_.grid(color="#e6e6e3", lw=0.8)
         for s in ("top", "right"):
@@ -191,7 +191,7 @@ def plot(out):
     ax[1].set_title("Logit lens: agreement with the model's final prediction")
     ax[0].legend(fontsize=8.5, loc="upper left", frameon=False)
     fig.text(0.5, -0.02, "ImageNet val (50k), CLS token. Last-3 readout: the head reads only the summed outputs of "
-             "blocks 9-11, so at depth 12 (the full stream, never read by its head) the lens is below its actual "
+             "layers 10-12, so at layer 12 (the full stream, never read by its head) the lens is below its actual "
              "accuracy of 79.3.", ha="center", fontsize=8.5,
              color="#52514e")
     fig.savefig(out / "readout_lens.png", dpi=140, bbox_inches="tight")

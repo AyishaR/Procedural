@@ -87,8 +87,8 @@ def main(out):
     ax.set_xlabel("epoch")
     ax.set_ylabel("ImageNet top-1 minus random init (points)")
     ax.set_title("Accuracy gain over random init during training", fontsize=11)
-    fig.text(0.01, -0.03, "Last-3 readout: the classifier head reads only the summed outputs of blocks 9-11. "
-             "Late-layer rescaling: random init with blocks 9-11 rescaled to match procedural init.",
+    fig.text(0.01, -0.03, "Last-3 readout: the classifier head reads only the summed outputs of layers 10-12. "
+             "Late-layer rescaling: random init with layers 10-12 rescaled to match procedural init.",
              fontsize=8.5, color="#52514e")
     ax.grid(axis="y", color="#e6e6e3", lw=0.8)
     ax.legend(fontsize=8.5, loc="upper left", frameon=False)
