@@ -610,3 +610,60 @@ The recomputed top-1 matches every logged `test_acc1` to ≤ 0.01.
 * Not settled: c could matter *during* training (early on, the head input is small, so c's direct
   gradient may be relatively larger) even though it is irrelevant at the end. G (`fixed_emb_last4`)
   vs A tests that directly.
+
+## Follow-up 3 (2026-09-26): the 2×2 — the gain comes from cutting block 8 from the readout, not from c
+
+Arms F `fixed_last3` (blocks 9–11, no c) and G `fixed_emb_last4` (blocks 8–11 + c) complete the
+grid {last 4, last 3} × {without, with c}. Gate job 29784355 passed (artefacts in
+`kempfe/routing/gate_readout_2x2/`). Chains launched 2026-09-25 09:37 from the run clone
+`kempfe/Procedural-readout` at 8d5386b; runs `kempfe/routing/runs/readout_{F_29784360,G_29784361}/s0`.
+
+* F lost one segment to a `/dev/shm` crash at epoch 32 and resumed on lmb.
+* G was preempted twice on alldlc2 (epochs 50 and 58) and was moved to lmb with
+  `routing/sbatch/handover.sh`, resuming from checkpoint-58.
+* Both finished 2026-09-26 (F 09:04, G 09:49).
+
+Epoch-299 test top-1, one seed per arm, base 78.079 ± 0.189:
+
+|  | **without c** | **with c** | effect of c |
+|---|---|---|---|
+| **last 4 (blocks 8–11)** | A **78.156** (+0.08) | G **78.318** (+0.24) | +0.16 |
+| **last 3 (blocks 9–11)** | F **79.376** (+1.30, +6.9 sd) | D **79.292** (+1.21) | −0.08 |
+| **effect of dropping block 8** | **+1.22** | **+0.97** | |
+
+Top-5: A 92.53, G 92.68, F 93.59, D 93.36. Train loss at 299: A 2.212, G 2.201, F 2.240, D 2.233,
+all inside the base spread (2.19–2.29).
+
+Figure: `kempfe/routing/figures/readout_2x2_curves.png`.
+
+Mean gap to the base seed mean, by epoch window:
+
+| epochs | A | G | F | D |
+|---|---|---|---|---|
+| 0–50 | +0.54 | +0.48 | +0.78 | +0.64 |
+| 60–119 | −0.02 | +0.01 | +0.26 | +0.26 |
+| 120–179 | −0.02 | +0.12 | +0.45 | +0.37 |
+| 180–239 | +0.01 | +0.19 | +1.02 | +0.98 |
+| 240–299 | −0.00 | +0.20 | +1.21 | +1.11 |
+
+**Reading.**
+
+* **c does nothing.** Its effect is within one base sd at both depths (+0.16 at last 4, −0.08 at
+  last 3), and G's trajectory stays within about 0.2 of A's. This agrees with 2b: at eval c is
+  small and removable. "Missing positional / input information" is not the story.
+* **The whole gain comes from reading 3 blocks instead of 4.** F−A = +1.22 and D−G = +0.97, both
+  far outside noise. The two last-3 arms and the two last-4 arms each pair up across the whole run,
+  and the split has the same shape as before: +0.3–0.4 mid-training, growing to +1.0–1.2 in the
+  cosine tail (epochs ≥ 180).
+* **It is not monotone in the number of blocks read.** Reading all 12 (base) and reading 8–11 (A)
+  are equal; reading 9–11 is +1.2. Either block 8's own output specifically hurts when it goes
+  straight to the head, or the effect sets in only for a short enough window. Arms that would tell
+  these apart: last 2 (blocks 10–11); "last 4 minus block 8" (blocks 8's outputs excluded, 9–11
+  plus nothing else is F, so the useful one is last 5 minus block 8, or 7 + 9–11).
+* **Mechanism, from 2b:** in D/E, blocks 6–8 (outside the window) write larger CLS-row outputs and
+  the stream entering the window is larger (|x9| 420–430 vs A 329). A plausible reading is that
+  once block 8's output no longer counts at the head, blocks ≤ 8 are trained only for what blocks
+  9–11 make of them, which regularises them. That is an interpretation, not tested.
+* Caveat: one seed per arm. But the two independent last-3 arms (F and D, different readouts)
+  agree to 0.08, and the two last-4 arms agree to 0.16. The depth effect is therefore replicated
+  across c, although not across seeds.
