@@ -35,7 +35,9 @@ from probes.fig_arms import arm_table, per_model_values
 ARM = {"p":             (0, "k-Dyck D4"),
        "ftb3b":         (1, "Random init w/ PW residual write ratios"),
        "ftbanapermb7i": (2, "Random init w/ PW early-layer targets"),
-       "ftbc7lm":       (3, "Combined")}
+       "ftbc7lm":       (3, "Combined"),
+       "r0mim":         (4, "Mimetic init"),
+       "r0ls":          (5, "LayerScale")}
 CLS = [("imagenet_val", "IN-val"), ("imagenet_v2", "IN-V2"), ("imagenet_r", "IN-R"),
        ("imagenet_sketch", "IN-Sketch"), ("imagenet_a", "IN-A"), ("objectnet", "ObjectNet"),
        ("imagenet_c", "IN-C")]
@@ -108,7 +110,7 @@ def draw(args):
     for i, k in enumerate(keys):
         ax.text(i, row, rf"\textit{{{A[base][k][0]:.1f}}}", ha="center", va="center",
                 fontsize=plt.rcParams["xtick.labelsize"] - 0.5, color="0.25")
-    save(fig, "fig25_bars_classification", len(handles))
+    save(fig, f"fig25_bars_classification{args.suffix}", len(handles))
 
     # ------------------------------------------------------------------ appendix: the other tasks, full width
     shown = [t for t in OTHER if all(t[0] in A[a] for a in arms)]
@@ -120,7 +122,7 @@ def draw(args):
         ax.set_title(rf"{tlab}, {unit}" + "\n" + rf"\textit{{random {A[base][k][0]:.1f}}}",
                      loc="center", fontsize=plt.rcParams["axes.labelsize"])
     fig.supylabel(r"$\Delta$ vs.\ random init", fontsize=plt.rcParams["axes.labelsize"] + 1)
-    save(fig, "fig26_bars_other_tasks", len(handles))
+    save(fig, f"fig26_bars_other_tasks{args.suffix}", len(handles))
 
 
 def main():
@@ -128,6 +130,9 @@ def main():
     ap.add_argument("--arms", default="r,p,ftb3b,ftbanapermb7i,ftbc7lm")
     ap.add_argument("--venue", default=None, help="tueplots bundle name (default: the newest iclr* installed)")
     ap.add_argument("--no-usetex", action="store_true")
+    ap.add_argument("--suffix", default="", help="appended to the output names, e.g. _with_baselines")
+    ap.add_argument("--only-seeds", default="", dest="only_seeds",
+                    help="pin arms to a subset of seeds, e.g. ftbanapermb7i:0,ftbc7lm:0 (reproduces an older figure)")
     args = ap.parse_args()
     os.umask(0o002)
     registry.ensure_dirs()

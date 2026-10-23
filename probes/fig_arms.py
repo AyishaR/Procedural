@@ -62,7 +62,8 @@ def per_model_values():
         put(r["model"], "imagenet_a", s.get("imagenet_a", {}).get("top1_masked"))
         put(r["model"], "objectnet", s.get("objectnet", {}).get("top1_masked"))
         put(r["model"], "imagenet_c", s.get("imagenet_c", {}).get("top1"))
-    for r in probes:
+    probes = [r for r in probes if "concat" in r.get("ftypes", {})]   # a model probed with another ftype set
+    for r in probes:                                                   # (pd98 ran cls-only) must not break this
         if r["dataset"] == "imnet":
             put(r["model"], "imnet_probe_b11", r["ftypes"]["concat"]["test_acc"][12])
     for m in {r["model"] for r in probes}:
@@ -117,11 +118,13 @@ B11 = {k: k + "__b11" for k in ("transfer_best", "knn_best", "voc_miou", "ade_mi
                                 "spair_pck", "corloc", "corloc_keys")}
 
 
-def arm_table(V, arms):
-    """-> {arm: {readout: (mean, sd, n)}}"""
+def arm_table(V, arms, seeds=None):
+    """-> {arm: {readout: (mean, sd, n)}}.  `seeds` = {arm: {seed, ...}} pins an arm to a subset of its seeds,
+    which is what reproduces an older figure after further seeds have finished."""
     out = {}
     for a in arms:
-        names = [m["name"] for m in registry.MODELS if m["arm"] == a and m["name"] in V]
+        names = [m["name"] for m in registry.MODELS if m["arm"] == a and m["name"] in V
+                 and (seeds is None or a not in seeds or m["seed"] in seeds[a])]
         rec = {}
         for k in [x for x, _, _ in READOUTS] + list(B11.values()):
             vals = [V[n][k] for n in names if k in V[n]]

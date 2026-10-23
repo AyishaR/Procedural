@@ -25,9 +25,11 @@ DATASETS_ROOT = Path(os.environ.get("DATASETS_ROOT", "/data/datasets"))
 DEPTHS = list(range(13))          # 0 = patch+pos embedding, d = output of block d-1
 DEPTH_LABELS = ["emb"] + [f"b{i}" for i in range(12)]
 
-ARM_ORDER = ["r", "ftblrm", "ftbrhos", "ftb4o", "ftbrho", "ftb3b", "ftb3i", "ftbqmlnvo", "ftbanapermb7i", "ftbc7lm", "p"]
+ARM_ORDER = ["r", "r0ls", "r0mim", "ftblrm", "ftbrhos", "ftb4o", "ftbrho", "ftb3b", "ftb3i", "ftbqmlnvo", "ftbanapermb7i", "ftbc7lm", "p", "pd98"]
 ARM_LABEL = {
     "r": "random",
+    "r0ls": "random + LayerScale",
+    "r0mim": "random + mimetic init",
     "ftblrm": "random, Adam steps matched to proc 0-8",
     "ftbrhos": "random, 0-8 rho-matched to shuffled proc",
     "ftb4o": "random, 0-7 upscaled to proc rho",
@@ -38,21 +40,27 @@ ARM_LABEL = {
     "ftbanapermb7i": "statistics-only profile 0-7, checkpoint-free",
     "ftbc7lm": "analytic profile 0-7, checkpoint-free",
     "p": "proc (all 12)",
+    "pd98": "proc k-Dyck shuffled D98 (all 12)",
 }
 ARM_COLOR = {
-    "r": "0.15", "ftblrm": "#1b9e77", "ftbrhos": "#a6761d", "ftb4o": "#66a61e",
-    "ftbrho": "#e6ab02", "ftb3b": "#d95f02", "ftb3i": "#7570b3", "ftbqmlnvo": "#e7298a", "ftbanapermb7i": "#795548", "ftbc7lm": "#e31a1c", "p": "#1f78b4",
+    "r": "0.15", "r0ls": "#8c564b", "r0mim": "#9467bd", "ftblrm": "#1b9e77", "ftbrhos": "#a6761d", "ftb4o": "#66a61e",
+    "ftbrho": "#e6ab02", "ftb3b": "#d95f02", "ftb3i": "#7570b3", "ftbqmlnvo": "#e7298a", "ftbanapermb7i": "#795548", "ftbc7lm": "#e31a1c", "p": "#1f78b4", "pd98": "#a6cee3",
 }
 # accuracies from log.txt (last epoch) are read at runtime; these are only for labelling
 _IB = "imnet_base/results_IMNET_BASE_{sid}/s{seed}/checkpoint-299-model.pth"
 
 
-def _e(arm, seed, sid):
-    return dict(name=f"{arm}_s{seed}", arm=arm, seed=seed, slurm_id=str(sid), ckpt=_IB.format(sid=sid, seed=seed))
+def _e(arm, seed, sid, **build):
+    """build: extra timm kwargs the architecture needs, e.g. init_values for a LayerScale run."""
+    return dict(name=f"{arm}_s{seed}", arm=arm, seed=seed, slurm_id=str(sid), ckpt=_IB.format(sid=sid, seed=seed),
+                build=build)
 
 
 MODELS = [
     *[_e("r", s, 29384839) for s in range(3)],
+    # LayerScale: the checkpoint carries blocks.*.ls{1,2}.gamma, so the model must be built with them
+    *[_e("r0ls", s, 30054092, init_values=1e-4) for s in range(3)],
+    *[_e("r0mim", s, 30060920) for s in range(3)],     # random + mimetic init baseline
     *[_e("p", s, 29377576) for s in range(3)],
     _e("ftbrho", 0, 29453944), _e("ftbrho", 1, 29461252), _e("ftbrho", 2, 29461253),
     _e("ftb3b", 0, 29388202), _e("ftb3b", 1, 29406778), _e("ftb3b", 2, 29406779),
@@ -61,8 +69,9 @@ MODELS = [
     _e("ftb4o", 0, 29451652),
     _e("ftbrhos", 0, 29538140),
     _e("ftblrm", 0, 29545846),
-    *[_e("ftbanapermb7i", s, 29737095) for s in range(3)],   # statistics-only profile, s1/s2 still training
-    _e("ftbc7lm", 0, 29768863),        # checkpoint-free analytic profile on blocks 0-7 (bf16 AMP), 80.48
+    *[_e("ftbanapermb7i", s, 29737095) for s in range(3)],   # statistics-only profile
+    *[_e("ftbc7lm", s, 29768863) for s in range(3)],        # checkpoint-free analytic profile on blocks 0-7 (bf16 AMP), 80.48
+    _e("pd98", 0, 29547831),           # full proc init from k-Dyck shuffled D98 (pr_vitb_ksd/pr_6463456), 80.21
 ]
 BY_NAME = {m["name"]: m for m in MODELS}
 
@@ -166,7 +175,13 @@ def load_model(entry, device="cuda"):
     import models.vision_transformer  # noqa: F401  (registers vit_base with timm)
     import utils
     args = build_args()
-    model = utils.build_model(args)
+    build = entry.get("build") or {}
+    if build:                      # timm kwargs the architecture needs (e.g. LayerScale's init_values)
+        import timm
+        model = timm.create_model(args.model, pretrained=False, num_classes=args.nb_classes,
+                                  drop_path_rate=args.drop_path, **build)
+    else:
+        model = utils.build_model(args)
     sd = torch.load(ckpt_path(entry), map_location="cpu", weights_only=False)
     if isinstance(sd, dict) and "model" in sd and isinstance(sd["model"], dict):
         sd = sd["model"]
