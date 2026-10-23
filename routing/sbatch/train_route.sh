@@ -44,6 +44,13 @@ echo "cwd $(pwd)  commit $(git rev-parse --short HEAD)"
 nvidia-smi
 echo "CUDA_VISIBLE_DEVICES = $CUDA_VISIBLE_DEVICES"
 
+# Seeds of one arm share the chain id (runs/<prefix>_<id>/s<seed>), but the accuracy / grad-norm / rank /
+# CKA jsons are read-modify-written every epoch, so concurrent seeds must not share them. Seed 0 keeps the
+# historical name; other seeds get a _s<seed> suffix.
+ACC_JSON="$OUT_ROOT/runs/accuracy_${RUN_PREFIX}_${SLURM_ID}.json"
+if [[ "$SEED" -ne 0 ]]; then ACC_JSON="$OUT_ROOT/runs/accuracy_${RUN_PREFIX}_${SLURM_ID}_s${SEED}.json"; fi
+echo "accuracy json $ACC_JSON"
+
 TOTAL_BATCH_SIZE=4096
 BATCH_SIZE=128
 UPDATE_FREQ=$((($TOTAL_BATCH_SIZE / $SLURM_GPUS_ON_NODE) / $BATCH_SIZE))
@@ -61,7 +68,7 @@ torchrun --rdzv-backend=c10d --rdzv-endpoint=localhost:$MASTER_PORT \
     --data_path "/data/datasets/ILSVRC2012" \
     --data_set "IMNET" \
     --output_dir "$OUT_ROOT/runs/${RUN_PREFIX}_${SLURM_ID}/s$SEED" \
-    --accuracy_json "$OUT_ROOT/runs/accuracy_${RUN_PREFIX}_${SLURM_ID}.json" \
+    --accuracy_json "$ACC_JSON" \
     --enable_wandb true \
     --project "vit base routing" \
     --wandb_entity_name "procedural_pretraining" \
