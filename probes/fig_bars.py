@@ -6,6 +6,9 @@ spines, seaborn tab10 colours, legend above the axes, grid alpha 0.3, pdf + png 
 Bars are the difference from random, which is the quantity with a meaningful zero: bars of raw accuracy would
 need a truncated axis to show 1-5 point differences on a 0-70 scale.  Random's own score is on the top axis of
 the classification figure and in the panel titles of the appendix one, so the bars read back as absolutes.
+`--absolute` draws the raw scores instead, random included as its own bar and the axis starting at 0 (the
+differences are then a few percent of the bar height and not readable off the figure -- that is the cost of
+the honest zero, and the reason the difference view is the default).
 
 Two figures, because the two halves cannot share an axis.  Every classification column is the same metric
 (top-1 of the model's own head), so those bars belong on one axis and their heights are comparable across
@@ -19,7 +22,8 @@ sqrt(sd_arm^2 + sd_random^2) with each sd over that arm's seeds (ddof=1) -- the 
 difference of two arm means, so random's own spread belongs in it.  `--err arm` drops random's term, for when
 the comparison of interest is between arms within a column rather than against zero.  An arm with one seed
 gets no bar (nothing is invented for it), which is why the faithful paper figure uses --no-errorbars.  The
-measure is deliberately NOT written in the figure; it belongs in the caption.
+measure is deliberately NOT written in the figure; it belongs in the caption.  Under --absolute each bar is
+one arm's own mean, so the bars carry that arm's own sd with nothing propagated into it.
 
   python -m probes.fig_bars [--arms r,p,ftb3b,ftbanapermb7i,ftbc7lm] [--venue iclr2024] [--no-usetex]
 """
@@ -39,7 +43,8 @@ from probes import registry
 from probes.fig_arms import arm_table, per_model_values
 
 # arm -> (tab10 slot, label in the paper's terms)
-ARM = {"p":             (0, "k-Dyck D4"),
+ARM = {"r":             (7, "Random init"),
+       "p":             (0, "k-Dyck D4"),
        "ftb3b":         (1, "Random init w/ PW residual write ratios"),
        "ftbanapermb7i": (2, "Random init w/ PW early-layer targets"),
        "ftbc7lm":       (3, "Combined"),
@@ -84,39 +89,51 @@ def draw(args):
             assert n1 == len(pins[a]), f"--only-seeds {a}: asked for {sorted(pins[a])}, table has n={n1} (of {n0})"
             print(f"[fig_bars] {a} pinned to seeds {sorted(pins[a])}: n {n0} -> {n1}")
     tab10 = sns.color_palette("tab10")
-    colour = {a: tab10[ARM[a][0]] for a in comps}
+    colour = {a: tab10[ARM[a][0]] for a in arms}   # base included: --absolute draws it as a bar too
     pct = r"\%" if usetex else "%"
+    tag = "_abs" if args.absolute else ""
+    ABS_YLABEL = r"Top-1 (\%)" if usetex else "Top-1 (%)"
+    # the appendix panels are mIoU / delta1 / PCK, all percentages but not one metric -- the unit is in the titles
+    ABS_YLABEL_OTHER = r"Score (\%)" if usetex else "Score (%)"
 
     def style(rel_width, nrows, ncols, ratio):
         plt.rcParams.update(bundle(usetex=usetex, rel_width=rel_width, nrows=nrows, ncols=ncols, family="serif"))
         plt.rcParams.update(figsize(rel_width=rel_width, nrows=nrows, ncols=ncols, height_to_width_ratio=ratio))
         plt.rcParams.update({"axes.spines.top": False, "axes.spines.right": False})
 
+    drawn_arms = arms if args.absolute else comps
+
     def err(a, k):
-        """sd of the plotted difference; 0 means 'draw none' (single seed, or --no-errorbars)."""
+        """sd of what the bar shows; 0 means 'draw none' (single seed, or --no-errorbars)."""
         if args.no_errorbars or A[a][k][2] < 2:
             return 0.0
         sa, sb = A[a][k][1], A[base][k][1]
+        if args.absolute:                     # the bar is this arm's own mean, nothing is propagated into it
+            return float(sa)
         return float(np.hypot(sa, sb)) if args.err == "diff" and A[base][k][2] > 1 else float(sa)
 
     def bars(ax, keys, width=0.78):
+        comps = drawn_arms
         w = width / len(comps)
         x = np.arange(len(keys))
         for j, a in enumerate(comps):
             off = (j - (len(comps) - 1) / 2) * w
-            h = [A[a][k][0] - A[base][k][0] for k in keys]
+            h = [A[a][k][0] - (0.0 if args.absolute else A[base][k][0]) for k in keys]
             ax.bar(x + off, h, w * 0.9, color=colour[a], zorder=2)
             e = [err(a, k) for k in keys]
             drawn = [i for i, v in enumerate(e) if v > 0]
             if drawn:
                 ax.errorbar([x[i] + off for i in drawn], [h[i] for i in drawn], yerr=[e[i] for i in drawn],
                             fmt="none", ecolor="0.2", elinewidth=0.7, capsize=1.2, capthick=0.7, zorder=4)
-        ax.axhline(0, color="black", linewidth=1, zorder=3)
+        if args.absolute:
+            ax.set_ylim(bottom=0)
+        else:
+            ax.axhline(0, color="black", linewidth=1, zorder=3)
         ax.set_xlim(-0.6, len(keys) - 0.4)
         ax.grid(True, alpha=0.3, axis="y")
         ax.set_axisbelow(True)
 
-    handles = [Patch(facecolor=colour[a], label=ARM[a][1]) for a in comps]
+    handles = [Patch(facecolor=colour[a], label=ARM[a][1]) for a in drawn_arms]
 
     def save(fig, name, ncol):
         fig.legend(handles=handles, loc="outside upper center", ncol=ncol, frameon=False)
@@ -136,18 +153,19 @@ def draw(args):
     bars(ax, keys)
     ax.set_xticks(np.arange(len(keys)))
     ax.set_xticklabels([lab[k] for k in keys])
-    ax.set_ylabel(YLABEL, fontsize=plt.rcParams["axes.labelsize"] + 1)
+    ax.set_ylabel(ABS_YLABEL if args.absolute else YLABEL, fontsize=plt.rcParams["axes.labelsize"] + 1)
     ax.tick_params(axis="y", labelsize=plt.rcParams["ytick.labelsize"] + 1)
-    # random's own score as a row inside the axes: an extra axis on top costs height the figure does not have.
-    # No row header -- the y label already names random init, and a header here would sit in the y-axis margin.
-    hi = max(A[a][k][0] - A[base][k][0] + err(a, k) for a in comps for k in keys)
-    ax.set_ylim(top=hi * 1.26)
-    row = hi * 1.15
-    ax.set_xlim(-0.6, len(keys) - 0.4)
-    for i, k in enumerate(keys):
-        ax.text(i, row, rf"\textit{{{A[base][k][0]:.1f}}}", ha="center", va="center",
-                fontsize=plt.rcParams["xtick.labelsize"] - 0.5, color="0.25")
-    save(fig, f"fig25_bars_classification{args.suffix}", len(handles))
+    if not args.absolute:
+        # random's own score as a row inside the axes: an extra axis on top costs height the figure does not
+        # have.  No row header -- the y label already names random init, and a header would sit in the margin.
+        hi = max(A[a][k][0] - A[base][k][0] + err(a, k) for a in comps for k in keys)
+        ax.set_ylim(top=hi * 1.26)
+        row = hi * 1.15
+        ax.set_xlim(-0.6, len(keys) - 0.4)
+        for i, k in enumerate(keys):
+            ax.text(i, row, rf"\textit{{{A[base][k][0]:.1f}}}", ha="center", va="center",
+                    fontsize=plt.rcParams["xtick.labelsize"] - 0.5, color="0.25")
+    save(fig, f"fig25_bars_classification{tag}{args.suffix}", len(handles))
 
     # ------------------------------------------------------------------ appendix: the other tasks, full width
     shown = [t for t in OTHER if all(t[0] in A[a] for a in arms)]
@@ -156,10 +174,13 @@ def draw(args):
     for ax, (k, tlab, unit) in zip(np.atleast_1d(axs), shown):
         bars(ax, [k], width=0.72)
         ax.set_xticks([])
-        ax.set_title(rf"{tlab}, {unit}" + "\n" + rf"\textit{{random {A[base][k][0]:.1f}}}",
-                     loc="center", fontsize=plt.rcParams["axes.labelsize"])
-    fig.supylabel(r"$\Delta$ vs.\ random init", fontsize=plt.rcParams["axes.labelsize"] + 1)
-    save(fig, f"fig26_bars_other_tasks{args.suffix}", len(handles))
+        title = rf"{tlab}, {unit}"
+        if not args.absolute:
+            title += "\n" + rf"\textit{{random {A[base][k][0]:.1f}}}"
+        ax.set_title(title, loc="center", fontsize=plt.rcParams["axes.labelsize"])
+    fig.supylabel(ABS_YLABEL_OTHER if args.absolute else r"$\Delta$ vs.\ random init",
+                  fontsize=plt.rcParams["axes.labelsize"] + 1)
+    save(fig, f"fig26_bars_other_tasks{tag}{args.suffix}", len(handles))
 
 
 def main():
@@ -168,6 +189,8 @@ def main():
     ap.add_argument("--venue", default=None, help="tueplots bundle name (default: the newest iclr* installed)")
     ap.add_argument("--no-usetex", action="store_true")
     ap.add_argument("--suffix", default="", help="appended to the output names, e.g. _with_baselines")
+    ap.add_argument("--absolute", action="store_true",
+                    help="raw scores with random as its own bar, instead of differences from random")
     ap.add_argument("--err", default="diff", choices=("diff", "arm"),
                     help="diff: sqrt(sd_arm^2 + sd_random^2) on the plotted difference; arm: the arm's own sd")
     ap.add_argument("--no-errorbars", action="store_true", help="for the faithful paper figure")
