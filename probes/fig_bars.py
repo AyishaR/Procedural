@@ -14,6 +14,13 @@ floors at 3.0, NYU delta1 at 39.6), so each gets its own panel and its own axis.
 higher-is-better, delta1 included -- it is the share of patches within 1.25x of the true depth, so the negative
 bars there mean every arm is worse than random at depth.
 
+Error bars are the across-seed standard deviation of the plotted difference, propagated from both arms,
+sqrt(sd_arm^2 + sd_random^2) with each sd over that arm's seeds (ddof=1) -- the quantity on the axis is a
+difference of two arm means, so random's own spread belongs in it.  `--err arm` drops random's term, for when
+the comparison of interest is between arms within a column rather than against zero.  An arm with one seed
+gets no bar (nothing is invented for it), which is why the faithful paper figure uses --no-errorbars.  The
+measure is deliberately NOT written in the figure; it belongs in the caption.
+
   python -m probes.fig_bars [--arms r,p,ftb3b,ftbanapermb7i,ftbc7lm] [--venue iclr2024] [--no-usetex]
 """
 import argparse
@@ -48,6 +55,15 @@ OTHER = [("voc_miou", "VOC 2012", "mIoU"), ("ade_miou", "ADE20K", "mIoU"),
          ("nyu_delta1", "NYU", r"$\delta_1$"), ("spair_pck", "SPair-71k", "PCK@0.1")]
 
 
+def parse_seeds(spec):
+    """'ftbc7lm:0,p:0,p:1' -> {'ftbc7lm': {0}, 'p': {0, 1}}."""
+    out = {}
+    for tok in filter(None, spec.split(",")):
+        arm, _, seed = tok.partition(":")
+        out.setdefault(arm, set()).add(int(seed))
+    return out
+
+
 def latest_venue():
     return sorted(b for b in dir(bundles) if b.startswith("iclr"))[-1]
 
@@ -58,7 +74,15 @@ def draw(args):
     usetex = (not args.no_usetex) and shutil.which("latex") is not None
     arms = args.arms.split(",")
     base, comps = arms[0], arms[1:]
-    A = arm_table(per_model_values(), arms)
+    V = per_model_values()
+    pins = parse_seeds(args.only_seeds)
+    A = arm_table(V, arms, pins or None)
+    if pins:                                   # a silently ignored pin would mislabel the figure, so check it
+        full = arm_table(V, arms)
+        for a in pins:
+            n0, n1 = full[a]["imagenet_val"][2], A[a]["imagenet_val"][2]
+            assert n1 == len(pins[a]), f"--only-seeds {a}: asked for {sorted(pins[a])}, table has n={n1} (of {n0})"
+            print(f"[fig_bars] {a} pinned to seeds {sorted(pins[a])}: n {n0} -> {n1}")
     tab10 = sns.color_palette("tab10")
     colour = {a: tab10[ARM[a][0]] for a in comps}
     pct = r"\%" if usetex else "%"
@@ -68,12 +92,25 @@ def draw(args):
         plt.rcParams.update(figsize(rel_width=rel_width, nrows=nrows, ncols=ncols, height_to_width_ratio=ratio))
         plt.rcParams.update({"axes.spines.top": False, "axes.spines.right": False})
 
+    def err(a, k):
+        """sd of the plotted difference; 0 means 'draw none' (single seed, or --no-errorbars)."""
+        if args.no_errorbars or A[a][k][2] < 2:
+            return 0.0
+        sa, sb = A[a][k][1], A[base][k][1]
+        return float(np.hypot(sa, sb)) if args.err == "diff" and A[base][k][2] > 1 else float(sa)
+
     def bars(ax, keys, width=0.78):
         w = width / len(comps)
         x = np.arange(len(keys))
         for j, a in enumerate(comps):
             off = (j - (len(comps) - 1) / 2) * w
-            ax.bar(x + off, [A[a][k][0] - A[base][k][0] for k in keys], w * 0.9, color=colour[a], zorder=2)
+            h = [A[a][k][0] - A[base][k][0] for k in keys]
+            ax.bar(x + off, h, w * 0.9, color=colour[a], zorder=2)
+            e = [err(a, k) for k in keys]
+            drawn = [i for i, v in enumerate(e) if v > 0]
+            if drawn:
+                ax.errorbar([x[i] + off for i in drawn], [h[i] for i in drawn], yerr=[e[i] for i in drawn],
+                            fmt="none", ecolor="0.2", elinewidth=0.7, capsize=1.2, capthick=0.7, zorder=4)
         ax.axhline(0, color="black", linewidth=1, zorder=3)
         ax.set_xlim(-0.6, len(keys) - 0.4)
         ax.grid(True, alpha=0.3, axis="y")
@@ -103,7 +140,7 @@ def draw(args):
     ax.tick_params(axis="y", labelsize=plt.rcParams["ytick.labelsize"] + 1)
     # random's own score as a row inside the axes: an extra axis on top costs height the figure does not have.
     # No row header -- the y label already names random init, and a header here would sit in the y-axis margin.
-    hi = max(A[a][k][0] - A[base][k][0] for a in comps for k in keys)
+    hi = max(A[a][k][0] - A[base][k][0] + err(a, k) for a in comps for k in keys)
     ax.set_ylim(top=hi * 1.26)
     row = hi * 1.15
     ax.set_xlim(-0.6, len(keys) - 0.4)
@@ -131,6 +168,9 @@ def main():
     ap.add_argument("--venue", default=None, help="tueplots bundle name (default: the newest iclr* installed)")
     ap.add_argument("--no-usetex", action="store_true")
     ap.add_argument("--suffix", default="", help="appended to the output names, e.g. _with_baselines")
+    ap.add_argument("--err", default="diff", choices=("diff", "arm"),
+                    help="diff: sqrt(sd_arm^2 + sd_random^2) on the plotted difference; arm: the arm's own sd")
+    ap.add_argument("--no-errorbars", action="store_true", help="for the faithful paper figure")
     ap.add_argument("--only-seeds", default="", dest="only_seeds",
                     help="pin arms to a subset of seeds, e.g. ftbanapermb7i:0,ftbc7lm:0 (reproduces an older figure)")
     args = ap.parse_args()
