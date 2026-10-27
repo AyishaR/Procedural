@@ -7,7 +7,7 @@ Series (lines are means over the available seeds; no bands):
   Random init            r      results_IMNET_BASE_29384839 s0-2
   k-Dyck-D4              p      results_IMNET_BASE_29377576 s0-2   (procedural warm-up, all 12 blocks)
   k-Dyck-Shuffled-D98    pd98   results_IMNET_BASE_29547831 s0     (only in the *_ksd98 versions)
-  Last-3 readout         F      kempfe/routing/runs/readout_F_29784360 s0 (--readout_routing fixed_last3)
+  Last-3 readout         F      kempfe/routing/runs/readout_F_29784360 s0-2 (--readout_routing fixed_last3)
 
 Validation accuracy: test_acc1 from each run's log.txt (evaluated every 5 epochs on the 50k ImageNet val set).
 Logit lens: top-1 of the model's own final LayerNorm + head applied to the CLS token after each layer, full ImageNet val;
@@ -27,8 +27,8 @@ import numpy as np
 
 RESULTS = "/work/dlc2workfs3/schrodi-procedural/results/imnet_base/results_IMNET_BASE_{sid}/s{seed}/log.txt"
 LENS = "/work/dlc2workfs3/schrodi-procedural/kempfe/probes/results/lens/{name}.json"
-F_LOG = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/runs/readout_F_29784360/s0/log.txt"
-F_LENS = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/readout_lens/lens_F.json"
+F_LOG = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/runs/readout_F_29784360/s{seed}/log.txt"
+F_LENS = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/readout_lens/lens_{tag}.json"
 OUT = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/figures/paper"
 LINKS = "/work/dlclarge1/kempfe-mats/Procedural/figures"      # every figure is symlinked here
 
@@ -39,7 +39,8 @@ SERIES = [
     ("kdyck", "k-Dyck-D4", 1, [RESULTS.format(sid=29377576, seed=s) for s in range(3)],
      [LENS.format(name=f"p_s{s}") for s in range(3)]),
     ("ksd", "k-Dyck-Shuffled-D98", 2, [RESULTS.format(sid=29547831, seed=0)], [LENS.format(name="pd98_s0")]),
-    ("last3", "Last-3 readout", 3, [F_LOG], [F_LENS]),
+    ("last3", "Last-3 readout", 3, [F_LOG.format(seed=s) for s in range(3)],
+     [F_LENS.format(tag=t) for t in ("F", "F_s1", "F_s2")]),
 ]
 
 

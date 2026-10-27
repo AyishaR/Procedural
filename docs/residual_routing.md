@@ -693,3 +693,40 @@ depth 9 and 39% at depth 10), and their mean prediction depth is 11.6, at or bey
 signature that procedural initialisation and late rescaling produce, and it recovers 60–80% of
 their accuracy gain. This supports the idea that the shared ingredient is late readout rather than
 the initialisation per se. It is correlational: the lens shape is part of what the cut imposes.
+
+### Follow-up 3c (2026-10-27): seeds 1 and 2 of the last-3 readout (F)
+
+F (`fixed_last3`, the arm in the paper figures) got two more seeds. Chains launched 2026-10-23 09:54 from the
+run clone at 376be5b (`train_route.sh` now gives seeds > 0 their own accuracy / grad-norm JSONs) under
+the same chain id. The runs are `kempfe/routing/runs/readout_F_29784360/s{1,2}`, jobs 30079499 / 30079500. Each
+finished in a single 22.6 h job on 2026-10-24, with no preemption or crash. The recipe is identical to seed 0
+except `--seed`.
+
+| | s0 | s1 | s2 | mean ± sd |
+|---|---|---|---|---|
+| F top-1 | 79.376 | 79.396 | 79.432 | **79.401 ± 0.028** |
+| F top-5 | 93.59 | 93.55 | 93.41 | 93.52 |
+| F train loss | 2.240 | 2.236 | 2.230 | 2.235 |
+| gap to base mean | +1.30 | +1.32 | +1.35 | **+1.32** |
+
+Base (random init) is 78.079 ± 0.189, k-Dyck-D4 is 80.092 ± 0.117 and late rescaling ftb3b is 79.999 ± 0.139
+(3 seeds each). The gain is +1.32, or 7.0 base sd (Welch t = 12 on 3 + 3 seeds). F's seed spread (0.03) is
+far smaller than base's (0.19). The last-3 readout recovers 66% of k-Dyck-D4's gain and 69% of
+late rescaling's. The trajectory replicates across seeds. Mean gap to the base seed mean per epoch window:
+
+| epochs | s0 | s1 | s2 | mean |
+|---|---|---|---|---|
+| 0–50 | +0.78 | +0.77 | +1.11 | +0.88 |
+| 60–119 | +0.26 | +0.17 | +0.24 | +0.22 |
+| 120–179 | +0.45 | +0.30 | +0.57 | +0.44 |
+| 180–239 | +1.02 | +1.13 | +1.07 | +1.07 |
+| 240–299 | +1.21 | +1.39 | +1.39 | +1.33 |
+
+Logit lens (`routing/readout_lens.py`, job 30101381, same protocol). Stream lens top-1 at layers 9 / 10 / 11 / 12
+is 0.1 / 1.8 / 41.3 / 78.1 (3-seed mean). Layer 11 per seed is 33.9 / 46.2 / 43.8. The mean prediction depth
+is 11.53 (p 11.52, pd98 11.60, r 10.33). The window lens at depths 10–12 is 22.4 / 63.0 / 79.4. Seed 0's
+layer-11 value was the lowest of the three, and the 3-seed curve sits on p's (39.0 at layer 11). The
+reading of 3b is unchanged.
+
+The paper figures (`routing/fig_readout_paper.py`, `kempfe/routing/figures/paper/`) and
+`readout_vs_arms.png` now plot F as the mean over s0–s2.

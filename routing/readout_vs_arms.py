@@ -15,13 +15,13 @@ from pathlib import Path
 import numpy as np
 
 RESULTS = "/work/dlc2workfs3/schrodi-procedural/results/imnet_base/results_IMNET_BASE_{sid}/s{seed}/log.txt"
-RUNS = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/runs/{name}/s0/log.txt"
+RUNS = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/runs/{name}/s{seed}/log.txt"
 GRAY = "#8a8984"
 # (display name, short name, colour, linestyle, log paths); hues in the validated categorical order
 ARMS = [
     ("Random init", "Random", GRAY, "-", [RESULTS.format(sid=29384839, seed=s) for s in range(3)]),
     ("Last-3 readout", "Last-3 readout", "#2a78d6", "-",
-     [RUNS.format(name="readout_F_29784360")]),
+     [RUNS.format(name="readout_F_29784360", seed=s) for s in range(3)]),
     ("Procedural init", "Procedural", "#eb6834", "-", [RESULTS.format(sid=29377576, seed=s) for s in range(3)]),
     ("Late-layer rescaling", "Late-layer rescaling",
      "#1baf7a", "-", [RESULTS.format(sid=sid, seed=s) for s, sid in enumerate((29388202, 29406778, 29406779))]),
