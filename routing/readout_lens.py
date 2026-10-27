@@ -16,6 +16,7 @@ z = w_0 c + x_12 - x_k, not x_12), so two lenses are reported:
 "final" (agree, KL, prediction depth) is always the model's actual output.
 
     sbatch -J readout-lens routing/sbatch/readout_lens.sh
+    sbatch -J readout-lens --export=ALL,READOUT_LENS_MODELS="F_s1 F_s2" routing/sbatch/readout_lens.sh   # subset
     python routing/readout_lens.py --from-json      # redraw from lens_<tag>.json + the cached JSONs
 """
 import argparse
@@ -40,11 +41,13 @@ from routing.gate import build_args  # noqa: E402
 from routing.readout_norms import cls_forward, head  # noqa: E402
 
 RES = "/work/dlc2workfs3/schrodi-procedural/results/imnet_base/results_IMNET_BASE_{sid}/s{seed}"
-RUNS = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/runs/{name}/s0"
+RUNS = "/work/dlc2workfs3/schrodi-procedural/kempfe/routing/runs/{name}/s{seed}"
 CACHED = Path("/work/dlc2workfs3/schrodi-procedural/kempfe/probes/results/lens")
 MODELS = {   # tag -> (run dir, --readout_routing mode)
-    "F": (RUNS.format(name="readout_F_29784360"), "fixed_last3"),
-    "D": (RUNS.format(name="readout_D_29768024"), "fixed_emb_last3"),
+    "F": (RUNS.format(name="readout_F_29784360", seed=0), "fixed_last3"),
+    "F_s1": (RUNS.format(name="readout_F_29784360", seed=1), "fixed_last3"),
+    "F_s2": (RUNS.format(name="readout_F_29784360", seed=2), "fixed_last3"),
+    "D": (RUNS.format(name="readout_D_29768024", seed=0), "fixed_emb_last3"),
     "r_s0": (RES.format(sid=29384839, seed=0), "off"),          # reproduction check vs the cached JSON
 }
 WINDOW = {"fixed_last3": 9, "fixed_emb_last3": 9, "fixed_last4": 8, "fixed_emb_last4": 8}
@@ -176,10 +179,14 @@ def plot(out):
             v = np.array([r[mk][1:] for r in runs])
             a_.plot(depth, v.mean(0), color=col, ls=ls, lw=2.0, marker="o", ms=4, label=f"{label} (3 seeds)")
             a_.fill_between(depth, v.min(0), v.max(0), color=col, alpha=0.15, lw=0)
-    r = json.load(open(out / "lens_F.json"))
+    runs = [json.load(open(f))["logit_lens"] for f in (out / "lens_F.json", out / "lens_F_s1.json",
+                                                         out / "lens_F_s2.json") if f.exists()]
     for (mk, _), a_ in zip(metrics, ax):
-        a_.plot(depth, r["logit_lens"][mk][1:], color="#2a78d6", lw=2.0, marker="o", ms=4,
-                label="Last-3 readout (1 seed)")
+        v = np.array([r[mk][1:] for r in runs])
+        a_.plot(depth, v.mean(0), color="#2a78d6", lw=2.0, marker="o", ms=4,
+                label=f"Last-3 readout ({len(runs)} seed{'s' if len(runs) > 1 else ''})")
+        if len(runs) > 1:
+            a_.fill_between(depth, v.min(0), v.max(0), color="#2a78d6", alpha=0.15, lw=0)
     for (mk, yl), a_ in zip(metrics, ax):
         a_.set_ylabel(yl)
         a_.set_xlabel("after block")
@@ -201,7 +208,7 @@ def plot(out):
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", default=os.environ.get("READOUT_LENS_OUT", DEFAULT_OUT))
-    p.add_argument("--models", nargs="+", default=list(MODELS))
+    p.add_argument("--models", nargs="+", default=os.environ.get("READOUT_LENS_MODELS", " ".join(MODELS)).split())
     p.add_argument("--batch", type=int, default=250)
     p.add_argument("--workers", type=int, default=14)
     p.add_argument("--from-json", action="store_true")
